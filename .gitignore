@@ -1,0 +1,80 @@
+# Project documents kept locally
+/doc/
+
+# ROS 2 / colcon build products
+**/build/
+**/build_*/
+**/install/
+**/install_*/
+**/log/
+**/log_*/
+**/.colcon/
+**/.ros/
+
+# Local scratch files, runtime state and logs
+/work/
+/ros2_rm_ws/work/
+*.log
+*.err
+*.pid
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Compiled artifacts; retain vendor SDK libraries required by the driver
+*.o
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+!ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/**/*.so
+!ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/**/*.so.*
+
+# Model weights, datasets and sensor recordings
+weights/
+checkpoints/
+datasets/
+recordings/
+rosbags/
+debug/
+debug_dir/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.engine
+*.bag
+*.db3
+*.mcap
+
+# Credentials and machine-local settings
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+credentials*.json
+secrets*.json
+config.local.*
+
+# Editor / operating-system files
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
