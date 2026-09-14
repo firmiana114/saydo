@@ -17,8 +17,8 @@ def pose_matrix(raw):
 
 
 def zero_reference_frames(tool, work):
-    if tool.get('tool_name') != 'Arm_Tip' or work.get('frame_name') != 'Base':
-        raise ValueError('Only zero-offset Arm_Tip in Base is supported; no frame changes are performed')
+    if tool.get('tool_name') not in {'Arm_Tip', 'he_ref'} or work.get('frame_name') != 'Base':
+        raise ValueError('Only zero-offset Arm_Tip or he_ref in Base is supported; no frame changes are performed')
     for frame in [tool, work]:
         pose = frame.get('pose')
         if not isinstance(pose, list) or len(pose) != 6 or any(v != 0 for v in pose):

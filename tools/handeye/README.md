@@ -25,7 +25,7 @@ cd /home/pc/saydo
 
 当前使用 8×11 内角点、用户提供的 0.03 m 格长、1280×720/15 fps 彩色流。格长仍需要实测确认。
 
-限定支持零偏移 `Arm_Tip` 工具和零变换 `Base` 工作坐标系，其他配置明确拒收，不自动切换。RealMan JSON 的位置从微米转换为米，RPY 从毫弧度转换为弧度，旋转为 `Rz(yaw) @ Ry(pitch) @ Rx(roll)`。
+限定支持零偏移 `Arm_Tip` 或 `he_ref` 工具和零变换 `Base` 工作坐标系，其他配置明确拒收，不自动切换。RealMan JSON 的位置从微米转换为米，RPY 从毫弧度转换为弧度，旋转为 `Rz(yaw) @ Ry(pitch) @ Rx(roll)`。
 
 原始图像畸变参数全部为零时才采用针孔模型；不将非零的 RealSense 畸变模型直接当作 OpenCV 畸变参数。PnP 使用 IPPE，保存正深度候选及重投影误差，保留平面歧义供审阅。
 
@@ -48,3 +48,5 @@ cd /home/pc/saydo
 2026-09-14 首组实机候选样本：88 个角点，重投影 RMS 0.5935 px，关节跨度 0.006°，法兰位置跨度 0.03454 mm。单组数据不能求手眼变换。
 
 依据：[RealMan 状态查询单位](https://develop.realman-robotics.com/robot/json/armState/)、[RPY 定义](https://develop.realman-robotics.com/robot/FQA/sdk/)、[OpenCV PnP 与手眼标定](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html)。
+
+2026-09-14 已读回用户创建的 `he_ref`：工具位姿六项为零，负载约 1.032676 kg、质心 (-19, 6, 110) mm。这些是控制器保存的辨识值，不是实称校核结果。负载和质心非零不代表工具位姿存在偏移。采集程序仅核对当前工具，不创建、不选择或修改工具；使用前应在示教器选中 `he_ref` 并读回确认。

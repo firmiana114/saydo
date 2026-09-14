@@ -26,6 +26,23 @@ class GeometryChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             zero_reference_frames({'tool_name': 'Arm_Tip', 'pose': [0, 0, 200000, 0, 0, 0]}, {'frame_name': 'Base', 'pose': [0]*6})
 
+    def test_he_ref_with_nonzero_payload_and_com_is_flange_reference(self):
+        zero_reference_frames(
+            {'tool_name': 'he_ref', 'pose': [0]*6, 'payload': 1032.6759, 'position': [-19000, 6000, 110000]},
+            {'frame_name': 'Base', 'pose': [0]*6})
+
+    def test_he_ref_still_rejects_tool_offsets(self):
+        for pose in ([1000, 0, 0, 0, 0, 0], [0, 0, 0, 0, 100, 0]):
+            with self.subTest(pose=pose), self.assertRaises(ValueError):
+                zero_reference_frames({'tool_name': 'he_ref', 'pose': pose}, {'frame_name': 'Base', 'pose': [0]*6})
+
+    def test_unknown_tool_or_nonzero_work_frame_is_rejected(self):
+        for tool, work in [
+            ({'tool_name': 'other', 'pose': [0]*6}, {'frame_name': 'Base', 'pose': [0]*6}),
+            ({'tool_name': 'he_ref', 'pose': [0]*6}, {'frame_name': 'Base', 'pose': [0, 0, 1000, 0, 0, 0]})]:
+            with self.subTest(tool=tool, work=work), self.assertRaises(ValueError):
+                zero_reference_frames(tool, work)
+
     def test_error_blocks_acceptance(self):
         states = [{'err': [4116], 'joint': [0]*7, 'pose': [0]*6}]*3
         with self.assertRaises(ValueError):
