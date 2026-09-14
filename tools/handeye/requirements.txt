@@ -1,0 +1,4 @@
+# Versions verified in MSI .venv on 2026-09-14
+pyrealsense2==2.58.4.10922
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
