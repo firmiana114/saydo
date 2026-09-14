@@ -15,9 +15,29 @@
 - `ros2_rm_ws/`：睿尔曼 ROS 2 工作区，包括源码、原有编译产物、MSI 的 Jazzy 编译产物和验证记录。
 - 已验证硬件：RM75-BI，7 自由度，三代控制器，IP `192.168.1.19`。
 - 已完成：MSI 上的 ROS 2 Jazzy 环境、驱动连接，以及全部七关节的小幅往返验证。
-- 待完成：D435i 在 MSI 上的采集验证、FoundationPose 集成、LLM/Agent 与语音控制。
+- 已连接：RealSense D435i 相机接入 MSI，知行 CTAG2F90D 夹爪接到机械臂末端；相机刚性固定在末端、随夹爪运动。
+- 待完成：D435i 在 MSI 上的采集验证、夹爪控制验证、相机与机械臂及夹爪抓取中心的标定、FoundationPose 集成、LLM/Agent 与语音控制。
 
 详细环境与测试结果见 `ros2_rm_ws/HANDOFF_REPORT.md`。
+
+## 相机、夹爪与官方资料
+
+以下安装情况由用户于 2026-09-14 确认；连接到设备不代表已完成采集、运动或标定验证。
+
+| 设备 | 型号 | 安装与验证状态 |
+| --- | --- | --- |
+| 相机 | Intel RealSense D435i | 已接入本机，系统已识别设备；刚性固定在机械臂末端夹爪旁，随末端运动。彩色与深度图像采集尚未验证。 |
+| 夹爪 | 知行机器人科技（苏州）有限公司 CTAG2F90D，官网写作 CTAG2F90-D | 已连接机械臂末端；开合控制、状态反馈及实际抓取中心位置尚未验证。 |
+
+该安装方式为眼在手上（Eye-in-Hand）：相机随机械臂末端运动。后续需进行手眼标定（Hand–Eye Calibration）：测出相机与末端的固定位置及朝向关系；另需标定工具中心点（Tool Center Point，TCP）：确定夹爪实际用于抓取的操作点。现场已有普通黑白棋盘格标定板，横纵格数及单格实际边长未确认。
+
+| 设备 | 官方资料 | 用途 |
+| --- | --- | --- |
+| D435i | [产品页面](https://www.realsenseai.com/products/depth-camera-d435i/)；[D435i 开发说明](https://github.com/realsenseai/librealsense/blob/master/doc/d435i.md) | 查询设备信息和开发注意事项。 |
+| D435i | [机器人操作系统第二代（ROS 2）驱动说明](https://github.com/realsenseai/realsense-ros) | 将相机接入项目使用的软件通信框架，查阅采集、深度对齐及坐标定义。 |
+| D435i | [成像参数与坐标换算说明](https://github.com/realsenseai/librealsense/wiki/Projection-in-RealSense-SDK-2.0) | 查询镜头参数、距离单位及图像点到空间点的换算。 |
+| CTAG2F90-D | [产品与尺寸图、三维模型入口](https://www.changingtek.com/diandong/147) | 核对夹爪型号、规格和安装几何尺寸。 |
+| CTAG2F90-D | [官方资料中心](https://www.changingtek.com/service) | 在“产品使用手册”中查找《CRT 睿尔曼+知行协作手操作说明》；尺寸图与三维模型选择 CTAG2F90-D。 |
 
 ## 启动机械臂驱动
 
