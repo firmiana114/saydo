@@ -104,6 +104,8 @@ work/handeye_solver_venv/bin/python tools/handeye/solve.py --session he_ref_cali
 - 计算逐组位置/朝向一致性、全局重投影误差，以及仅使用求解集的留一法敏感性。
 - 输出为 `work/handeye/<session>/solutions/<unique_run>/result.json`，不覆盖旧结果。原始数据哈希保存在结果中。
 
-单帧 PnP 的重投影误差与手眼变换的空间误差不是同一个指标。固定棋盘的一致性也不代表经过独立测量的绝对定位精度。本项目尚未给出抓取任务的允许误差，结果保持 `acceptance_status=not_decided_no_task_tolerance_or_absolute_reference`、`deployed=false`。
+单帧 PnP 的重投影误差与手眼变换的空间误差不是同一个指标。固定棋盘的一致性也不代表经过独立测量的绝对定位精度。求解器新生成的结果默认保持 `acceptance_status=not_decided_no_task_tolerance_or_absolute_reference`、`deployed=false`，接受状态按每次具体结果单独记录。
 
 2026-09-14 初次离线结果：20 组求解、5 组独立验证。验证位置 RMS 6.859 mm、最大 8.911 mm；朝向 RMS 0.319°、最大 0.494°。求解集留一法引起的结果变化最大为 1.835 mm / 0.094°。这些是诊断结果，未据此启用机器人抓取。
+
+2026-09-14 用户明确将 `solutions/172825_bd2eabc9/result.json` 对应的这组标定标记为可用。该结果已更新为 `acceptance_status=user_accepted_usable`，并记录用户确认来源和时间；矩阵和误差未改动，`deployed=false`。这一接受决定仅适用于该组结果，不自动接受后续重新求解的结果。
