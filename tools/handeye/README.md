@@ -78,3 +78,32 @@ cd /home/pc/saydo
 2026-09-14 已读回用户创建的 `he_ref`：工具位姿六项为零，负载约 1.032676 kg、质心 (-19, 6, 110) mm。这些是控制器保存的辨识值，不是实称校核结果。负载和质心非零不代表工具位姿存在偏移。采集程序仅核对当前工具，不创建、不选择或修改工具；使用前应在示教器选中 `he_ref` 并读回确认。
 
 2026-09-14 单次自动采集验证：19 项测试通过；实际只采集一次并退出，新增验证候选 `171206_e8bee9d1`，RMS 0.5103 px。数据分组为求解候选 20 组、独立验证候选 1/5 组，尚未求解手眼变换。
+
+## 离线求解与独立验证
+
+完成分组计划中的独立验证采集后，可执行一次离线求解。脚本不连接相机或机器人，不修改原始样本/分组，不自动发布 TF，也不写入控制器。
+
+当前采集环境的 OpenCV 5.0.0 Python wheel 未暴露 `calibrateHandEye`，因此使用独立的求解环境：
+
+```bash
+cd /home/pc/saydo
+python3 -m venv work/handeye_solver_venv
+work/handeye_solver_venv/bin/python -m pip install -r tools/handeye/requirements-solve.txt
+work/handeye_solver_venv/bin/python -m unittest discover -s tools/handeye -p test_solve.py -v
+work/handeye_solver_venv/bin/python tools/handeye/solve.py --session he_ref_calibration_20260914
+```
+
+已配置好环境时，只需运行最后一条命令。采集仍使用原有 `.venv`。
+
+求解规则：
+
+- 读取冻结的 `dataset_split.json`，只使用 `training_candidate_ids` 求解；验证集不参与拟合、算法选择或调参。
+- 当前预先固定使用 PARK 方法，输出 `flange_T_color_optical_camera`（米制）。反向变换单独保存。
+- 检查原始 PNG 的 SHA-256、图像尺寸、角点与相机参数、机器人配置，以及实际状态到法兰变换的对应关系。
+- 使用求解集确定固定棋盘的基座参考位姿；验证集只计算相对该参考的误差，不重新估计自己的参考中心。
+- 计算逐组位置/朝向一致性、全局重投影误差，以及仅使用求解集的留一法敏感性。
+- 输出为 `work/handeye/<session>/solutions/<unique_run>/result.json`，不覆盖旧结果。原始数据哈希保存在结果中。
+
+单帧 PnP 的重投影误差与手眼变换的空间误差不是同一个指标。固定棋盘的一致性也不代表经过独立测量的绝对定位精度。本项目尚未给出抓取任务的允许误差，结果保持 `acceptance_status=not_decided_no_task_tolerance_or_absolute_reference`、`deployed=false`。
+
+2026-09-14 初次离线结果：20 组求解、5 组独立验证。验证位置 RMS 6.859 mm、最大 8.911 mm；朝向 RMS 0.319°、最大 0.494°。求解集留一法引起的结果变化最大为 1.835 mm / 0.094°。这些是诊断结果，未据此启用机器人抓取。
