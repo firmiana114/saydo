@@ -1,6 +1,26 @@
 # FoundationPose：环境、胶带重建与离线诊断
 
-## 当前结果（2026-09-15）
+## 最新：set3 重建结果（2026-09-15）
+
+`tape_20260915_set3` 的 21 组候选、147 个原始文件哈希已检查。使用独立提示配置 `config/foundationpose/tape_20260915_set3_prompts.json`，修正了人手、桌面阴影和纸芯掩码；最终分割为 `work/object_scan/tape_20260915_set3/segmentation_final/`。最大连通区域清理去除了 1719 个孤立背景像素，原始采集未修改。
+
+18 组拟合、3 组留出，参考视角使用目标深度较多的 `140609_a4cda5d8`，避免首帧少量异常深度作为参考。完整训练和纹理生成正常退出，结果在 `work/foundationpose_runs/tape_20260915_set3/nerf_v1/`；几何 6261 顶点、12486 面，外形约 106.5×91.5×59.1 mm。
+
+**结果不合格**：模型明显分裂，未形成可靠完整胶带。原始 register 的三组留出 IoU 为 0.188、0.171、0.166；没有根据这些结果调整算法或重新拟合。不用于实时跟踪、抓取或机器人控制。组数增加没有解决胶带本体深度缺失，后续应先诊断采集质量。
+
+```bash
+source tools/foundationpose/runtime_env.sh
+python tools/foundationpose/reconstruct_scan.py \
+  --session tape_20260915_set3 \
+  --segmentation work/object_scan/tape_20260915_set3/segmentation_final \
+  --reference-view 140609_a4cda5d8 \
+  --heldout 140501_d6fad679 141003_6769cd1e 141813_565e0bbd \
+  --steps 1000 --texture --include-rgb-only-rays
+```
+
+重建默认不再套用旧会话的留出 ID；须显式传入本会话的 IDs。会话错配、不存在的留出 ID 和非拟合参考视角会拒绝处理；前两种拒绝路径已测试。
+
+## 首组数据与环境结果（2026-09-15）
 
 - MSI 独立 GPU 环境和 C++/CUDA 扩展已部署，模型权重可加载。GPU 矩阵、PyTorch3D KNN、NVDiffRast 光栅化、Kaolin 八叉树、编码器前后向、八叉树光线追踪、Warp 深度处理及 EGL 渲染均已运行。
 - 胶带 13 个视角完成 SAM 分割与目视检查。11 组用于官方神经重建并生成纹理草模，另 2 组用于离线 register 和同帧 track_one 检查。
@@ -72,6 +92,7 @@ python tools/foundationpose/segment_views.py
 # 重建：默认新建运行目录
 python tools/foundationpose/reconstruct_scan.py \
   --segmentation work/object_scan/tape_20260915/segmentation_sam_v3 \
+  --heldout 102616_65d32a20 102905_faba178f \
   --steps 1000 --texture --include-rgb-only-rays
 ```
 

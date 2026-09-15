@@ -114,7 +114,7 @@ def main():
         overlay[silhouette] = (.65 * overlay[silhouette] + .35 * np.array([255, 0, 0])).astype(np.uint8)
         cv2.imwrite(str(out / (sid + '.jpg')), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
         print(json.dumps(row), flush=True)
-    report = {'results': results, 'scope': 'two held-out still images; track_one reused each identical image',
+    report = {'results': results, 'scope': f'{len(results)} held-out still images; track_one reused each identical image',
               'independent_evaluation': args.rerank_topk == 0,
               'development_note': 'Reranking was added after inspecting baseline failures; fresh views are required for independent evaluation' if args.rerank_topk else None,
               'continuous_motion_tracking_verified': False, 'absolute_pose_accuracy_verified': False,
