@@ -68,7 +68,7 @@ def main():
     args = parser.parse_args()
     if not args.session or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.session):
         parser.error('Invalid session name')
-    if args.width < 160 or args.width > 1280 or args.steps < 1:
+    if args.width < 160 or args.width > 1280 or args.steps < 10:
         parser.error('Invalid image width or training step count')
     session = ROOT / 'work/object_scan' / args.session
     K, rows = load_views(session, args.segmentation, set(args.heldout), args.width)
