@@ -17,11 +17,12 @@ def main():
     parser.add_argument('--run', required=True, type=Path)
     parser.add_argument('--segmentation', required=True, type=Path)
     parser.add_argument('--session', default='tape_20260915')
+    parser.add_argument('--rerank-topk', type=int, default=0)
     args = parser.parse_args()
     run = json.loads((args.run / 'run.json').read_text())
     if run['status'] not in ('geometry_generated_unvalidated', 'textured_mesh_generated_unvalidated', 'geometry_generated_texture_failed'):
         raise ValueError('No completed geometry to evaluate')
-    out = args.run / 'heldout_evaluation'
+    out = args.run / ('heldout_evaluation' if args.rerank_topk == 0 else f'development_rerank_top{args.rerank_topk}')
     out.mkdir(exist_ok=False)
     runtime = ROOT / 'work/foundationpose_runtime'
     sys.path[:0] = [str(runtime), str(runtime / 'bundlesdf'), str(runtime / 'bundlesdf/mycuda'), str(runtime / 'mycpp/build')]
@@ -66,6 +67,26 @@ def main():
         seconds = time.perf_counter() - started
         if not np.isfinite(pose).all() or est.pose_last is None:
             raise ValueError('Registration did not initialize a finite tracked pose')
+        candidates = []
+        selected_rank = 1
+        if args.rerank_topk:
+            count = min(args.rerank_topk, len(est.poses))
+            mesh_poses = est.poses[:count] @ est.get_tf_to_centered_mesh()
+            _, candidate_depths, _ = nvdiffrast_render(K=K, H=rgb.shape[0], W=rgb.shape[1], mesh=mesh, ob_in_cams=mesh_poses, glctx=glctx)
+            candidate_depths = candidate_depths.detach().cpu().numpy()
+            for rank, rendered in enumerate(candidate_depths):
+                visible = rendered > 0
+                overlap = visible & mask & (depth > .1) & (depth < 2)
+                candidate_iou = float((visible & mask).sum() / max(1, (visible | mask).sum()))
+                candidate_error = float(np.median(np.abs(rendered[overlap] - depth[overlap])) * 1000) if overlap.any() else None
+                candidates.append({'neural_rank': rank + 1, 'silhouette_iou': candidate_iou, 'overlap_depth_pixels': int(overlap.sum()), 'median_depth_residual_mm': candidate_error})
+            eligible = [i for i, row in enumerate(candidates) if row['overlap_depth_pixels'] >= 100]
+            if not eligible:
+                raise ValueError('No candidate has enough overlapping target depth')
+            chosen = max(eligible, key=lambda i: (candidates[i]['silhouette_iou'], -candidates[i]['median_depth_residual_mm']))
+            selected_rank = chosen + 1
+            pose = mesh_poses[chosen].detach().cpu().numpy()
+            est.pose_last = est.poses[chosen].clone()
         _, rendered_depth, _ = nvdiffrast_render(K=K, H=rgb.shape[0], W=rgb.shape[1], mesh=mesh,
                                                ob_in_cams=torch.as_tensor(pose[None], dtype=torch.float32, device='cuda'), glctx=glctx)
         rd = rendered_depth[0].detach().cpu().numpy()
@@ -78,10 +99,12 @@ def main():
         if not np.isfinite(tracking).all():
             raise ValueError('Nonfinite same-frame tracking pose')
         row = {'sample_id': sid, 'registration_seconds_including_first_use_compilation': seconds,
+               'selected_neural_rank': selected_rank, 'candidate_diagnostics': candidates,
                'silhouette_iou': float(iou), 'overlap_depth_pixels': int(overlap.sum()),
                'median_depth_residual_mm': float(np.median(residual)) if len(residual) else None,
                'p95_depth_residual_mm': float(np.percentile(residual, 95)) if len(residual) else None,
                'translation_difference_from_handeye_reference_mm': float(np.linalg.norm(pose[:3, 3] - reference[:3, 3]) * 1000),
+               'bbox_center_difference_from_handeye_reference_mm': float(np.linalg.norm((pose @ np.r_[mesh.bounds.mean(axis=0), 1])[:3] - (reference @ np.r_[mesh.bounds.mean(axis=0), 1])[:3]) * 1000),
                'same_frame_tracking_translation_change_mm': float(np.linalg.norm(tracking[:3, 3] - pose[:3, 3]) * 1000),
                'camera_T_object': pose.tolist(), 'same_frame_track_camera_T_object': tracking.tolist()}
         results.append(row)
@@ -90,6 +113,8 @@ def main():
         cv2.imwrite(str(out / (sid + '.jpg')), cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
         print(json.dumps(row), flush=True)
     report = {'results': results, 'scope': 'two held-out still images; track_one reused each identical image',
+              'independent_evaluation': args.rerank_topk == 0,
+              'development_note': 'Reranking was added after inspecting baseline failures; fresh views are required for independent evaluation' if args.rerank_topk else None,
               'continuous_motion_tracking_verified': False, 'absolute_pose_accuracy_verified': False,
               'pose_accepted_for_robot_control': False, 'mesh_path': str(mesh_path)}
     (out / 'evaluation.json').write_text(json.dumps(report, indent=2) + '\n')
