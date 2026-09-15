@@ -1,6 +1,6 @@
 {
   "session": "tape_20260915",
-  "method": "RGB proposals and manual prompt revision after reviewing SAM v1; exclude background hole shadow in view 101724 and table shadow in view 103406",
+  "method": "RGB proposals and manual prompt revision after reviewing SAM v1; exclude background hole shadow in view 101724 and table shadow in view 103406; add positive inner-cardboard points after v2 review",
   "views": {
     "101121_b43524bc": {
       "box_xyxy": [
@@ -34,6 +34,14 @@
         [
           800,
           219
+        ],
+        [
+          800,
+          450
+        ],
+        [
+          710,
+          400
         ]
       ],
       "negative_points": [
