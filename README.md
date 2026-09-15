@@ -20,6 +20,14 @@
 
 详细环境与测试结果见 `ros2_rm_ws/HANDOFF_REPORT.md`。
 
+## FoundationPose 源码与物体采集
+
+官方源码已按固定版本接入 `third_party/FoundationPose/`，含多视角神经重建代码。版本校验、数据衔接和环境准备边界见 [FoundationPose 接入说明](tools/foundationpose/README.md)。当前完成源码接入与 [单视角 RGB-D 采集](tools/object_scan/README.md)，GPU 依赖、权重、胶带重建与位姿跟踪尚未跑通。
+
+```bash
+python3 tools/foundationpose/check_source.py
+```
+
 ## 相机、夹爪与官方资料
 
 以下安装情况由用户于 2026-09-14 确认；连接到设备不代表已完成采集、运动或标定验证。

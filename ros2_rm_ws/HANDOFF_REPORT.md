@@ -138,3 +138,9 @@ cd /home/pc/saydo/ros2_rm_ws
 MSI 新增采集依赖 PyYAML 6.0.3，4 项几何/深度测试通过。`work/object_scan/tape_20260915/views/101121_b43524bc/` 为首个真实候选视角：1280×720，7 个文件哈希、形状、深度单位和位姿互逆回读通过；整幅图深度有效率 95.57%，不是目标胶带区域指标。相同姿态再次运行返回 duplicate，未再次占用相机。现在有 1 个候选视角，仍需现场逐次采集更多视角。
 
 FoundationPose 官方 `bundlesdf/run_nerf.py` 支持带相机位姿的多视角神经重建。后续仍需逐视角目标 mask（内孔为背景）、目标深度/配准质量检查、物体参考系选取、重建环境与模型权重部署、网格重建和 register/track_one 验证。目前只有采集入口完成，未生成胶带模型、未运行 FoundationPose、未发布 TF 或启用抓取。MSI RTX 4060 Laptop 8 GB、驱动 595.84；本次检查未发现 Docker、Conda、nvcc 或 torch，未安装重建依赖。原有未提交 `tools/camera_monitor/` 保留。
+
+## 2026-09-15：接入 FoundationPose 官方源码
+
+用户明确要求接入源码。完整上游快照位于 `../third_party/FoundationPose/`，固定提交 `a1b694b83e633c2cb6115b9063d940a687759392`，含 54 个原文件及许可证；未修改上游代码。来源及 SHA-256 清单位于 `../third_party/FoundationPose.upstream.json`，项目根目录运行 `python3 tools/foundationpose/check_source.py` 校验。说明见 `../tools/foundationpose/README.md`。
+
+本次接入包含 estimater/register/track_one 与 bundlesdf/run_nerf 神经重建入口，不包括 GPU 环境、权重安装或胶带重建运行。当前无 CAD 路线还需 bundlesdf/mycuda 和 Kaolin，不能把只构建 mycpp 的 build_all_conda.sh 当作完整重建环境。相机采集环境、既有数据、机器人参数和未提交 camera_monitor 未修改。
