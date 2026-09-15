@@ -122,3 +122,9 @@ cd /home/pc/saydo/ros2_rm_ws
 用户明确要求将 `172825_bd2eabc9` 标记为可用。MSI 上该次 `result.json`、`calibration_progress.json`、本地报告和待办清单均已同步状态：`acceptance_status=user_accepted_usable`，`acceptance.source=explicit_user_confirmation`，确认时间为 `2026-09-14T17:48:11.546354+08:00`。
 
 变换矩阵、20/5 数据分组和误差统计完整保留，`deployed=false`。原结果备份为同目录 `result.before_user_acceptance.json`。此次仅记录接受状态，没有重新求解、部署 TF、修改控制器或移动机械臂。该决定仅适用于此组标定，不更改求解器对未来结果的默认待确认状态。
+
+## 2026-09-15：统一保存手眼与抓取工具配置
+
+参数入口为项目根目录 `config/calibration/`，使用方法与来源见 [标定配置说明](../config/calibration/README.md)。`handeye.yaml` 精确保留已接受的 `172825_bd2eabc9` 矩阵及验证统计；`tool_grip_tcp.yaml` 保存当前控制器读回的 Z=0.2225 m、零旋转工具位姿，负载约 1.060534 kg、质心读回值 (-17,-14,86) mm。TCP 为手动名义尺寸偏移，几何误差未验证；夹爪逻辑位置 500 仅为用户报告的负载辨识条件，本次实际位置读回为 499。
+
+两份 YAML 的 SI 单位换算、矩阵合法性、来源哈希及与源数据的一致性已检查。原始手眼数据未修改，控制器快照保存在被忽略的 `work/calibration/`。本次只保存配置和说明，未实现运行时自动检查、未接入 FoundationPose、未发布 TF、未写入机器人或发送运动指令。后续使用 `grip_tcp` 反馈时，须先右乘 `inverse(flange_T_grip_tcp)` 还原法兰位姿。
