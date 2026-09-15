@@ -57,3 +57,5 @@ FoundationPose 自带 `bundlesdf/run_nerf.py` 的 `run_neural_object_field` 接�
 ```bash
 .venv/bin/python -m unittest discover -s tools/object_scan -p 'test_*.py' -v
 ```
+
+2026-09-15 MSI 实机验证：4 项几何/深度测试通过；首个视角 `101121_b43524bc` 保存成功，7 个数据文件哈希及回读检查通过，整幅图深度有效率 95.57%。重复运行在打开相机前跳过同一姿态，没有新增候选。当前为 1 个候选视角；逐视角分割、重建环境及 FoundationPose 推理尚未完成。

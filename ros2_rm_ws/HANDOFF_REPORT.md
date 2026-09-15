@@ -128,3 +128,13 @@ cd /home/pc/saydo/ros2_rm_ws
 参数入口为项目根目录 `config/calibration/`，使用方法与来源见 [标定配置说明](../config/calibration/README.md)。`handeye.yaml` 精确保留已接受的 `172825_bd2eabc9` 矩阵及验证统计；`tool_grip_tcp.yaml` 保存当前控制器读回的 Z=0.2225 m、零旋转工具位姿，负载约 1.060534 kg、质心读回值 (-17,-14,86) mm。TCP 为手动名义尺寸偏移，几何误差未验证；夹爪逻辑位置 500 仅为用户报告的负载辨识条件，本次实际位置读回为 499。
 
 两份 YAML 的 SI 单位换算、矩阵合法性、来源哈希及与源数据的一致性已检查。原始手眼数据未修改，控制器快照保存在被忽略的 `work/calibration/`。本次只保存配置和说明，未实现运行时自动检查、未接入 FoundationPose、未发布 TF、未写入机器人或发送运动指令。后续使用 `grip_tcp` 反馈时，须先右乘 `inverse(flange_T_grip_tcp)` 还原法兰位姿。
+
+## 2026-09-15：胶带无 CAD 建模的单视角采集入口
+
+用户选择从照片建模，并明确要求每次脚本只采一个视角，由现场手动拖动机械臂改变相机视角。新增 `../tools/object_scan/`；项目根目录运行 `.venv/bin/python tools/object_scan/capture_view.py --session tape_20260915`。胶带和机械臂基座须保持固定，采集结束不自动恢复相机预览。它复用已有只读 Robot 查询和静止检查，不发送运动或夹爪命令。
+
+入口校验已接受手眼矩阵及来源哈希、当前完整 grip_tcp 工具/负载、零偏移 Base、相机序列号与内参。先按 TCP 逆变换还原法兰，再求 base_T_camera；静止采集原始彩色、对齐深度原值/毫米 PNG/米制 NPY、K、时间戳、配置与数据哈希。会话冻结标定配置/相机参数；前后两次去重，重复或拒收只退出、不重试。
+
+MSI 新增采集依赖 PyYAML 6.0.3，4 项几何/深度测试通过。`work/object_scan/tape_20260915/views/101121_b43524bc/` 为首个真实候选视角：1280×720，7 个文件哈希、形状、深度单位和位姿互逆回读通过；整幅图深度有效率 95.57%，不是目标胶带区域指标。相同姿态再次运行返回 duplicate，未再次占用相机。现在有 1 个候选视角，仍需现场逐次采集更多视角。
+
+FoundationPose 官方 `bundlesdf/run_nerf.py` 支持带相机位姿的多视角神经重建。后续仍需逐视角目标 mask（内孔为背景）、目标深度/配准质量检查、物体参考系选取、重建环境与模型权重部署、网格重建和 register/track_one 验证。目前只有采集入口完成，未生成胶带模型、未运行 FoundationPose、未发布 TF 或启用抓取。MSI RTX 4060 Laptop 8 GB、驱动 595.84；本次检查未发现 Docker、Conda、nvcc 或 torch，未安装重建依赖。原有未提交 `tools/camera_monitor/` 保留。
