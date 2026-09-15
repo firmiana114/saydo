@@ -1,6 +1,6 @@
 {
   "session": "tape_20260915",
-  "method": "RGB color bbox proposal, visually reviewed foreground points; manually selected visible background-hole negatives",
+  "method": "RGB proposals and manual prompt revision after reviewing SAM v1; exclude background hole shadow in view 101724 and table shadow in view 103406",
   "views": {
     "101121_b43524bc": {
       "box_xyxy": [
@@ -40,6 +40,14 @@
         [
           768,
           336
+        ],
+        [
+          850,
+          335
+        ],
+        [
+          790,
+          370
         ]
       ],
       "color_sha256": "928d943b107751ab5a1dea73f5f966fe6eec60d49b55d87e6fb29dec4b430bbf"
@@ -209,10 +217,10 @@
     },
     "103406_df841667": {
       "box_xyxy": [
-        424,
-        0,
-        878,
-        383
+        490,
+        90,
+        875,
+        380
       ],
       "positive_points": [
         [
@@ -220,7 +228,24 @@
           204
         ]
       ],
-      "negative_points": [],
+      "negative_points": [
+        [
+          650,
+          70
+        ],
+        [
+          700,
+          90
+        ],
+        [
+          550,
+          100
+        ],
+        [
+          500,
+          170
+        ]
+      ],
       "color_sha256": "78e8c9ab514a55b62fa6fe124ca4b2460533b95a030cf3454a2110239476a3b4"
     },
     "103446_96988c7e": {
