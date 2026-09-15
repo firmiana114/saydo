@@ -19,6 +19,7 @@ import pyrealsense2 as rs
 import yaml
 
 from geometry_checks import camera_pose, depth_millimeters, duplicate, validate_configs
+from depth_preview import export_previews
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools' / 'handeye'))
@@ -198,10 +199,12 @@ def run(args, session, report):
         report['base_T_color_optical_camera'] = pose.tolist()
         report['color_optical_camera_T_base'] = np.linalg.inv(pose).tolist()
         out = session / 'views' / report['sample_id']
-        for name, data in [('color.png', bgr), ('depth_raw.png', raw), ('depth_mm.png', depth_mm), ('preview.jpg', bgr)]:
+        for name, data in [('color.png', bgr), ('depth_raw.png', raw), ('depth_mm.png', depth_mm)]:
             if not cv2.imwrite(str(out / name), data):
                 raise OSError('Image write failed: ' + name)
-        np.save(out / 'depth_m.npy', raw.astype(np.float32) * scale)
+        depth_m = raw.astype(np.float32) * scale
+        np.save(out / 'depth_m.npy', depth_m)
+        report['depth_visualization'] = export_previews(out, bgr, depth_m)
         np.savetxt(out / 'K.txt', K)
         np.savetxt(out / 'base_T_camera.txt', pose)
         report['files_sha256'] = {p.name: sha(p) for p in out.iterdir() if p.is_file()}

@@ -30,7 +30,20 @@ cd /home/pc/saydo
 - `K.txt`：本次视频流真实内参。
 - `base_T_camera.txt`：彩色光学相机到机械臂基座的 4×4 变换，平移单位米。
 - `sample.json`：原始机器人只读回复、TCP/法兰/相机位姿、时间戳、质量数据和文件 SHA-256。
-- `preview.jpg`：人工检查用画面。
+- `depth_color.png`：TURBO 彩色深度预览，固定 0.15～0.80 米色阶；零、负数、非有限值显示黑色，范围外正深度截到色阶端点。这是 8 位三通道显示图，不用于数值建模。
+- `preview.jpg`：左侧原始彩色图、右侧上述深度预览，尺寸为彩色图宽度的两倍；不叠加分割轮廓。
+
+数值深度文件保持原格式；`sample.json.depth_visualization` 记录配色、范围与布局。采集与历史重导共用 `depth_preview.py`。
+
+### 重导历史预览
+
+```bash
+.venv/bin/python tools/object_scan/reexport_previews.py
+# 也可只选择指定会话：
+.venv/bin/python tools/object_scan/reexport_previews.py --sessions tape_20260915_zhibei
+```
+
+默认处理 `work/object_scan` 下所有含 `session.json` 的会话，仅更新 `candidate` 视角。工具取得与采集相同的会话锁，先校验已有文件哈希，将旧 `preview.jpg`、`sample.json` 和已有 `depth_color.png` 备份至该会话 `preview_backups/<时间>/<视角>/`，再写入预览并更新 `sample.json` 的对应哈希。`color.png`、三份数值深度、内参、位姿保持字节不变。备份目录的 `reexport.json` 记录处理范围；既有归档 ZIP 不会被改写。
 
 会话冻结两份标定配置的 SHA-256 和相机参数。每次校验原始标定记录哈希、当前完整工具配置、零偏移 Base、相机序列号和内参。当前 TCP 反馈通过完整逆矩阵还原法兰，不直接减基座 Z。
 
