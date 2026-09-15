@@ -1,0 +1,260 @@
+{
+  "session": "tape_20260915",
+  "method": "RGB color bbox proposal, visually reviewed foreground points; manually selected visible background-hole negatives",
+  "views": {
+    "101121_b43524bc": {
+      "box_xyxy": [
+        455,
+        189,
+        810,
+        595
+      ],
+      "positive_points": [
+        [
+          615,
+          258
+        ]
+      ],
+      "negative_points": [
+        [
+          621,
+          382
+        ]
+      ],
+      "color_sha256": "7f8e94171477534d9f18da11b539840b8d8407b3004399ae2c1206e0963c7b6e"
+    },
+    "101724_58f43ff5": {
+      "box_xyxy": [
+        598,
+        125,
+        1012,
+        548
+      ],
+      "positive_points": [
+        [
+          800,
+          219
+        ]
+      ],
+      "negative_points": [
+        [
+          768,
+          336
+        ]
+      ],
+      "color_sha256": "928d943b107751ab5a1dea73f5f966fe6eec60d49b55d87e6fb29dec4b430bbf"
+    },
+    "101840_da793717": {
+      "box_xyxy": [
+        478,
+        6,
+        1034,
+        550
+      ],
+      "positive_points": [
+        [
+          704,
+          104
+        ]
+      ],
+      "negative_points": [
+        [
+          747,
+          267
+        ]
+      ],
+      "color_sha256": "85433489db899983f7af83ca0c74d77eab4e93c6fea1d79fa68908dcbe63117a"
+    },
+    "102144_d309c83c": {
+      "box_xyxy": [
+        754,
+        39,
+        1240,
+        497
+      ],
+      "positive_points": [
+        [
+          1161,
+          362
+        ]
+      ],
+      "negative_points": [
+        [
+          973,
+          235
+        ]
+      ],
+      "color_sha256": "9e1e915f22f648023fcedd126e84cf23b017329578ebc80016fe1957d22b3236"
+    },
+    "102318_83578c16": {
+      "box_xyxy": [
+        505,
+        242,
+        876,
+        598
+      ],
+      "positive_points": [
+        [
+          676,
+          516
+        ]
+      ],
+      "negative_points": [
+        [
+          680,
+          419
+        ]
+      ],
+      "color_sha256": "ab59a6a2ac45c982ef9780c0058c2a6093709be886ffd55542e7721facdd6fe1"
+    },
+    "102616_65d32a20": {
+      "box_xyxy": [
+        676,
+        233,
+        1026,
+        572
+      ],
+      "positive_points": [
+        [
+          780,
+          475
+        ]
+      ],
+      "negative_points": [
+        [
+          816,
+          384
+        ]
+      ],
+      "color_sha256": "d0b43162b6c2376e5b1c008b8bf64b9e206aa78c9b0ae76393267921098ff53d"
+    },
+    "102725_ce0d985b": {
+      "box_xyxy": [
+        518,
+        266,
+        960,
+        719
+      ],
+      "positive_points": [
+        [
+          734,
+          631
+        ]
+      ],
+      "negative_points": [
+        [
+          715,
+          488
+        ]
+      ],
+      "color_sha256": "fcef891f04eedfbcda663b364bdfbede1995ef8cb9afb703956a85336725bf2b"
+    },
+    "102905_faba178f": {
+      "box_xyxy": [
+        518,
+        162,
+        987,
+        627
+      ],
+      "positive_points": [
+        [
+          773,
+          239
+        ]
+      ],
+      "negative_points": [
+        [
+          733,
+          376
+        ]
+      ],
+      "color_sha256": "52a67f45676914b7ca14f88f34929766e3916fac5bfc08c779d2e50c92b12ed4"
+    },
+    "103005_e9a63dcc": {
+      "box_xyxy": [
+        494,
+        118,
+        866,
+        498
+      ],
+      "positive_points": [
+        [
+          728,
+          375
+        ]
+      ],
+      "negative_points": [
+        [
+          685,
+          288
+        ]
+      ],
+      "color_sha256": "81e6ccc39a69565887c22ae838a202d975151260d496b99d429ba209f4f78d20"
+    },
+    "103114_baaaa443": {
+      "box_xyxy": [
+        545,
+        368,
+        920,
+        688
+      ],
+      "positive_points": [
+        [
+          718,
+          580
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "6af48cfef9604b276f7ff84220e483364bc718b0b0de0de10053b15af45887d0"
+    },
+    "103406_df841667": {
+      "box_xyxy": [
+        424,
+        0,
+        878,
+        383
+      ],
+      "positive_points": [
+        [
+          730,
+          204
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "78e8c9ab514a55b62fa6fe124ca4b2460533b95a030cf3454a2110239476a3b4"
+    },
+    "103446_96988c7e": {
+      "box_xyxy": [
+        552,
+        104,
+        990,
+        475
+      ],
+      "positive_points": [
+        [
+          837,
+          286
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "79290f48c9263dfc577e2409df51c4bab42a814e774b518835d24544770d8ed1"
+    },
+    "103555_a688f0c2": {
+      "box_xyxy": [
+        306,
+        90,
+        976,
+        538
+      ],
+      "positive_points": [
+        [
+          678,
+          267
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "bb0f1bfdc479f04c90cd67332cebc8efca4410595ba9868b83057cf56885eecc"
+    }
+  },
+  "mask_acceptance": "pending visual inspection of actual SAM outputs"
+}

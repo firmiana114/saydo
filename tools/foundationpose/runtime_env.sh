@@ -7,6 +7,7 @@ export PATH="$CONDA_PREFIX/bin:$PATH"
 export CC="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-cc"
 export CXX="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-c++"
 export CUDAHOSTCXX="$CXX"
+export CPLUS_INCLUDE_PATH="$CONDA_PREFIX/include/eigen3${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
 export TORCH_CUDA_ARCH_LIST="8.9"
 export MAX_JOBS=4
 export PYOPENGL_PLATFORM=egl
