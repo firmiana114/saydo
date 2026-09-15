@@ -43,7 +43,7 @@ report['kaolin_cuda_octree'] = True
 
 from bundlesdf.mycuda import common
 from mycuda.torch_ngp_grid_encoder.grid import GridEncoder
-encoder = GridEncoder(input_dim=3, num_levels=4, level_dim=2, base_resolution=4, log2_hashmap_size=8, desired_resolution=32).cuda()
+encoder = GridEncoder(input_dim=3, n_levels=4, level_dim=2, base_resolution=4, log2_hashmap_size=8, desired_resolution=32).cuda()
 coords = torch.rand(8, 3, device='cuda', requires_grad=True)
 features = encoder(coords)
 features.sum().backward()
