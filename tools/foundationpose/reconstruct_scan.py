@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def load_views(session, segmentation, heldout, width):
     report = json.loads((segmentation / 'segmentation.json').read_text())
+    if report['session'] != session.name:
+        raise ValueError('Segmentation belongs to a different capture session')
+    if not heldout.issubset({row['sample_id'] for row in report['views']}):
+        raise ValueError('Held-out sample IDs are not present in this session')
     if report['acceptance'] != 'visually_reviewed':
         raise ValueError('Segmentation must be visually reviewed before reconstruction')
     rows = []
@@ -62,7 +66,7 @@ def main():
     parser.add_argument('--segmentation', required=True, type=Path)
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--steps', type=int, default=1000)
-    parser.add_argument('--heldout', nargs='*', default=['102616_65d32a20', '102905_faba178f'])
+    parser.add_argument('--heldout', nargs='*', default=[], help='Explicit held-out IDs from this session')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--texture', action='store_true')
     parser.add_argument('--include-rgb-only-rays', action='store_true', help='Use silhouette/color rays even when target depth is invalid')

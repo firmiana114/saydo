@@ -1,0 +1,425 @@
+{
+  "session": "tape_20260915_set3",
+  "method": "HSV proposal with visually corrected tape boxes and visible-hole negative points; SAM outputs require review",
+  "views": {
+    "140309_3921a708": {
+      "box_xyxy": [
+        372,
+        15,
+        1086,
+        719
+      ],
+      "positive_points": [
+        [
+          445,
+          281
+        ]
+      ],
+      "negative_points": [
+        [
+          693,
+          375
+        ]
+      ],
+      "color_sha256": "2ad1b287787d88c7257107ac3fe39d1726dd77facf7b174806a532a294d94594"
+    },
+    "140347_b2661650": {
+      "box_xyxy": [
+        466,
+        95,
+        1006,
+        619
+      ],
+      "positive_points": [
+        [
+          694,
+          536
+        ]
+      ],
+      "negative_points": [
+        [
+          740,
+          380
+        ],
+        [
+          760,
+          450
+        ],
+        [
+          650,
+          400
+        ]
+      ],
+      "color_sha256": "6f238dc67587edd2b8440ecb7a62f801418a456f01de731f846d183b8bee9915"
+    },
+    "140415_d0029c8a": {
+      "box_xyxy": [
+        480,
+        241,
+        962,
+        708
+      ],
+      "positive_points": [
+        [
+          699,
+          603
+        ]
+      ],
+      "negative_points": [
+        [
+          693,
+          465
+        ]
+      ],
+      "color_sha256": "43205d261b2da7b8c9f6241da091d6b7bcf3e1d9e56a9400ba0eea414f9fd1e1"
+    },
+    "140501_d6fad679": {
+      "box_xyxy": [
+        558,
+        341,
+        994,
+        719
+      ],
+      "positive_points": [
+        [
+          767,
+          610
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "d6c0b396c24b733a4c638ad7be0283cf14911472f2d8df9cdbea7d41a69aac03"
+    },
+    "140609_a4cda5d8": {
+      "box_xyxy": [
+        480,
+        350,
+        905,
+        719
+      ],
+      "positive_points": [
+        [
+          675,
+          620
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "de9176a21818ff5f20e6c120df170a40127d9a51d59def750ffd69922c69a554"
+    },
+    "140653_7cbb9f15": {
+      "box_xyxy": [
+        484,
+        274,
+        954,
+        719
+      ],
+      "positive_points": [
+        [
+          702,
+          627
+        ]
+      ],
+      "negative_points": [
+        [
+          651,
+          504
+        ]
+      ],
+      "color_sha256": "e887e1ce6cfee1fd6741aa0e85495cac1b7f33fa3cfe8df8625e95f3a58ec5e0"
+    },
+    "140717_fb7b63a6": {
+      "box_xyxy": [
+        478,
+        174,
+        976,
+        673
+      ],
+      "positive_points": [
+        [
+          699,
+          577
+        ]
+      ],
+      "negative_points": [
+        [
+          684,
+          441
+        ]
+      ],
+      "color_sha256": "fa134b9754fcf804b44048425041217916c84a4dd308eadff030add143e09230"
+    },
+    "140741_754bce0d": {
+      "box_xyxy": [
+        480,
+        139,
+        1042,
+        696
+      ],
+      "positive_points": [
+        [
+          664,
+          604
+        ]
+      ],
+      "negative_points": [
+        [
+          738,
+          453
+        ]
+      ],
+      "color_sha256": "7e32e783c43bfd555def1af7d06ef56b9609c0a6f25f393c0212c2c0f2606888"
+    },
+    "140929_1b5ad224": {
+      "box_xyxy": [
+        480,
+        265,
+        940,
+        718
+      ],
+      "positive_points": [
+        [
+          685,
+          601
+        ]
+      ],
+      "negative_points": [
+        [
+          708,
+          489
+        ]
+      ],
+      "color_sha256": "70508b2df26ed53e35c072062ed45150355c56f11c5bff9ad1bb5ae0b0f6eda8"
+    },
+    "141003_6769cd1e": {
+      "box_xyxy": [
+        437,
+        240,
+        906,
+        710
+      ],
+      "positive_points": [
+        [
+          654,
+          610
+        ]
+      ],
+      "negative_points": [
+        [
+          630,
+          492
+        ]
+      ],
+      "color_sha256": "3d6667911141c458d0c1fef9802483a874f52bb8b36b4b1baf83863c0d6c2a12"
+    },
+    "141048_468b04c2": {
+      "box_xyxy": [
+        448,
+        168,
+        994,
+        707
+      ],
+      "positive_points": [
+        [
+          665,
+          621
+        ]
+      ],
+      "negative_points": [
+        [
+          693,
+          474
+        ]
+      ],
+      "color_sha256": "a3efcd3989bf027adfbd4ff71f61a227967756a90f3f43625b33417724b879ba"
+    },
+    "141229_d61aed66": {
+      "box_xyxy": [
+        422,
+        12,
+        948,
+        518
+      ],
+      "positive_points": [
+        [
+          719,
+          440
+        ]
+      ],
+      "negative_points": [
+        [
+          657,
+          303
+        ]
+      ],
+      "color_sha256": "a85cf85d481cdbb20b87437ba648faee892618816a859a1022b1cc61fb7b67b1"
+    },
+    "141318_81b0e5eb": {
+      "box_xyxy": [
+        362,
+        71,
+        1279,
+        719
+      ],
+      "positive_points": [
+        [
+          706,
+          269
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "e1d7eddb2b7bb3d9b1df3f0232b66882f680fd578aa91150a9b3636b6477d07a"
+    },
+    "141354_ee0368cf": {
+      "box_xyxy": [
+        296,
+        114,
+        1279,
+        719
+      ],
+      "positive_points": [
+        [
+          870,
+          341
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "96f4f6c3752e1512f827b84ca20c43d51b51c57391202aaa781fff9981b45578"
+    },
+    "141445_50ab6422": {
+      "box_xyxy": [
+        242,
+        8,
+        984,
+        719
+      ],
+      "positive_points": [
+        [
+          550,
+          142
+        ]
+      ],
+      "negative_points": [
+        [
+          597,
+          354
+        ]
+      ],
+      "color_sha256": "b25fca44b60ac54638ba6dee0a35471e89da6631beed59e2c0072343334dfa5e"
+    },
+    "141528_42725158": {
+      "box_xyxy": [
+        174,
+        0,
+        959,
+        719
+      ],
+      "positive_points": [
+        [
+          539,
+          704
+        ]
+      ],
+      "negative_points": [
+        [
+          561,
+          345
+        ]
+      ],
+      "color_sha256": "abfc292bc96d9da97065a104768dd75825b0cd7c3bcf34974b3fbbeae7c7e227"
+    },
+    "141617_6de275ba": {
+      "box_xyxy": [
+        188,
+        0,
+        1038,
+        719
+      ],
+      "positive_points": [
+        [
+          602,
+          149
+        ]
+      ],
+      "negative_points": [
+        [
+          579,
+          384
+        ]
+      ],
+      "color_sha256": "fbb309aeee4321872e9c075be3113251dfa1151559030d13ae470da952ce6378"
+    },
+    "141657_b966725d": {
+      "box_xyxy": [
+        58,
+        30,
+        930,
+        708
+      ],
+      "positive_points": [
+        [
+          494,
+          256
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "2c19d4cbf612c0eec16c6ba61337dc8daa64c037762fc32eb8f1d250083c51d3"
+    },
+    "141731_77deeb03": {
+      "box_xyxy": [
+        344,
+        130,
+        902,
+        626
+      ],
+      "positive_points": [
+        [
+          603,
+          395
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "616cbbfca2be286c56d2d08392ab5c99a49b16265bc0de3812c1a23fcd4e4545"
+    },
+    "141813_565e0bbd": {
+      "box_xyxy": [
+        474,
+        172,
+        954,
+        621
+      ],
+      "positive_points": [
+        [
+          695,
+          350
+        ]
+      ],
+      "negative_points": [],
+      "color_sha256": "dc68ed4dc3f773cc7be05217cd2d6f748d3854a50fe459d56c5f8e45fb40167f"
+    },
+    "141855_bf72fa1a": {
+      "box_xyxy": [
+        524,
+        212,
+        1070,
+        719
+      ],
+      "positive_points": [
+        [
+          775,
+          331
+        ]
+      ],
+      "negative_points": [
+        [
+          792,
+          465
+        ]
+      ],
+      "color_sha256": "639239a18d8e3b632a3fb4094b038f94c1a0e12fb5937995e8f668eeb97c6f92"
+    }
+  },
+  "heldout_ids": [
+    "140501_d6fad679",
+    "141003_6769cd1e",
+    "141813_565e0bbd"
+  ]
+}
