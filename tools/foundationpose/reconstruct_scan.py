@@ -67,6 +67,7 @@ def main():
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--steps', type=int, default=1000)
     parser.add_argument('--heldout', nargs='*', default=[], help='Explicit held-out IDs from this session')
+    parser.add_argument('--reference-view', help='Fitting view with reliable target depth for the object reference origin')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--texture', action='store_true')
     parser.add_argument('--include-rgb-only-rays', action='store_true', help='Use silhouette/color rays even when target depth is invalid')
@@ -77,6 +78,10 @@ def main():
         parser.error('Invalid image width or training step count')
     session = ROOT / 'work/object_scan' / args.session
     K, rows = load_views(session, args.segmentation, set(args.heldout), args.width)
+    if args.reference_view:
+        if args.reference_view not in {row['id'] for row in rows}:
+            raise ValueError('Reference view must belong to the fitting views')
+        rows.sort(key=lambda row: row['id'] != args.reference_view)
     out = args.output or ROOT / 'work/foundationpose_runs' / args.session / datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     out.mkdir(parents=True, exist_ok=False)
     runtime = ROOT / 'work/foundationpose_runtime'
@@ -95,7 +100,7 @@ def main():
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.manual_seed_all(0)
-    # The first view is the broad top face: robust valid depth gives a reference
+    # A reviewed reference view's robust valid depth gives a reference
     # center without imposing a circular/cylindrical model on the reconstruction.
     first = rows[0]
     valid = first['mask'] & np.isfinite(first['depth']) & (first['depth'] >= .1) & (first['depth'] < 2)
@@ -131,6 +136,7 @@ def main():
            'source': 'FoundationPose NerfRunner with its supplied preprocessing/meshing; no primitive mesh substituted',
            'metric_accuracy': 'not_validated', 'notes': ['Object reference origin is not a grasp center', 'Held-out views excluded from fitting']}
     run['include_rgb_only_rays'] = args.include_rgb_only_rays
+    run['reference_view'] = rows[0]['id']
     (out / 'run.json').write_text(json.dumps(run, indent=2))
     rgbs = np.asarray([row['rgb'] for row in rows])
     depths = np.asarray([row['depth'] for row in rows])

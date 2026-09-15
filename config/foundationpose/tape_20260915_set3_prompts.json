@@ -1,6 +1,6 @@
 {
   "session": "tape_20260915_set3",
-  "method": "HSV proposal with visually corrected tape boxes and visible-hole negative points; SAM outputs require review",
+  "method": "HSV proposal with visually corrected tape boxes and visible-hole negative points; SAM outputs require review; correct paper-core exclusions and remove hand/table-shadow after SAM v1 review",
   "views": {
     "140309_3921a708": {
       "box_xyxy": [
@@ -254,10 +254,10 @@
     },
     "141318_81b0e5eb": {
       "box_xyxy": [
-        362,
-        71,
-        1279,
-        719
+        360,
+        60,
+        1135,
+        705
       ],
       "positive_points": [
         [
@@ -265,7 +265,20 @@
           269
         ]
       ],
-      "negative_points": [],
+      "negative_points": [
+        [
+          1175,
+          650
+        ],
+        [
+          1050,
+          690
+        ],
+        [
+          1140,
+          565
+        ]
+      ],
       "color_sha256": "e1d7eddb2b7bb3d9b1df3f0232b66882f680fd578aa91150a9b3636b6477d07a"
     },
     "141354_ee0368cf": {
@@ -295,6 +308,10 @@
         [
           550,
           142
+        ],
+        [
+          615,
+          567
         ]
       ],
       "negative_points": [
@@ -337,6 +354,10 @@
         [
           602,
           149
+        ],
+        [
+          633,
+          546
         ]
       ],
       "negative_points": [
@@ -365,10 +386,10 @@
     },
     "141731_77deeb03": {
       "box_xyxy": [
-        344,
-        130,
-        902,
-        626
+        340,
+        225,
+        960,
+        650
       ],
       "positive_points": [
         [
@@ -376,7 +397,16 @@
           395
         ]
       ],
-      "negative_points": [],
+      "negative_points": [
+        [
+          690,
+          180
+        ],
+        [
+          540,
+          210
+        ]
+      ],
       "color_sha256": "616cbbfca2be286c56d2d08392ab5c99a49b16265bc0de3812c1a23fcd4e4545"
     },
     "141813_565e0bbd": {
@@ -406,6 +436,10 @@
         [
           775,
           331
+        ],
+        [
+          780,
+          588
         ]
       ],
       "negative_points": [
@@ -421,5 +455,6 @@
     "140501_d6fad679",
     "141003_6769cd1e",
     "141813_565e0bbd"
-  ]
+  ],
+  "reference_view": "140609_a4cda5d8"
 }
