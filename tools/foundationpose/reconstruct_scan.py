@@ -65,6 +65,7 @@ def main():
     parser.add_argument('--heldout', nargs='*', default=['102616_65d32a20', '102905_faba178f'])
     parser.add_argument('--output', type=Path)
     parser.add_argument('--texture', action='store_true')
+    parser.add_argument('--include-rgb-only-rays', action='store_true', help='Use silhouette/color rays even when target depth is invalid')
     args = parser.parse_args()
     if not args.session or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.session):
         parser.error('Invalid session name')
@@ -81,10 +82,11 @@ def main():
     from nerf_runner import NerfRunner
     from nerf_helpers import preprocess_data, get_optimized_poses_in_real_world, mesh_to_real_world
     from tool import compute_scene_bounds
-    from Utils import glcam_in_cvcam
+    from Utils import glcam_in_cvcam, set_logging_format
     import open3d as o3d
     import torch
     import random
+    set_logging_format()
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
@@ -116,13 +118,15 @@ def main():
     cfg = yaml.safe_load((runtime / 'bundlesdf/config_linemod.yml').read_text())
     cfg.update(n_step=args.steps, N_rand=512, chunk=8192, netchunk=131072, log2_hashmap_size=19,
                i_print=50, i_img=999999, i_weights=500, i_mesh=999999, i_pose=500,
-               mesh_resolution=.002, save_dir=str(out), datadir=str(session))
+               mesh_resolution=.002, save_dir=str(out), datadir=str(session),
+               rays_valid_depth_only=not args.include_rgb_only_rays)
     (out / 'config.yml').write_text(yaml.safe_dump(cfg))
     run = {'status': 'running', 'fit_ids': [row['id'] for row in rows], 'heldout_ids': args.heldout,
            'base_T_object_reference': base_T_object.tolist(), 'object_frame_definition': 'axes parallel to robot base; origin is first-view robust surface median',
            'depth_statistics': statistics, 'spatial_outlier_gate_radius_m': radius, 'width': args.width, 'steps': args.steps,
            'source': 'FoundationPose NerfRunner with its supplied preprocessing/meshing; no primitive mesh substituted',
            'metric_accuracy': 'not_validated', 'notes': ['Object reference origin is not a grasp center', 'Held-out views excluded from fitting']}
+    run['include_rgb_only_rays'] = args.include_rgb_only_rays
     (out / 'run.json').write_text(json.dumps(run, indent=2))
     rgbs = np.asarray([row['rgb'] for row in rows])
     depths = np.asarray([row['depth'] for row in rows])

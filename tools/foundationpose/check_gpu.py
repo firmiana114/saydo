@@ -42,7 +42,7 @@ assert octree.is_cuda and octree.numel() > 0
 report['kaolin_cuda_octree'] = True
 
 from bundlesdf.mycuda import common
-from mycuda.torch_ngp_grid_encoder.grid import GridEncoder
+from bundlesdf.mycuda.torch_ngp_grid_encoder.grid import GridEncoder
 encoder = GridEncoder(input_dim=3, n_levels=4, level_dim=2, base_resolution=4, log2_hashmap_size=8, desired_resolution=32).cuda()
 coords = torch.rand(8, 3, device='cuda', requires_grad=True)
 features = encoder(coords)
@@ -51,6 +51,16 @@ assert torch.isfinite(features).all() and torch.isfinite(coords.grad).all()
 report['gridencoder_cuda_forward_backward'] = True
 assert callable(common.sampleRaysUniformOccupiedVoxels)
 report['common_extension_loaded'] = True
+
+from Utils import OctreeManager, erode_depth, bilateral_filter_depth
+tree = OctreeManager(pts=torch.tensor([[0., 0., 0.]], device='cuda'), max_level=3)
+tree.ray_trace(torch.tensor([[.1, .1, -2.]], device='cuda'), torch.tensor([[0., 0., 1.]], device='cuda'), level=3)
+assert 'mycuda.common' not in sys.modules, 'Duplicate shared-extension import can corrupt interpreter shutdown'
+report['common_import_is_canonical'] = True
+depth = np.full((32, 32), .3, dtype=np.float32)
+filtered = bilateral_filter_depth(erode_depth(depth, radius=2, device='cuda'), radius=2, device='cuda')
+assert np.isfinite(filtered).all() and np.isclose(filtered[16, 16], .3, atol=1e-4)
+report['warp_depth_kernels'] = True
 
 from learning.training.predict_score import ScorePredictor
 from learning.training.predict_pose_refine import PoseRefinePredictor

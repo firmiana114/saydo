@@ -19,6 +19,9 @@ for filename, changes in {
     'bundlesdf/mycuda/setup.py': [('-std=c++14', '-std=c++17'), ("'gcc': c_flags", "'cxx': c_flags")],
     'bundlesdf/mycuda/common.cu': [('z_in_out.type()', 'z_in_out.scalar_type()'),
                                 ('depth_in_out.type()', 'depth_in_out.scalar_type()'), ('V.type()', 'V.scalar_type()')],
+    'Utils.py': [('from mycuda import common', 'from bundlesdf.mycuda import common')],
+    'bundlesdf/nerf_helpers.py': [('from mycuda.torch_ngp_grid_encoder.grid import GridEncoder',
+                                 'from bundlesdf.mycuda.torch_ngp_grid_encoder.grid import GridEncoder')],
 }.items():
     p = runtime / filename
     content = p.read_text()
