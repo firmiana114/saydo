@@ -19,6 +19,8 @@ def main():
     parser.add_argument('--session', default='tape_20260915')
     parser.add_argument('--rerank-topk', type=int, default=0)
     args = parser.parse_args()
+    if not 0 <= args.rerank_topk <= 252:
+        parser.error('rerank-topk must be between 0 and 252')
     run = json.loads((args.run / 'run.json').read_text())
     if run['status'] not in ('geometry_generated_unvalidated', 'textured_mesh_generated_unvalidated', 'geometry_generated_texture_failed'):
         raise ValueError('No completed geometry to evaluate')

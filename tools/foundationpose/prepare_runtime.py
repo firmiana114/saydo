@@ -13,7 +13,11 @@ for name, expected in manifest['sha256'].items():
     assert hashlib.sha256((source / name).read_bytes()).hexdigest() == expected, name
 if runtime.exists():
     raise SystemExit('Build tree already exists; review it instead of overwriting local changes')
-shutil.copytree(source, runtime)
+runtime.mkdir(parents=True)
+for name in manifest['sha256']:
+    destination = runtime / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source / name, destination)
 patches = []
 for filename, changes in {
     'bundlesdf/mycuda/setup.py': [('-std=c++14', '-std=c++17'), ("'gcc': c_flags", "'cxx': c_flags")],

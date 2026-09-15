@@ -16,13 +16,14 @@
 - 已验证硬件：RM75-BI，7 自由度，三代控制器，IP `192.168.1.19`。
 - 已完成：MSI 上的 ROS 2 Jazzy 环境、驱动连接，以及全部七关节的小幅往返验证。
 - 已连接：RealSense D435i 相机接入 MSI，知行 CTAG2F90D 夹爪接到机械臂末端；相机刚性固定在末端、随夹爪运动。
-- 待完成：D435i 在 MSI 上的采集验证、夹爪控制验证、相机与机械臂及夹爪抓取中心的标定、FoundationPose 集成、LLM/Agent 与语音控制。
+- 已完成基础接入：D435i RGB-D 采集、夹爪小幅开合、用户接受的手眼标定、名义 grip_tcp 配置与负载辨识，以及 FoundationPose GPU 环境和离线重建/推理流程。
+- 待完成：TCP 几何验证、胶带模型和定位质量改善、独立新视角验收、连续实时跟踪、实际抓取、LLM/Agent 与语音控制。
 
 详细环境与测试结果见 `ros2_rm_ws/HANDOFF_REPORT.md`。
 
 ## FoundationPose 源码与物体采集
 
-官方源码已按固定版本接入 `third_party/FoundationPose/`，含多视角神经重建代码。版本校验、数据衔接和环境准备边界见 [FoundationPose 接入说明](tools/foundationpose/README.md)。当前完成源码接入与 [单视角 RGB-D 采集](tools/object_scan/README.md)，GPU 依赖、权重、胶带重建与位姿跟踪尚未跑通。
+官方源码已按固定版本接入 `third_party/FoundationPose/`，含多视角神经重建代码。使用 [单视角 RGB-D 采集](tools/object_scan/README.md) 的胶带数据，已完成 GPU 部署、分割、草模重建和离线 register/同帧 track_one 检查；模型与定位质量尚未验收。版本、命令、权重来源和实际验证范围见 [FoundationPose 接入说明](tools/foundationpose/README.md)。
 
 ```bash
 python3 tools/foundationpose/check_source.py
@@ -34,10 +35,10 @@ python3 tools/foundationpose/check_source.py
 
 | 设备 | 型号 | 安装与验证状态 |
 | --- | --- | --- |
-| 相机 | Intel RealSense D435i | 已接入本机，系统已识别设备；刚性固定在机械臂末端夹爪旁，随末端运动。彩色与深度图像采集尚未验证。 |
-| 夹爪 | 知行机器人科技（苏州）有限公司 CTAG2F90D，官网写作 CTAG2F90-D | 已连接机械臂末端；开合控制、状态反馈及实际抓取中心位置尚未验证。 |
+| 相机 | Intel RealSense D435i | 刚性固定在末端夹爪旁；彩色与对齐深度采集已验证，胶带侧壁仍有明显深度缺失。 |
+| 夹爪 | 知行机器人科技（苏州）有限公司 CTAG2F90D，官网写作 CTAG2F90-D | RM Plus 通信与小幅开合已验证；grip_tcp 为名义偏移，实际抓取中心尚未几何验证。 |
 
-该安装方式为眼在手上（Eye-in-Hand）：相机随机械臂末端运动。后续需进行手眼标定（Hand–Eye Calibration）：测出相机与末端的固定位置及朝向关系；另需标定工具中心点（Tool Center Point，TCP）：确定夹爪实际用于抓取的操作点。现场已有普通黑白棋盘格标定板，横纵格数及单格实际边长未确认。
+该安装方式为眼在手上（Eye-in-Hand）：相机随机械臂末端运动。已接受的手眼结果和名义工具中心点（TCP）配置见 `config/calibration/`；手眼求解采用 8×11 内角点和用户提供的 30 mm 格长，原始实测边界保留在该目录说明中。
 
 | 设备 | 官方资料 | 用途 |
 | --- | --- | --- |

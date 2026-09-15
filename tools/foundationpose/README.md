@@ -1,49 +1,95 @@
-# FoundationPose 源码入口
+# FoundationPose：环境、胶带重建与离线诊断
 
-## 已接入
+## 当前结果（2026-09-15）
 
-官方源码完整快照：`third_party/FoundationPose/`，固定到 `a1b694b83e633c2cb6115b9063d940a687759392`。共 54 个上游文件，包含推理、神经重建、C++/CUDA 扩展、环境与构建说明，以及许可证。保留上游代码原样；SayDo 集成代码放在本目录，不直接修改第三方源码。
+- MSI 独立 GPU 环境和 C++/CUDA 扩展已部署，模型权重可加载。GPU 矩阵、PyTorch3D KNN、NVDiffRast 光栅化、Kaolin 八叉树、编码器前后向、八叉树光线追踪、Warp 深度处理及 EGL 渲染均已运行。
+- 胶带 13 个视角完成 SAM 分割与目视检查。11 组用于官方神经重建并生成纹理草模，另 2 组用于离线 register 和同帧 track_one 检查。
+- **草模尚未验收**：存在多余孔洞和起伏。原始初始化轮廓 IoU 为 0.949 / 0.382；按观测掩码检查前 20 个候选后为 0.955 / 0.418，第二个视角仍不可靠。
+- 两组检查图已经用于失败分析和候选策略开发，不再是独立验收集。连续实时跟踪、绝对定位精度、机器人 TF 发布及实机抓取均未验证。
 
-版本及每文件 SHA-256：`third_party/FoundationPose.upstream.json`。从项目根目录验证：
+## 启动与检查
+
+在 MSI 项目根目录运行：
 
 ```bash
-python3 tools/foundationpose/check_source.py
+cd /home/pc/saydo
+source tools/foundationpose/runtime_env.sh
+python tools/foundationpose/check_source.py
+python tools/foundationpose/check_gpu.py
 ```
 
-该命令只验证源码，不导入 GPU 库、不安装依赖、不读取相机或机器人。通过不代表运行环境、权重或重建已就绪。
+独立环境为 `work/foundationpose_env/`，运行副本为 `work/foundationpose_runtime/`，日志和包清单在 `work/foundationpose_setup/`。采集仍使用原 `.venv`。源码检查只验证上游文件；GPU 检查才执行运算和权重加载。
 
-## 上游入口与 SayDo 数据
+已验证：Python 3.11、PyTorch 2.5.1+cu124、torchvision 0.20.1+cu124、CUDA Toolkit 12.4.131、PyTorch3D 0.7.9、NVDiffRast 0.3.3、Kaolin 0.18.0、Warp 1.6.2、NumPy 2.1.3、OpenCV 4.11.0.86、Open3D 0.19.0。显卡 RTX 4060 Laptop 8 GB，驱动 595.84。nvidia-smi 的 CUDA 13.2 是驱动能力，不是 nvcc 版本。
 
-| 入口 | 用途 |
-| --- | --- |
-| `third_party/FoundationPose/estimater.py` | `FoundationPose.register()` 初始化，`track_one()` 连续跟踪 |
-| `third_party/FoundationPose/run_demo.py` | 官方已有网格模型的离线演示 |
-| `third_party/FoundationPose/bundlesdf/run_nerf.py` | 已知多视角相机位姿的神经重建 `run_neural_object_field()` |
-| `tools/object_scan/capture_view.py` | SayDo 单视角 RGB-D 和基座系相机位姿采集 |
+版本及验证记录：`config/foundationpose/environment_state.json`。环境声明和 Python 约束在本目录 `environment_msi.yml`、`constraints_msi.txt`。
 
-当前胶带没有 CAD，使用自带的神经重建入口。已采集数据在 `work/object_scan/tape_20260915/`，但尚需逐视角 mask、目标深度检查、物体参考系选取与数据适配。`base_T_camera` 是基座系相机位姿，后续必须明确转换为选定重建坐标系中的 `cam_in_obs`；不能直接将现有采集目录传给官方 YCB/LineMOD 示例。
+Warp 1.6.2 在此驱动上有设备 UUID API 兼容警告，但深度 CUDA 核函数、重建和离线推理实际执行通过。它与下述已修复的退出异常不同。
 
-上游 `run_nerf.py` 使用 RGB、米制深度、同像素坐标的 mask、真实 K 和相机位姿。内孔背景不应被填进胶带 mask。网格重建通过后，才将模型接入 register/track_one。暂不引入独立 BundleSDF 仓库的未知相机运动估计流程。
+## 固定源码和兼容补丁
 
-## 运行环境尚未部署
+官方原样快照：`third_party/FoundationPose/`，固定提交 `a1b694b83e633c2cb6115b9063d940a687759392`。来源及 54 个文件 SHA-256 在 `third_party/FoundationPose.upstream.json`，许可证和版权声明原样保留。
 
-本次只接入源码。后续为 MSI GPU 建立独立 FoundationPose 环境，保持相机采集 `.venv` 的现有依赖。
+`prepare_runtime.py` 从清单复制原文件到独立运行目录，并记录兼容修改：
 
-按固定版本的 `readme.md`、`environment.yml` 与 `requirements.txt` 准备 PyTorch、CUDA Toolkit、PyTorch3D、NVDiffRast、Warp 和 C++ 构建依赖。必须区分 nvidia-smi 报告的驱动 CUDA 支持版本与实际 nvcc 工具链版本。
+1. CUDA 扩展使用 C++17 和正确的 cxx 参数键。
+2. 三处 tensor.type() 分派改用 scalar_type()。
+3. 统一使用 `bundlesdf.mycuda` 包路径。上游以两种名字加载同一个 common 扩展，曾导致保存模型后退出时 SIGABRT；GDB 指向 `pybind11_module_def_common` 的重复释放。修复后，含 ray_trace 的检查和完整重建均正常退出。
 
-本项目需要无 CAD 重建，**不能只运行 `build_all_conda.sh` 就认为扩展完整**：该脚本只构建 mycpp，上游明确说明还需单独构建 `bundlesdf/mycuda`，并安装与 PyTorch/CUDA 匹配的 Kaolin。具体版本组合和构建命令需在 MSI 实际验证。
+运行目录的 `SAYDO_RUNTIME_PATCHES.json` 记录修改。准备脚本拒绝覆盖已有运行目录，避免丢失编译结果和现场修改。
 
-推理权重按上游 Data prepare 下载到以下本地目录（Git 已忽略）：
+其他源码固定版本：
 
-```text
-third_party/FoundationPose/weights/2023-10-28-18-33-37/{config.yml,model_best.pth}
-third_party/FoundationPose/weights/2024-01-11-20-02-45/{config.yml,model_best.pth}
+- PyTorch3D：`33824be3cbc87a7dd1db0f6a9a9de9ac81b2d0ba`（v0.7.9），包含安装所需的 `projects/implicitron_trainer/`；本次取得的 405 个所需文件按 Git blob 哈希核对。
+- NVDiffRast：`729261dc64c4241ea36efda84fbf532cc8b425b8`（v0.3.3）。
+- Segment Anything：`dca509fe793f601edb92606367a655c15ac00fdf`。
+
+它们位于 `work/foundationpose_deps/{pytorch3d-source,nvdiffrast-source,sam-source}/`。源码及环境备齐后，运行 `bash tools/foundationpose/install_extensions.sh` 构建并检查。系统还安装了 libegl-dev 和 libgl-dev。
+
+基础 Python 包安装命令：
+
+```bash
+python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+python -m pip install -r third_party/FoundationPose/requirements.txt -c tools/foundationpose/constraints_msi.txt xatlas rtree einops
 ```
 
-准备好独立环境后，可先使用该环境的 Python 执行上游 `third_party/FoundationPose/check_env.py`。注意：上游检查把缺权重列为 warning，可能仍退出 0；必须另行确认两组权重存在，并用真实数据完成推理验证。官方 demo 也需要单独下载 demo_data。
+## 权重来源
 
-上游 Docker 启动脚本包含固定宿主目录和容器参数，使用前需按本项目路径审阅；本次没有运行它，也没有启用任何控制机械臂的功能。
+权重在 `third_party/FoundationPose/weights/`，运行副本通过符号链接使用。精修/评分目录为 `2023-10-28-18-33-37`、`2024-01-11-20-02-45`，各含 config.yml 与 model_best.pth。
 
-## 维护
+官方 Google Drive 的模型和评分配置遇到配额限制。本次使用公开镜像 `https://huggingface.co/gpue/foundationpose-weights`，固定 revision `42d49e0633d245b3cf4dea6b1e7ec2b31d5b7654`。精修配置与取得的官方文件逐字节一致；模型没有官方哈希可对照，不声称已核实与官方原件一致。两组权重实际加载及推理通过，来源、尺寸和 SHA-256 在 `SAYDO_WEIGHTS_SOURCE.json` 及环境快照中记录。
 
-更新源码时先选定新提交，对比兼容性，重新生成来源清单；不直接跟随 main 自动升级。权重、数据、编译产物和运行日志保留本地，实验输出使用项目 `work/` 下的独立目录。上游原始源码、LICENSE 和版权声明一起保留，许可证用途范围见上游 LICENSE 第 3.3 节。
+`runtime_env.sh` 启用 `TORCH_FORCE_WEIGHTS_ONLY_LOAD=1`。SAM ViT-B 权重来自 Meta 官方地址，位于 `work/foundationpose_setup/sam_vit_b_01ec64.pth`，哈希记录在分割结果中。权重均保留本地。
+
+## 数据和运行命令
+
+原始采集 `work/object_scan/tape_20260915/` 未修改。提示和图像哈希为 `config/foundationpose/tape_20260915_prompts.json`。最终分割为 `work/object_scan/tape_20260915/segmentation_sam_v3/`，segmentation.json 已记录目视审阅，区分内孔背景与纸芯内壁。
+
+```bash
+# 新建分割输出，不覆盖已有目录
+python tools/foundationpose/segment_views.py
+
+# 重建：默认新建运行目录
+python tools/foundationpose/reconstruct_scan.py \
+  --segmentation work/object_scan/tape_20260915/segmentation_sam_v3 \
+  --steps 1000 --texture --include-rgb-only-rays
+```
+
+完整运行结果：`work/foundationpose_runs/tape_20260915/nerf_v3_rgb/`。模型为 model.obj、material.mtl、material_0.png，原始几何为 model_geometry.obj。训练、提取、纹理生成和正常退出通过。几何约 16114 顶点、32252 面，包围盒约 109.6×107.8×67.4 mm；这不是实测尺寸。
+
+物体坐标轴平行基座，原点是第一视角有效表面的稳健中值，不是抓取中心。run.json 保存参考变换及视角名单。图像缩放到 640×360 时同步缩放 K；无效深度保持无效，没有用圆环原始几何替代神经重建。旧 nerf_v1、nerf_v2_geometry 保留了退出异常记录，不视为完整运行通过。
+
+```bash
+python tools/foundationpose/evaluate_mesh.py \
+  --run work/foundationpose_runs/tape_20260915/nerf_v3_rgb \
+  --segmentation work/object_scan/tape_20260915/segmentation_sam_v3
+```
+
+已有 heldout_evaluation 目录不覆盖。追加 `--rerank-topk 20` 创建 development_rerank_top20；该选项用于候选诊断，不是机器人动作准入逻辑。已有两次检查结果均保留。
+
+原始/候选重排后的 IoU 分别为 0.949→0.955、0.382→0.418。track_one 只重复同一静帧，不代表运动跟踪成功；局部深度残差不能当作整体定位精度。报告均不批准机器人控制。下一步需要改善胶带侧壁深度和模型质量，再采未参与开发的新视角验收。
+
+官方依据：
+- https://github.com/NVlabs/FoundationPose
+- https://kaolin.readthedocs.io/en/latest/notes/installation.html
+- https://github.com/facebookresearch/segment-anything

@@ -144,3 +144,19 @@ FoundationPose 官方 `bundlesdf/run_nerf.py` 支持带相机位姿的多视角�
 用户明确要求接入源码。完整上游快照位于 `../third_party/FoundationPose/`，固定提交 `a1b694b83e633c2cb6115b9063d940a687759392`，含 54 个原文件及许可证；未修改上游代码。来源及 SHA-256 清单位于 `../third_party/FoundationPose.upstream.json`，项目根目录运行 `python3 tools/foundationpose/check_source.py` 校验。说明见 `../tools/foundationpose/README.md`。
 
 本次接入包含 estimater/register/track_one 与 bundlesdf/run_nerf 神经重建入口，不包括 GPU 环境、权重安装或胶带重建运行。当前无 CAD 路线还需 bundlesdf/mycuda 和 Kaolin，不能把只构建 mycpp 的 build_all_conda.sh 当作完整重建环境。相机采集环境、既有数据、机器人参数和未提交 camera_monitor 未修改。
+
+## 2026-09-15：GPU 环境、胶带重建和离线推理
+
+当前入口与复现命令以 `../tools/foundationpose/README.md` 为准。独立环境 `work/foundationpose_env` 和运行副本 `work/foundationpose_runtime` 均在项目根目录；保留原相机 `.venv`。实际版本为 PyTorch 2.5.1+cu124、nvcc 12.4.131、PyTorch3D 0.7.9、NVDiffRast 0.3.3、Kaolin 0.18.0、Warp 1.6.2；RTX 4060 Laptop 8 GB。完整记录在 `config/foundationpose/environment_state.json`，Conda 包 URL 清单为 `conda-linux-64.lock`。pip check、54 文件源码校验及 GPU 核函数/权重检查通过。
+
+运行副本应用可追溯的 C++17、scalar_type 兼容补丁及 mycuda 包路径统一。曾出现模型已保存但解释器退出 SIGABRT；GDB 定位到同一 common 扩展以两个名字加载，释放静态 pybind11_module_def_common 时异常。统一导入后，实际 ray_trace 回归和完整神经重建均正常退出，原始上游快照未改动。Warp 设备 UUID API 仍有非阻塞兼容警告，实际深度 CUDA 运算已通过。
+
+官方 Google Drive 部分权重配额耗尽。当前推理权重来自固定公开镜像 gpue/foundationpose-weights 的 revision 42d49e0633d245b3cf4dea6b1e7ec2b31d5b7654，记录了 SHA-256、大小与来源；精修配置与官方下载文件相同，但模型本体没有官方哈希对照，不声称已核实为官方原件。启用 weights_only 加载；两组网络加载和推理通过。SAM ViT-B 权重来自 Meta 官方地址。权重不纳入 Git。
+
+使用 tape_20260915 的 13 组图像，以 SAM 提示分割并修正了两个视角的阴影/纸芯错误。最终 `work/object_scan/tape_20260915/segmentation_sam_v3` 已记录目视审阅，原始采集未改动。11 组拟合，102616_65d32a20 和 102905_faba178f 最初留作检查。
+
+`work/foundationpose_runs/tape_20260915/nerf_v3_rgb` 完成 1000 配置步数的神经场训练、网格提取和纹理生成，正常退出。model.obj、material.mtl、material_0.png 为纹理模型；model_geometry.obj 为原始几何。几何约 16114 顶点、32252 面，外形范围约 109.6×107.8×67.4 mm，存在多余孔洞和起伏，未验收。它来自真实多视角神经重建，没有替换为圆环原始模型。
+
+离线 register 加同帧 track_one 运行通过，但原始两视角轮廓 IoU 为 0.949/0.382；按观测 mask 诊断前 20 个候选后为 0.955/0.418，第二视角仍不可靠。报告分别在 heldout_evaluation 与 development_rerank_top20。局部深度误差仅统计重合区域，不代表整体定位精度。两组已用于开发分析，不再是独立验收集，需补新视角检查。
+
+连续实时跟踪、绝对位姿精度、ROS TF 和实机抓取未完成。下一步应改善胶带侧壁深度与草模质量，并重新采集未参与开发的验证视角。本次没有发送机器人或夹爪运动/参数命令；未提交的 tools/camera_monitor 保留。
