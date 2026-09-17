@@ -6,8 +6,10 @@ import fcntl
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 from pathlib import Path
 import signal
+import socket
 import sys
 import threading
 import time
@@ -61,6 +63,13 @@ class Tracker:
             last_camera_number = None
             while not self.stop.is_set():
                 frames = pipe.wait_for_frames(4000)
+                # Consume the newest complete frameset rather than a queued older one.
+                for _ in range(8):
+                    newer = pipe.poll_for_frames()
+                    if not newer:
+                        break
+                    frames = newer
+                received_at = time.time()
                 native_color, native_depth = frames.get_color_frame(), frames.get_depth_frame()
                 if native_color.get_frame_number() == last_camera_number:
                     continue
@@ -68,6 +77,10 @@ class Tracker:
                     raise ValueError('RGB/depth timestamp domains differ')
                 if abs(native_color.get_timestamp() - native_depth.get_timestamp()) > 100:
                     continue
+                timestamp = native_color.get_timestamp() / 1000
+                clock_is_wall = native_color.get_frame_timestamp_domain() in (rs.timestamp_domain.global_time, rs.timestamp_domain.system_time)
+                captured_at = timestamp if clock_is_wall and 0 <= received_at - timestamp < 10 else received_at
+                align_started = time.perf_counter()
                 aligned = align.process(frames)
                 color, depth = aligned.get_color_frame(), aligned.get_depth_frame()
                 intr = color.profile.as_video_stream_profile().intrinsics
@@ -79,11 +92,15 @@ class Tracker:
                 sequence += 1
                 last_camera_number = native_color.get_frame_number()
                 frame = {'bgr': bgr, 'depth': depth_m, 'K': K, 'sequence': sequence,
-                         'camera_frame_number': int(native_color.get_frame_number()), 'time': time.time()}
+                         'camera_frame_number': int(native_color.get_frame_number()), 'time': captured_at,
+                         'received_at': received_at, 'sensor_age_at_receive_s': received_at - captured_at,
+                         'alignment_seconds': time.perf_counter() - align_started}
                 with self.lock:
                     self.latest = frame
                     self.state['sequence'] = sequence
                     self.state['camera_frame_at'] = frame['time']
+                    self.state['sensor_age_at_receive_s'] = frame['sensor_age_at_receive_s']
+                    self.state['alignment_seconds'] = frame['alignment_seconds']
         except Exception as error:
             with self.lock:
                 self.state.update(state='camera_error', error=str(error), camera_T_object=None)
@@ -124,9 +141,10 @@ class Tracker:
     def snapshot(self):
         with self.lock:
             result = dict(self.state)
-            result['camera_age_s'] = time.time() - result.get('camera_frame_at', time.time())
-            result['pose_age_s'] = time.time() - result.get('pose_frame_at', time.time())
-            if result['state'] != 'tracking' or result['pose_age_s'] > 2 or not result.get('quality', {}).get('good'):
+            now = time.time()
+            result['camera_age_s'] = now - result['camera_frame_at'] if 'camera_frame_at' in result else None
+            result['pose_age_s'] = now - result['pose_frame_at'] if 'pose_frame_at' in result else None
+            if result['state'] != 'tracking' or result['pose_age_s'] is None or result['pose_age_s'] > 2 or not result.get('quality', {}).get('good'):
                 result['camera_T_object'] = None
             return result
 
@@ -143,11 +161,12 @@ class Tracker:
         bgr = frame['bgr'].copy()
         label = 'STALE / NEED REINITIALIZATION' if state == 'tracking' and age > 2 else state.upper()
         cv2.putText(bgr, label, (10, 26), 0, .65, (0, 170, 255), 2)
-        return cv2.imencode('.jpg', bgr)[1].tobytes()
+        return cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
 
     def inference(self):
         try:
             import torch
+            torch.set_num_threads(2)
             import trimesh
             import nvdiffrast.torch as dr
             from estimater import FoundationPose
@@ -164,6 +183,7 @@ class Tracker:
             estimator = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
                 scorer=ScorePredictor(), refiner=PoseRefinePredictor(), debug_dir=str(self.output), debug=0, glctx=context)
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
+            logging.getLogger().setLevel(logging.WARNING)
             with self.lock:
                 if self.stop.is_set():
                     return
@@ -235,7 +255,7 @@ class Tracker:
                                 pose_sequence=frame['sequence'], error=None)
                             self.state['registered_frames' if command else 'tracked_frames'] += 1
                             self.frozen = None
-                            self.jpeg = cv2.imencode('.jpg', bgr)[1].tobytes()
+                            self.jpeg = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
                             record = {**self.snapshot(), 'camera_frame_number': frame['camera_frame_number'], 'processed_at': time.time()}
                             status_temp = self.output / 'status.tmp'
                             status_temp.write_text(json.dumps(record, indent=2))
@@ -261,6 +281,7 @@ def main():
     parser.add_argument('--serial', default='135122077750')
     parser.add_argument('--port', type=int, default=8089)
     args = parser.parse_args()
+    cv2.setNumThreads(1)
     runtime = ROOT / 'work/foundationpose_runtime'
     sys.path[:0] = [str(runtime), str(runtime / 'bundlesdf'), str(runtime / 'mycpp/build')]
     base = ROOT / 'work/foundationpose_live'
@@ -305,6 +326,35 @@ def main():
             elif path == '/frame.jpg':
                 frame = tracker.image()
                 self.reply(200, frame, 'image/jpeg') if frame else self.reply(503, {'error': '等待相机画面'})
+            elif path == '/stream.mjpg':
+                self.connection.settimeout(3)
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)
+                self.send_response(200)
+                self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+                last_key = None
+                try:
+                    while not tracker.stop.is_set():
+                        with tracker.lock:
+                            mode = tracker.state['state']
+                            cached = mode in ('tracking', 'lost') and tracker.jpeg is not None and time.time() - tracker.state.get('pose_frame_at', 0) <= 2
+                            frame = tracker.frozen if mode in ('selecting', 'initializing') else tracker.latest
+                            key = (tracker.generation, mode, tracker.state.get('pose_sequence') if cached else (frame['sequence'] if frame else -1))
+                        if key == last_key:
+                            tracker.stop.wait(.015)
+                            continue
+                        jpeg = tracker.image()
+                        if jpeg is None:
+                            tracker.stop.wait(.05)
+                            continue
+                        self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n')
+                        self.wfile.flush()
+                        last_key = key
+                        tracker.stop.wait(.04)
+                except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                    pass
             else:
                 self.reply(404, {'error': 'not found'})
 
