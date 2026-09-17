@@ -179,7 +179,7 @@ MSI 离线 7 项测试通过，包括色阶/无效值、备份与数值文件保
 
 ## 2026-09-17：怡宝水瓶实时跟踪接入
 
-入口 `tools/foundationpose/live_tracker.py --auto-start`，在官方 FoundationPose 之上接入 D435i 与网页。官方 `register`/`track_one` 负责定位跟踪，Torchvision SSDLite COCO bottle 检测和 SAM 负责外部首帧初始化；不修改上游核心源码。单个明显前景瓶子自动启动，多个相近候选点选确认，保留手动框选。按用户要求，丢失后默认进入自动重新检测/初始化，至少间隔 2 秒重试；多个相近候选仍需点选。暂停及手动选择期间不会自动恢复；`--no-auto-recover` 可关闭。
+入口 `tools/foundationpose/live_tracker.py --auto-start`，在官方 FoundationPose 之上接入 D435i 与网页。官方 `register`/`track_one` 负责定位跟踪，Torchvision SSDLite COCO bottle 检测和 SAM 负责外部首帧初始化；不修改上游核心源码。单个明显前景瓶子自动启动，多个相近候选点选确认，保留手动框选。按用户要求，丢失后默认进入自动重新检测/初始化，默认不加等待，立即在最新帧重试（`--recovery-interval 0`）；无新帧时等待下一帧，恢复任务串行执行；多个相近候选仍需点选。暂停及手动选择期间不会自动恢复；`--no-auto-recover` 可关闭。
 
 网页已按用户要求改为直接绑定 MSI `192.168.101.65:8089`，Mac 的 `18889` SSH 隧道已关闭，局域网页面和状态接口实际访问通过。启动命令先 source `tools/foundationpose/runtime_env.sh`，再运行 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_recovery.log`；页面停止按钮或 SIGTERM 会释放相机。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。重启后是否检测到目标依赖现场画面，可通过页面重新触发自动识别。
 

@@ -33,10 +33,11 @@ class Tracker:
         self.jpeg = None
         self.generation = 0
         self.retry_at = 0.
+        self.last_attempt_sequence = -1
         self.state = {'state': 'loading', 'error': None, 'model': str(args.mesh), 'sequence': 0,
                       'tracked_frames': 0, 'registered_frames': 0, 'camera_T_object': None,
                       'pose_accepted_for_robot_control': False, 'auto_recover': args.auto_recover,
-                      'recovery_attempts': 0}
+                      'recovery_attempts': 0, 'recovery_interval_s': args.recovery_interval}
         self.output = ROOT / 'work/foundationpose_live' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.output.mkdir(parents=True)
         self.state['output'] = str(self.output)
@@ -150,7 +151,8 @@ class Tracker:
     def recover_if_due(self):
         with self.lock:
             age = time.time() - self.latest['time'] if self.latest else None
-            if recovery_due(self.state['state'], self.args.auto_recover, time.monotonic(), self.retry_at, age):
+            new_frame = self.latest is not None and self.latest['sequence'] != self.last_attempt_sequence
+            if new_frame and recovery_due(self.state['state'], self.args.auto_recover, time.monotonic(), self.retry_at, age):
                 self.automatic(recovery=True)
                 return True
             return False
@@ -263,6 +265,7 @@ class Tracker:
                         self.mark_lost('相机画面过期，等待新画面后重新识别')
                         continue
                     started = time.perf_counter()
+                    self.last_attempt_sequence = frame['sequence']
                     rgb = cv2.cvtColor(frame['bgr'], cv2.COLOR_BGR2RGB)
                     mask = None
                     try:
@@ -357,10 +360,10 @@ def main():
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
     parser.add_argument('--no-auto-recover', dest='auto_recover', action='store_false', help='Disable automatic detection/reinitialization after tracking loss')
-    parser.add_argument('--recovery-interval', type=float, default=2., help='Seconds between recovery attempts')
+    parser.add_argument('--recovery-interval', type=float, default=0., help='Recovery cooldown in seconds; default 0 retries immediately on a fresh frame')
     args = parser.parse_args()
-    if not np.isfinite(args.recovery_interval) or args.recovery_interval < .5:
-        parser.error('recovery-interval must be at least 0.5 seconds')
+    if not np.isfinite(args.recovery_interval) or args.recovery_interval < 0:
+        parser.error('recovery-interval must be nonnegative')
     cv2.setNumThreads(1)
     runtime = ROOT / 'work/foundationpose_runtime'
     sys.path[:0] = [str(runtime), str(runtime / 'bundlesdf'), str(runtime / 'mycpp/build')]
