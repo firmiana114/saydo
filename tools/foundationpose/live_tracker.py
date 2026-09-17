@@ -329,6 +329,7 @@ def main():
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--serial', default='135122077750')
     parser.add_argument('--port', type=int, default=8089)
+    parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
     args = parser.parse_args()
     cv2.setNumThreads(1)
@@ -443,7 +444,7 @@ def main():
             except (ValueError, KeyError, TypeError) as error:
                 self.reply(400, {'error': str(error)})
 
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     threads = [threading.Thread(target=tracker.capture), threading.Thread(target=tracker.inference)]
     for thread in threads:
         thread.start()
