@@ -11,10 +11,10 @@
   "clearance_height_m": 0.08,
   "max_target_distance_m": 0.3,
   "max_plan_age_s": 5,
-  "workspace_min_m": null,
-  "workspace_max_m": null,
+  "workspace_min_m": [-1.0, -1.0, 0.0],
+  "workspace_max_m": [1.0, 1.0, 1.0],
   "table_z_m": 0.0,
-  "workspace_reviewed": false,
+  "workspace_reviewed": true,
   "gripper": {
     "vendor": "ZX",
     "device_id": 1,
