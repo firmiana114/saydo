@@ -181,7 +181,7 @@ MSI 离线 7 项测试通过，包括色阶/无效值、备份与数值文件保
 
 入口 `tools/foundationpose/live_tracker.py --auto-start`，在官方 FoundationPose 之上接入 D435i 与网页。官方 `register`/`track_one` 负责定位跟踪，Torchvision SSDLite COCO bottle 检测和 SAM 负责外部首帧初始化；不修改上游核心源码。单个明显前景瓶子自动启动，多个相近候选点选确认，保留手动框选。按用户要求，丢失后默认进入自动重新检测/初始化，默认不加等待，立即在最新帧重试（`--recovery-interval 0`）；无新帧时等待下一帧，恢复任务串行执行；多个相近候选仍需点选。暂停及手动选择期间不会自动恢复；`--no-auto-recover` 可关闭。
 
-网页已按用户要求改为直接绑定 MSI `192.168.101.65:8089`，Mac 的 `18889` SSH 隧道已关闭，局域网页面和状态接口实际访问通过。启动命令先 source `tools/foundationpose/runtime_env.sh`，再运行 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_immediate.log`；页面停止按钮或 SIGTERM 会释放相机。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。重启后是否检测到目标依赖现场画面，可通过页面重新触发自动识别。
+网页已按用户要求改为直接绑定 MSI `192.168.101.65:8089`，Mac 的 `18889` SSH 隧道已关闭，局域网页面和状态接口实际访问通过。启动命令先 source `tools/foundationpose/runtime_env.sh`，再运行 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_live_preview.log`；页面停止按钮或 SIGTERM 会释放相机。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。重启后是否检测到目标依赖现场画面，可通过页面重新触发自动识别。
 
 实物静态和缓慢移动跟踪已运行，用户确认移动时框贴合；较大变化时观察到不可靠状态，重新初始化后恢复。已验证的低延迟运行记录在 `work/foundationpose_live/20260917_112942_816874`，自动初始化成功后持续处理真实新帧。最近 200 帧实测约 15 fps、中位推理 34 ms、服务端结果年龄 118 ms；20 帧 MJPEG 当时经隧道解码约 15 fps。页面已由 400 ms 单帧轮询改为最新帧持续推流，未测量屏幕光学端到端延迟。
 
@@ -190,3 +190,5 @@ MSI 离线 7 项测试通过，包括色阶/无效值、备份与数值文件保
 重新初始化错误已定位并修复：官方 refiner.predict 会设置全局 CUDA 默认张量类型，导致 Torchvision SSD 的隐式 GPU 临时网格与 CPU 锚框缓存拼接冲突。接入层 `live_detection.py` 使用局部 CPU factory 上下文，输入与网络仍在 GPU，退出后恢复原默认值；没有修改官方核心。7 项回归检查通过，同一真实跟踪进程连续两次重新自动初始化成功。恢复版会话为 `work/foundationpose_live/20260917_115553_497800`；移出画面再移回的自动恢复现场确认尚未收到。
 
 按用户要求去掉额外恢复等待：默认 `--recovery-interval 0`，判定丢失后立即在最新帧上串行重新检测；无新帧时不重复处理同一张失败帧。8 项测试通过，部署后状态接口确认 `auto_recover=true`、`recovery_interval_s=0`，服务已重新进入 tracking。
+
+自动恢复预览已解耦：只在手动框选/多目标点选时冻结显示；自动检测、register 和追帧过程中显示最新相机画面，不显示旧姿态框。最多缓存 90 帧，register 完成后调用官方 track_one 沿中间观测追近实时（目标年龄 <=250 ms，追帧预算 3 s），失败则重新检测。11 项回归通过；真实流测试初始化 3.764 s 期间收到 57 个不同预览帧，追帧 1.471 s 期间收到 23 帧，恢复结果年龄 0.173 s。当前验证会话 `work/foundationpose_live/20260917_124623_822927`；没有更改官方核心算法或发送机器人命令。
