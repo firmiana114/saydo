@@ -45,6 +45,16 @@ class GraspTests(unittest.TestCase):
         config = self.config();config['workspace_reviewed'] = False
         self.assertTrue(workspace_blockers(plan, config))
 
+    def test_table_clearance_ten_mm_for_start_and_waypoints(self):
+        config = self.config()
+        config['workspace_min_m'] = [-1, -1, 0]
+        for height, blocked in [(0.009, True), (0.010, False), (0.011, False)]:
+            for at_start in (True, False):
+                with self.subTest(height=height, at_start=at_start):
+                    plan = {'current_position_m': [0, 0, height if at_start else .2],
+                            'waypoints': [{'position_m': [0, 0, .2 if at_start else height]}]}
+                    self.assertEqual(bool(workspace_blockers(plan, config)), blocked)
+
     def test_force_contact_is_distinct_from_empty_close_or_current_protection(self):
         state = {'sys_err':0,'sys_state':0,'dof_err':[0],'dof_state':[3],'pos':[500],'speed':[0],'force':[10]}
         grip = self.config()['gripper']

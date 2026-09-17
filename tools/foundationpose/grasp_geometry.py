@@ -61,8 +61,8 @@ def workspace_blockers(plan, config):
         return ['工作区配置无效']
     for waypoint in [{'position_m': plan['current_position_m']}] + plan['waypoints']:
         p = np.asarray(waypoint['position_m'])
-        if np.any(p < low) or np.any(p > high) or p[2] < config['table_z_m'] + .05:
-            return ['抓取路径超出工作区或指尖桌面余量不足']
+        if np.any(p < low) or np.any(p > high) or p[2] < config['table_z_m'] + .01:
+            return ['抓取路径超出工作区或 TCP 离桌面不足 10 mm']
     return []
 
 
