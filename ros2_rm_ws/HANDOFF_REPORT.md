@@ -181,8 +181,8 @@ MSI 离线 7 项测试通过，包括色阶/无效值、备份与数值文件保
 
 入口 `tools/foundationpose/live_tracker.py --auto-start`，在官方 FoundationPose 之上接入 D435i 与网页。官方 `register`/`track_one` 负责定位跟踪，Torchvision SSDLite COCO bottle 检测和 SAM 负责外部首帧初始化；不修改上游核心源码。单个明显前景瓶子自动启动，多个相近候选点选确认，保留手动框选。丢失需要显式重新初始化，不自动切换对象。
 
-网页绑定 MSI `127.0.0.1:8089`，Mac 使用 SSH 转发到 `127.0.0.1:18889`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_auto.log`；页面停止按钮或 SIGTERM 会释放相机。启动命令先 source `tools/foundationpose/runtime_env.sh`。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。
+网页已按用户要求改为直接绑定 MSI `192.168.101.65:8089`，Mac 的 `18889` SSH 隧道已关闭，局域网页面和状态接口实际访问通过。启动命令先 source `tools/foundationpose/runtime_env.sh`，再运行 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_lan.log`；页面停止按钮或 SIGTERM 会释放相机。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。重启后是否检测到目标依赖现场画面，可通过页面重新触发自动识别。
 
-实物静态和缓慢移动跟踪已运行，用户确认移动时框贴合；较大变化时观察到不可靠状态，重新初始化后恢复。当前低延迟运行目录 `work/foundationpose_live/20260917_112942_816874`，自动初始化成功后持续处理真实新帧。最近 200 帧实测约 15 fps、中位推理 34 ms、服务端结果年龄 118 ms；20 帧 MJPEG 经隧道解码约 15 fps。页面已由 400 ms 单帧轮询改为最新帧持续推流，未测量屏幕光学端到端延迟。
+实物静态和缓慢移动跟踪已运行，用户确认移动时框贴合；较大变化时观察到不可靠状态，重新初始化后恢复。已验证的低延迟运行记录在 `work/foundationpose_live/20260917_112942_816874`，自动初始化成功后持续处理真实新帧。最近 200 帧实测约 15 fps、中位推理 34 ms、服务端结果年龄 118 ms；20 帧 MJPEG 当时经隧道解码约 15 fps。页面已由 400 ms 单帧轮询改为最新帧持续推流，未测量屏幕光学端到端延迟。
 
 模型 `work/object_models/ob_yibao_350ml/model/model.obj` 的 170×60 mm 尺寸仍是建模假设，透明深度和绕轴姿态存在局限；质量门限是启发式检查。所有输出仅为相机光学坐标系位姿，`pose_accepted_for_robot_control=false`，没有机械臂运动或 TF/抓取控制。4 项离线检查与实际相机接入通过；既有 `capture_view.py` 深度分辨率修改和未提交的 `tools/camera_monitor/` 保留。
