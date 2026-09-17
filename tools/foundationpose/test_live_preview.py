@@ -1,0 +1,74 @@
+from pathlib import Path
+import tempfile
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+import cv2
+import numpy as np
+
+import live_tracker
+from live_checks import catchup_frame
+
+
+class LivePreviewTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        root = Path(self.directory.name)
+        mesh = root / 'model.obj'
+        mesh.write_text('# fixture\n')
+        args = SimpleNamespace(mesh=mesh, serial='test', auto_recover=True, recovery_interval=0.)
+        with patch.object(live_tracker, 'ROOT', root):
+            self.tracker = live_tracker.Tracker(args)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_automatic_recovery_preview_uses_live_frames_but_selection_stays_frozen(self):
+        t = self.tracker
+        t.frozen = {'sequence': 1, 'time': time.time() - 3, 'bgr': np.full((64, 64, 3), 20, np.uint8)}
+        t.latest = {'sequence': 2, 'time': time.time(), 'bgr': np.full((64, 64, 3), 200, np.uint8)}
+        for mode in ['detecting', 'initializing', 'catching_up', 'recovering']:
+            t.state['state'] = mode
+            self.assertEqual(t.preview_key()[2], 2)
+            image = cv2.imdecode(np.frombuffer(t.image(), np.uint8), cv2.IMREAD_COLOR)
+            self.assertGreater(int(image[50, 50, 0]), 150)
+        for mode in ['selecting', 'choose_candidate']:
+            t.state['state'] = mode
+            self.assertEqual(t.preview_key()[2], 1)
+            image = cv2.imdecode(np.frombuffer(t.image(), np.uint8), cv2.IMREAD_COLOR)
+            self.assertLess(int(image[50, 50, 0]), 50)
+
+    def test_catchup_follows_intermediate_frames_and_returns_fresh_result(self):
+        t = self.tracker
+        now = time.time()
+        frames = [{'sequence': i, 'time': now - 1 + i * .1} for i in range(11)]
+        t.history.extend(frames)
+        t.latest = frames[-1]
+        visited = []
+        def advance(frame, pose):
+            visited.append(frame['sequence'])
+            return pose
+        result = t.catch_up(0, frames[0], np.eye(4), advance)
+        self.assertGreater(len(visited), 1)
+        self.assertLess(visited[0], 10, 'must not jump straight to latest frame')
+        self.assertLess(time.time() - result[0]['time'], .25)
+        self.assertIsNone(t.state['camera_T_object'])
+
+    def test_missing_history_and_user_pause_do_not_publish_old_pose(self):
+        now = time.time()
+        with self.assertRaises(ValueError):
+            catchup_frame([{'sequence': 20, 'time': now}], 1, now - 4)
+        t = self.tracker
+        frames = [{'sequence': i, 'time': now - 1 + i * .1} for i in range(11)]
+        t.history.extend(frames)
+        def advance(frame, pose):
+            t.pause()
+            return pose
+        self.assertIsNone(t.catch_up(0, frames[0], np.eye(4), advance))
+        self.assertEqual(t.state['state'], 'paused')
+
+
+if __name__ == '__main__':
+    unittest.main()

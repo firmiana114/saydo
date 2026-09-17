@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """D435i/web adapter on official FoundationPose register/track_one; no robot API."""
 import argparse
+from collections import deque
 import datetime
 import fcntl
 import hashlib
@@ -19,7 +20,7 @@ import urllib.request
 import cv2
 import numpy as np
 
-from live_checks import checked_box, pose_health, bottle_candidates, recovery_due
+from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,6 +31,7 @@ class Tracker:
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.latest = self.frozen = self.command = None
+        self.history = deque(maxlen=90)
         self.jpeg = None
         self.generation = 0
         self.retry_at = 0.
@@ -101,6 +103,7 @@ class Tracker:
                          'alignment_seconds': time.perf_counter() - align_started}
                 with self.lock:
                     self.latest = frame
+                    self.history.append(frame)
                     self.state['sequence'] = sequence
                     self.state['camera_frame_at'] = frame['time']
                     self.state['sensor_age_at_receive_s'] = frame['sensor_age_at_receive_s']
@@ -189,8 +192,8 @@ class Tracker:
     def image(self):
         with self.lock:
             state = self.state['state']
-            frame = self.frozen if state in ('selecting', 'initializing', 'detecting', 'choose_candidate') else self.latest
-            cached = self.jpeg if state in ('tracking', 'lost') else None
+            frame = self.frozen if state in ('selecting', 'choose_candidate') else self.latest
+            cached = self.jpeg if state == 'tracking' else None
             age = time.time() - self.state.get('pose_frame_at', time.time())
             candidates = list(self.state.get('bottle_candidates', [])) if state == 'choose_candidate' else []
         if cached is not None and age <= 2:
@@ -205,6 +208,37 @@ class Tracker:
         label = 'STALE / NEED REINITIALIZATION' if state == 'tracking' and age > 2 else state.upper()
         cv2.putText(bgr, label, (10, 26), 0, .65, (0, 170, 255), 2)
         return cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
+
+    def preview_key(self):
+        with self.lock:
+            mode = self.state['state']
+            cached = mode == 'tracking' and self.jpeg is not None and time.time() - self.state.get('pose_frame_at', 0) <= 2
+            frame = self.frozen if mode in ('selecting', 'choose_candidate') else self.latest
+            return self.generation, mode, self.state.get('pose_sequence') if cached else (frame['sequence'] if frame else -1)
+
+    def catch_up(self, generation, frame, pose, advance):
+        """Advance the upstream tracker over a bounded recent-frame buffer."""
+        started = time.perf_counter()
+        count = 0
+        with self.lock:
+            if generation != self.generation or self.stop.is_set():
+                return None
+            self.state.update(state='catching_up', camera_T_object=None)
+        while True:
+            with self.lock:
+                if generation != self.generation or self.stop.is_set():
+                    return None
+                if time.time() - frame['time'] <= .25:
+                    return frame, pose, count, time.perf_counter() - started
+                target = catchup_frame(list(self.history), frame['sequence'], frame['time'])
+            if time.perf_counter() - started > 3:
+                raise ValueError('重新定位后未能及时追上实时画面，重新识别')
+            if target is None:
+                self.stop.wait(.01)
+                continue
+            pose = advance(target, pose)
+            frame = target
+            count += 1
 
     def inference(self):
         try:
@@ -268,6 +302,9 @@ class Tracker:
                     self.last_attempt_sequence = frame['sequence']
                     rgb = cv2.cvtColor(frame['bgr'], cv2.COLOR_BGR2RGB)
                     mask = None
+                    initialization_seconds = None
+                    catchup_count = 0
+                    catchup_seconds = 0.
                     try:
                         with torch.inference_mode():
                             if command:
@@ -303,6 +340,27 @@ class Tracker:
                                 cv2.imwrite(str(stamp / 'mask.png'), mask.astype(np.uint8) * 255)
                                 np.save(stamp / 'depth_m.npy', frame['depth'])
                                 np.savetxt(stamp / 'K.txt', frame['K'])
+                                initialization_seconds = time.perf_counter() - started
+                                if not np.isfinite(pose).all():
+                                    raise ValueError('FoundationPose returned nonfinite pose')
+                                def checked_render(current_pose, current_frame, last_pose=None, initial_mask=None):
+                                    _, rd, _ = nvdiffrast_render(K=current_frame['K'], H=360, W=640, mesh=mesh,
+                                        ob_in_cams=torch.as_tensor(current_pose[None], device='cuda', dtype=torch.float32), glctx=context)
+                                    health = pose_health(current_pose, rd[0].detach().cpu().numpy(), current_frame['depth'], last_pose, initial_mask)
+                                    if not health['good']:
+                                        raise ValueError('重新定位或追帧结果不可靠，重新识别')
+                                checked_render(pose, frame, initial_mask=mask)
+                                def advance(target, last_pose):
+                                    candidate = estimator.track_one(rgb=cv2.cvtColor(target['bgr'], cv2.COLOR_BGR2RGB),
+                                        depth=target['depth'].copy(), K=target['K'], iteration=2)
+                                    checked_render(candidate, target, last_pose)
+                                    return candidate
+                                caught = self.catch_up(generation, frame, pose, advance)
+                                if caught is None:
+                                    continue
+                                frame, pose, catchup_count, catchup_seconds = caught
+                                rgb = cv2.cvtColor(frame['bgr'], cv2.COLOR_BGR2RGB)
+                                mask = None  # Initialization mask belongs to the older reference frame.
                             else:
                                 pose = estimator.track_one(rgb=rgb, depth=frame['depth'].copy(), K=frame['K'], iteration=2)
                             if not np.isfinite(pose).all():
@@ -326,6 +384,9 @@ class Tracker:
                             self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
                                 pose_sequence=frame['sequence'], error=None)
+                            if command:
+                                self.state.update(initialization_seconds=initialization_seconds, catchup_frames=catchup_count,
+                                                  catchup_seconds=catchup_seconds)
                             self.state['registered_frames' if command else 'tracked_frames'] += 1
                             if lost:
                                 self.mark_lost('深度或位姿匹配不可靠，等待重新识别')
@@ -420,11 +481,7 @@ def main():
                 last_key = None
                 try:
                     while not tracker.stop.is_set():
-                        with tracker.lock:
-                            mode = tracker.state['state']
-                            cached = mode in ('tracking', 'lost') and tracker.jpeg is not None and time.time() - tracker.state.get('pose_frame_at', 0) <= 2
-                            frame = tracker.frozen if mode in ('selecting', 'initializing', 'detecting', 'choose_candidate') else tracker.latest
-                            key = (tracker.generation, mode, tracker.state.get('pose_sequence') if cached else (frame['sequence'] if frame else -1))
+                        key = tracker.preview_key()
                         if key == last_key:
                             tracker.stop.wait(.015)
                             continue
@@ -432,7 +489,8 @@ def main():
                         if jpeg is None:
                             tracker.stop.wait(.05)
                             continue
-                        self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n')
+                        metadata = f'X-Preview-State: {key[1]}\r\nX-Preview-Sequence: {key[2]}\r\n'.encode()
+                        self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\n' + metadata + b'Content-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n')
                         self.wfile.flush()
                         last_key = key
                         tracker.stop.wait(.04)
