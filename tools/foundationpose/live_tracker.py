@@ -57,7 +57,7 @@ class Tracker:
         self.state['output'] = str(self.output)
         self.state.update(object_id=self.object_info['id'], object_name=self.object_info['name'],
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
-        self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'preview'))
+        self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
              'camera_serial': args.serial, 'native_color': [1280, 720, 15], 'native_depth': [640, 360, 15],
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
@@ -617,7 +617,7 @@ def main():
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--models-root', type=Path, default=ROOT / 'work/object_models')
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
-    parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='preview', help='Preview does not send robot writes; execute still requires all hardware/workspace checks')
+    parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
     parser.add_argument('--serial', default='135122077750')
     parser.add_argument('--port', type=int, default=8089)

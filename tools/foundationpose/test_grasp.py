@@ -121,6 +121,20 @@ class GraspTests(unittest.TestCase):
             self.assertEqual(cfg.read_text(), original)
             self.assertEqual(GraspController(root, None, cfg).snapshot()['force_config']['value'], 10)
 
+    def test_default_execute_requires_explicit_start_and_preview_remains_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); cfg = root / 'grasp.json'
+            cfg.write_text(json.dumps(self.config()))
+            with patch('grasp_control.RobotClient') as client:
+                service = GraspController(root, None, cfg)
+                self.assertEqual(service.snapshot()['mode'], 'execute')
+                self.assertTrue(service.snapshot()['motion_enabled'])
+                self.assertFalse(service.snapshot()['busy'])
+                self.assertIsNone(service.thread)
+                preview = GraspController(root, None, cfg, 'preview')
+                self.assertFalse(preview.snapshot()['motion_enabled'])
+                client.assert_not_called()
+
     def test_executor_orders_open_path_and_contact_without_lift(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);config=self.config();cfg=root/'config.json';cfg.write_text(json.dumps(config))

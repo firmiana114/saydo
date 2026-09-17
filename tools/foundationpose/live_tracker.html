@@ -15,7 +15,7 @@ dialog{background:#182632;color:#e7eef5;border:1px solid #416177;border-radius:1
 <p id="force-feedback" role="status">输入完成后按回车或离开输入框，自动更新下一次抓取配置；不直接改变硬件夹持力。</p>
 <div id="message"></div><img id="stream" src="/stream.mjpg" alt="实时跟踪画面"><canvas id="view" width="640" height="360" style="display:none"></canvas>
 <div id="status">正在连接…</div><div id="detail"></div><pre id="diagnostics" style="white-space:pre-wrap;color:#b9cad9"></pre>
-<p class="note">坐标轴：X 红、Y 绿、Z 蓝，每根长 5 cm；原点为模型原点。抓取默认为方案预览，实际运动须启用执行模式并通过前置检查。模型尺寸与实机定位精度仍需验证；自动检测只识别物品类别，不识别具体品牌。</p>
+<p class="note">坐标轴：X 红、Y 绿、Z 蓝，每根长 5 cm；原点为模型原点。默认允许执行抓取：点击抓取按钮且通过前置检查后才下发运动，启动和自动跟踪不会触发抓取。模型尺寸与实机定位精度仍需验证；自动检测只识别物品类别，不识别具体品牌。</p>
 <dialog id="objects"><h2>选择跟踪物品</h2><p>列表来自 work/object_models 的子目录。切换后会清除旧跟踪状态。</p><div id="object-list"></div><button id="objects-close">关闭</button></dialog>
 </main><script>
 const canvas=document.querySelector('#view'),ctx=canvas.getContext('2d');

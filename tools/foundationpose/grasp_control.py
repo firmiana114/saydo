@@ -1,4 +1,4 @@
-"""First-trial grasp coordinator. Preview by default; robot writes are gated."""
+"""First-trial grasp coordinator. Button-triggered execution with robot write gates."""
 from pathlib import Path
 import fcntl
 import hashlib
@@ -15,7 +15,7 @@ from grasp_robot import RobotClient
 
 
 class GraspController:
-    def __init__(self, root, tracker, config_path, mode='preview'):
+    def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()
         self.cancelled = threading.Event()

@@ -2,7 +2,7 @@
 
 ## D435i 实时跟踪接入
 
-`live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 负责首帧像素分割，提示可来自手动框选或自动检测。受保护的试抓接口见本文“首轮视觉抓取接入”；默认只预览方案。
+`live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 负责首帧像素分割，提示可来自手动框选或自动检测。受保护的试抓接口见本文“首轮视觉抓取接入”；默认点击抓取按钮并通过检查后执行。
 
 ```bash
 source tools/foundationpose/runtime_env.sh
@@ -176,9 +176,9 @@ python tools/foundationpose/evaluate_mesh.py \
 
 接口：`GET /api/objects` 列出目录，`POST /api/object` 携带 `{"id":"目录名"}` 请求切换。只接受列表内、路径位于该物品目录的模型；不接受任意文件路径。
 
-## 首轮视觉抓取接入（预览默认开启，实机动作尚未验收）
+## 首轮视觉抓取接入（默认执行模式，实机动作尚未验收）
 
-网页提供“抓取当前被跟踪物品”“读取夹爪状态”“停止抓取”。默认 `--grasp-mode preview`，点击只读取状态、生成和检查路径，不发送机械臂或夹爪动作。首个配置仅支持 `ob_yibao_350ml`，保持当前 TCP 朝向，夹持模型中心，不抬起。用户已接受名义 grip_tcp，但这不代表几何精度已实测。
+网页提供“抓取当前被跟踪物品”“读取夹爪状态”“停止抓取”。默认 `--grasp-mode execute`，点击抓取按钮后读取状态、生成和检查路径，全部检查通过才发送运动。启动服务、自动初始化和视觉恢复不会触发抓取。只预览时显式指定 `--grasp-mode preview`。首个配置仅支持 `ob_yibao_350ml`，保持当前 TCP 朝向，夹持模型中心，不抬起。用户已接受名义 grip_tcp，但这不代表几何精度已实测。
 
 配置为 `config/grasp/trial.json`。变换链严格使用：
 
@@ -195,9 +195,9 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 g++ -std=c++14 tools/foundationpose/grasp_ik.cpp   -I ros2_rm_ws/src/ros2_rm_robot/rm_driver/include/rm_driver   -L ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/linux_x86_c++_v1.1.5   -Wl,-rpath,/home/pc/saydo/ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/linux_x86_c++_v1.1.5   -lapi_cpp -o work/grasp/rm75_ik_check
 ```
 
-只有明确启动 `--grasp-mode execute`，且限力/限速寄存器能够读回真实数值、力控单位和接触状态已验证、工作区检查及 IK 全部通过，才允许执行。单纯返回 `set_state=true` 不作为设置生效证明。停止请求对已开始执行的任务发送机械臂停止及夹爪停止，不自动松开或抬起。运动和夹爪等待都有超时及错误检查。每次任务记录于 `work/grasp/jobs`。
+执行模式为默认值，但限力/限速寄存器能够读回真实数值、力控单位和接触状态已验证、工作区检查及 IK 全部通过，才允许执行。单纯返回 `set_state=true` 不作为设置生效证明。停止请求对已开始执行的任务发送机械臂停止及夹爪停止，不自动松开或抬起。运动和夹爪等待都有超时及错误检查。每次任务记录于 `work/grasp/jobs`。
 
-当前 CTAG2F90D 读回 RM Plus 115200、ZX/id=1/dof=1、force=true、touch=false、位置范围 0–1000、速度上限 500、力上限原始值 100。通用协议力单位为 0.001 N，但当前设备范围与厂商最大 25 N 不一致，尚未确认适配单位。1220 写入 10 返回成功，base_info 仍为 100，get_rm_plus_reg 不返回 plus_reg_data，因此未证明设置生效；已发送恢复原值 100 的指令，位置保持 499。当前配置的力控/接触验证标记为 false，工作区未录入，不能发送实机抓取动作。
+当前 CTAG2F90D 读回 RM Plus 115200、ZX/id=1/dof=1、force=true、touch=false、位置范围 0–1000、速度上限 500、力上限原始值 100。通用协议力单位为 0.001 N，但当前设备范围与厂商最大 25 N 不一致，尚未确认适配单位。1220 写入 10 返回成功，base_info 仍为 100，get_rm_plus_reg 不返回 plus_reg_data，因此未证明设置生效；已发送恢复原值 100 的指令，位置保持 499。当前配置的力控/接触验证标记为 false，工作区已按用户指定录入，夹爪验证仍阻塞实机抓取动作。
 
 接触判定依据 RM Plus 状态 3（力控到位）、停止速度、尚未全闭的位置和正力反馈连续出现；状态 2 仅表示位置到位，状态 5 是电流保护，均不能当作抓到物体。该判据仍需本设备验证；即使触发也只表示疑似力控接触，不证明抓牢。
 
