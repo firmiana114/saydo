@@ -13,7 +13,7 @@
   "max_plan_age_s": 5,
   "workspace_min_m": null,
   "workspace_max_m": null,
-  "table_z_m": null,
+  "table_z_m": 0.0,
   "workspace_reviewed": false,
   "gripper": {
     "vendor": "ZX",
