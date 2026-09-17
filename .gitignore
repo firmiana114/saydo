@@ -44,6 +44,8 @@ env/
 !ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/**/*.so.*
 
 # Model weights, datasets and sensor recordings
+# Downloaded FoundationPose reference views, meshes and reconstruction outputs
+/third_party/FoundationPose/mode_free_ref_data/
 weights/
 checkpoints/
 datasets/
