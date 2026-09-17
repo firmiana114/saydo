@@ -18,7 +18,7 @@ class LivePreviewTests(unittest.TestCase):
         root = Path(self.directory.name)
         mesh = root / 'model.obj'
         mesh.write_text('# fixture\n')
-        args = SimpleNamespace(mesh=mesh, serial='test', auto_recover=True, recovery_interval=0.)
+        args = SimpleNamespace(mesh=mesh, serial='test', detector_class='bottle', auto_recover=True, recovery_interval=0.)
         with patch.object(live_tracker, 'ROOT', root):
             self.tracker = live_tracker.Tracker(args)
 
@@ -68,6 +68,23 @@ class LivePreviewTests(unittest.TestCase):
             return pose
         self.assertIsNone(t.catch_up(0, frames[0], np.eye(4), advance))
         self.assertEqual(t.state['state'], 'paused')
+
+    def test_object_switch_invalidates_pending_inference_and_old_overlay(self):
+        t = self.tracker
+        target = t.models_root / 'mug_new/model'
+        target.mkdir(parents=True)
+        (target / 'model.obj').write_text('# fixture')
+        t.state.update(state='tracking', model_ready=True, camera_T_object=np.eye(4).tolist(), pose_frame_at=time.time())
+        t.jpeg = b'old overlay'
+        t.command = (0, {}, [1, 1, 20, 20])
+        t.switch_object('mug_new')
+        self.assertEqual(t.state['state'], 'switching')
+        self.assertIsNone(t.command)
+        self.assertIsNone(t.jpeg)
+        self.assertIsNone(t.snapshot()['camera_T_object'])
+        self.assertFalse(t.state['model_ready'])
+        self.assertEqual(t.pending_object[1]['detector_class'], 'cup')
+        self.assertIsNone(t.catch_up(0, {}, np.eye(4), lambda *args: None))
 
 
 if __name__ == '__main__':

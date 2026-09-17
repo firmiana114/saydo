@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
+from object_catalog import scan_objects, select_object, inferred_class
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,6 +29,12 @@ ROOT = Path(__file__).resolve().parents[2]
 class Tracker:
     def __init__(self, args):
         self.args = args
+        self.models_root = Path(getattr(args, 'models_root', ROOT / 'work/object_models'))
+        self.object_info = next((row for row in scan_objects(self.models_root) if row['mesh'] == str(args.mesh.resolve())),
+            {'id': None, 'name': args.mesh.parent.name, 'mesh': str(args.mesh), 'detector_class': inferred_class(str(args.mesh))})
+        if getattr(args, 'detector_class', None):
+            self.object_info['detector_class'] = args.detector_class
+        self.pending_object = None
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.latest = self.frozen = self.command = None
@@ -43,6 +50,8 @@ class Tracker:
         self.output = ROOT / 'work/foundationpose_live' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.output.mkdir(parents=True)
         self.state['output'] = str(self.output)
+        self.state.update(object_id=self.object_info['id'], object_name=self.object_info['name'],
+                          detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
              'camera_serial': args.serial, 'native_color': [1280, 720, 15], 'native_depth': [640, 360, 15],
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
@@ -139,6 +148,8 @@ class Tracker:
 
     def automatic(self, recovery=False):
         with self.lock:
+            if not self.state.get('auto_detection_supported'):
+                raise ValueError('该物品没有可用的自动检测类别，请使用手动框选')
             self.freeze()
             self.command = (self.generation, self.frozen, None)
             self.state.update(state='detecting', bottle_candidates=[], error=None)
@@ -148,7 +159,7 @@ class Tracker:
     def mark_lost(self, error):
         with self.lock:
             self.retry_at = time.monotonic() + self.args.recovery_interval
-            self.state.update(state='recovering' if self.args.auto_recover else 'lost',
+            self.state.update(state='recovering' if self.args.auto_recover and self.state.get('auto_detection_supported') else 'lost',
                               error=error, camera_T_object=None)
 
     def recover_if_due(self):
@@ -173,18 +184,32 @@ class Tracker:
 
     def pause(self):
         with self.lock:
+            if self.state['state'] == 'switching':
+                raise ValueError('模型正在切换，请加载完成后再暂停')
             self.generation += 1
             self.command = None
             self.frozen = None
             self.jpeg = None
             self.state.update(state='paused', camera_T_object=None)
 
+    def switch_object(self, object_id):
+        info = select_object(self.models_root, object_id)
+        with self.lock:
+            self.generation += 1
+            self.command = None
+            self.frozen = None
+            self.jpeg = None
+            self.pending_object = (self.generation, info)
+            self.state.update(state='switching', model_ready=False, camera_T_object=None, error=None,
+                              pending_object_name=info['name'], quality={}, bottle_candidates=[], pose_frame_at=None,
+                              model_extents_m=None, auto_detection_supported=False)
+
     def snapshot(self):
         with self.lock:
             result = dict(self.state)
             now = time.time()
             result['camera_age_s'] = now - result['camera_frame_at'] if 'camera_frame_at' in result else None
-            result['pose_age_s'] = now - result['pose_frame_at'] if 'pose_frame_at' in result else None
+            result['pose_age_s'] = now - result['pose_frame_at'] if result.get('pose_frame_at') is not None else None
             if result['state'] != 'tracking' or result['pose_age_s'] is None or result['pose_age_s'] > 2 or not result.get('quality', {}).get('good'):
                 result['camera_T_object'] = None
             return result
@@ -194,7 +219,7 @@ class Tracker:
             state = self.state['state']
             frame = self.frozen if state in ('selecting', 'choose_candidate') else self.latest
             cached = self.jpeg if state == 'tracking' else None
-            age = time.time() - self.state.get('pose_frame_at', time.time())
+            age = time.time() - (self.state.get('pose_frame_at') or time.time())
             candidates = list(self.state.get('bottle_candidates', [])) if state == 'choose_candidate' else []
         if cached is not None and age <= 2:
             return cached
@@ -265,18 +290,58 @@ class Tracker:
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
             detector = ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
-            bottle_label = detector_weights.meta['categories'].index('bottle')
+            detector_class = self.object_info['detector_class']
+            detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
             logging.getLogger().setLevel(logging.WARNING)
             with self.lock:
                 if self.stop.is_set():
                     return
-                self.state.update(state='ready', model_ready=True, model_extents_m=mesh.extents.tolist())
+                self.state.update(state='ready', model_ready=True, model_extents_m=mesh.extents.tolist(), auto_detection_supported=detector_label is not None)
             previous = None
             last_sequence = -1
             failures = 0
             auto_attempted = False
             with (self.output / 'poses.jsonl').open('a', buffering=1) as records:
                 while not self.stop.is_set():
+                    with self.lock:
+                        pending = self.pending_object
+                        self.pending_object = None
+                    if pending:
+                        switch_generation, info = pending
+                        try:
+                            next_mesh = trimesh.load(info['mesh'], force='mesh')
+                            if not np.isfinite(next_mesh.vertices).all() or not (.01 < next_mesh.extents.max() < 1):
+                                raise ValueError('模型尺寸异常，请确认采用米制')
+                            next_origin, next_extents = trimesh.bounds.oriented_bounds(next_mesh)
+                            next_estimator = FoundationPose(model_pts=next_mesh.vertices, model_normals=next_mesh.vertex_normals,
+                                mesh=next_mesh, scorer=estimator.scorer, refiner=estimator.refiner, glctx=context,
+                                debug_dir=str(self.output), debug=0)
+                            with self.lock:
+                                if switch_generation != self.generation:
+                                    continue
+                                mesh, origin, bbox = next_mesh, next_origin, np.stack([-next_extents / 2, next_extents / 2])
+                                estimator = next_estimator
+                                self.object_info = info
+                                detector_class = info['detector_class']
+                                detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
+                                self.state.update(state='ready', model_ready=True, model=info['mesh'], object_id=info['id'],
+                                    object_name=info['name'], pending_object_name=None, detector_class=detector_class,
+                                    auto_detection_supported=detector_label is not None, model_extents_m=mesh.extents.tolist(),
+                                    initialization_seconds=None, catchup_seconds=None, catchup_frames=0,
+                                    tracked_frames=0, registered_frames=0, recovery_attempts=0,
+                                    auto_recover=self.args.auto_recover and detector_label is not None)
+                                previous, last_sequence, failures = None, -1, 0
+                                auto_attempted = not self.args.auto_start
+                                event = {'event': 'object_switched', 'at': time.time(), 'generation': switch_generation,
+                                         'object': info, 'mesh_sha256': hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest()}
+                                with (self.output / 'model_changes.jsonl').open('a') as changes:
+                                    changes.write(json.dumps(event, ensure_ascii=False) + '\n')
+                        except Exception as error:
+                            with self.lock:
+                                if switch_generation == self.generation:
+                                    self.state.update(state='model_error', error=str(error), model_ready=False, camera_T_object=None)
+                            traceback.print_exc()
+                        continue
                     if self.recover_if_due():
                         continue
                     with self.lock:
@@ -286,7 +351,7 @@ class Tracker:
                         generation = self.generation
                         frame = self.latest
                         startup_ready = self.state['state'] == 'ready'
-                    if self.args.auto_start and not auto_attempted and frame is not None and startup_ready:
+                    if self.args.auto_start and detector_label is not None and not auto_attempted and frame is not None and startup_ready:
                         self.automatic()
                         auto_attempted = True
                         continue
@@ -311,14 +376,14 @@ class Tracker:
                                 if box is None:
                                     prediction = predict_detection(detector, rgb)
                                     candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
-                                        prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), bottle_label)
+                                        prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), detector_label)
                                     if not candidates:
-                                        raise ValueError('没有检测到可靠的水瓶，请让整瓶入镜')
+                                        raise ValueError('没有检测到可靠的目标，请让物品完整入镜')
                                     with self.lock:
                                         if generation != self.generation:
                                             continue
                                         self.state['bottle_candidates'] = candidates
-                                        self.state['detection_method'] = 'Torchvision SSDLite COCO bottle -> SAM -> FoundationPose'
+                                        self.state['detection_method'] = f'Torchvision SSDLite COCO {detector_class} -> SAM -> FoundationPose'
                                         if len(candidates) > 1:
                                             self.state.update(state='choose_candidate', error=None)
                                             continue
@@ -430,6 +495,8 @@ class Tracker:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
+    parser.add_argument('--models-root', type=Path, default=ROOT / 'work/object_models')
+    parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--serial', default='135122077750')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
@@ -481,6 +548,8 @@ def main():
                 self.reply(200, Path(__file__).with_name('live_tracker.html').read_bytes(), 'text/html; charset=utf-8')
             elif path == '/api/status':
                 self.reply(200, tracker.snapshot())
+            elif path == '/api/objects':
+                self.reply(200, {'objects': scan_objects(tracker.models_root)})
             elif path == '/frame.jpg':
                 frame = tracker.image()
                 self.reply(200, frame, 'image/jpeg') if frame else self.reply(503, {'error': '等待相机画面'})
@@ -525,6 +594,9 @@ def main():
                 value = json.loads(self.rfile.read(size) or b'{}')
                 if self.path == '/api/freeze':
                     result = tracker.freeze()
+                elif self.path == '/api/object':
+                    tracker.switch_object(value['id'])
+                    result = {'accepted': True}
                 elif self.path == '/api/automatic':
                     tracker.automatic()
                     result = {'accepted': True}
