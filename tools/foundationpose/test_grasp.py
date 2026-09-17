@@ -69,13 +69,13 @@ class GraspTests(unittest.TestCase):
                 root=Path(directory);config=self.config();config['gripper']['force_control_verified']=verified
                 cfg=root/'grasp.json';cfg.write_text(json.dumps(config))
                 pose=np.eye(4);pose[0,3]=.1
-                observation={'pose':pose.tolist(),'time':time.time(),'generation':1,'object_id':'bottle'}
+                observation={'pose':pose.tolist(),'time':time.time(),'generation':1,'object_id':'bottle','K':np.diag([.5,.5,1]).tolist()}
                 tracker=SimpleNamespace(grasp_observation=lambda:observation)
                 service=GraspController(root,tracker,cfg,mode)
                 arm={'pose':[0,0,200000,0,0,0],'joint':[0]*7,'err':[0]}
                 tool_raw={'tool_name':'grip_tcp','pose':[0]*6}
                 tool={'controller_readback':{'tool_response_raw':tool_raw},'flange_T_grip_tcp':np.eye(4).tolist()}
-                handeye={'installation':{'controller_firmware':'V1.7.0'},'flange_T_color_optical_camera':np.eye(4).tolist()}
+                handeye={'installation':{'controller_firmware':'V1.7.0'},'flange_T_color_optical_camera':np.eye(4).tolist(),'camera':{'K':np.eye(3).tolist()}}
                 replies={'get_arm_software_info':{'Product_version':'RM75-BI','ctrl_info':{'version':'V1.7.0'}},
                     'get_current_tool_frame':tool_raw,'get_current_work_frame':{'frame_name':'Base','pose':[0]*6},
                     'get_joint_en_state':{'en_state':[1]*7},'get_joint_err_flag':{'err_flag':[0]*7},

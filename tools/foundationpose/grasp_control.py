@@ -140,10 +140,12 @@ class GraspController:
         if error > .002 or angle_error > .01:
             return {'ok': False, 'reason': '离线 SDK 与控制器当前 TCP 正解不一致', 'position_error_m': error}
         previous = np.array(arm['joint']) / 1000
-        for line in ik:
+        for sample_index, line in enumerate(ik, 1):
             row = list(map(float, line.split()[1:]))
             if row[0] != 0 or row[1] != 0 or np.max(np.abs(np.array(row[2:]) - previous)) > 10:
-                return {'ok': False, 'reason': '路径存在逆解失败、自碰撞/限位或关节跳变'}
+                return {'ok': False, 'reason': '路径存在逆解失败、自碰撞/限位或关节跳变',
+                        'failed_sample': sample_index, 'ik_return_code': int(row[0]), 'self_collision_or_limit': int(row[1]),
+                        'max_joint_delta_deg': float(np.max(np.abs(np.array(row[2:]) - previous)))}
             previous = np.array(row[2:])
         return {'ok': result.returncode == 0 and len(ik) == len(points), 'sampled_poses': len(points),
                 'fk_position_error_m': error, 'scope': 'SDK kinematics and self-collision only; not full environment collision checking'}
@@ -186,6 +188,11 @@ class GraspController:
             if gripper_state.get('dof_state') == [3] or any(gripper_state.get('force', [])):
                 raise ValueError('夹爪可能已夹持物体，请先人工处理')
             arm, observation = self.paired_observation()
+            expected_K = np.array(handeye['camera']['K'], dtype=float)
+            expected_K[:2] *= .5  # The live adapter uses 640x360 from calibrated 1280x720 color.
+            observed_K = np.asarray(observation.get('K'), dtype=float)
+            if observed_K.shape != (3, 3) or not np.allclose(observed_K, expected_K, atol=.05):
+                raise ValueError('实际视觉内参与手眼标定使用的彩色流不匹配')
             profile = config['objects'].get(observation['object_id'])
             if profile is None:
                 raise ValueError('当前物品尚未配置抓取位置；首轮仅支持怡宝水瓶')
@@ -280,7 +287,8 @@ class GraspController:
             if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])):
                 raise ValueError('机械臂离开约定工作区')
         for waypoint in plan['waypoints']:
-            self.update(state='moving', message='执行路径：' + waypoint['name'])
+            names = {'raise_clearance':'抬高空爪', 'above_pregrasp':'到达预抓上方', 'pregrasp':'到达预抓取点', 'grasp':'接近夹持点'}
+            self.update(state='moving', message='执行路径：' + names[waypoint['name']])
             report['robot_motion_sent'] = True
             self.robot.move_linear(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
             reached = self.arm_state()

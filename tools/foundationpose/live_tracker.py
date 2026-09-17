@@ -246,7 +246,7 @@ class Tracker:
             if np.max(angles) > np.deg2rad(15):
                 raise ValueError('目标朝向不稳定，请等待稳定跟踪')
             return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
-                    'object_id': s.get('object_id'), 'object_name': s.get('object_name')}
+                    'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K')}
 
     def image(self):
         with self.lock:
@@ -496,7 +496,7 @@ class Tracker:
                                 continue
                             self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
-                                pose_sequence=frame['sequence'], error=None)
+                                pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), error=None)
                             if command:
                                 self.state.update(initialization_seconds=initialization_seconds, catchup_frames=catchup_count,
                                                   catchup_seconds=catchup_seconds)

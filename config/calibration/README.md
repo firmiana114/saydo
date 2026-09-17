@@ -59,3 +59,5 @@ base_T_object = base_T_flange @ flange_T_color_optical_camera @ camera_T_object
 - 参数变化通过 Git 追溯；不要将设备凭据、原始图像或大量运行日志放入本目录。
 
 字段依据：[睿尔曼坐标系 JSON 协议](https://develop.realman-robotics.com/robot/json/coordinate/)、[工具参数结构体](https://develop.realman-robotics.com/robot/apic/struct/frame/)。
+
+2026-09-17 抓取接入：用户明确同意首轮沿用当前名义 grip_tcp。`grasp_control.py` 在静止机械臂前后查询之间选取新鲜视觉快照，验证实际内参后计算 base_T_object；该接受决定不改写原 YAML 的几何未验证记录。当前执行仍受夹爪限力回读、接触判据、工作区与路径 IK 检查约束。
