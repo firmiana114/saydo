@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result
-from grasp_robot import RobotClient
+from grasp_robot import RobotClient, register_support_issue
 from grasp_control import GraspController
 
 
@@ -86,8 +86,8 @@ class GraspTests(unittest.TestCase):
                 arm={'pose':[0,0,200000,0,0,0],'joint':[0]*7,'err':[0]}
                 tool_raw={'tool_name':'grip_tcp','pose':[0]*6}
                 tool={'controller_readback':{'tool_response_raw':tool_raw},'flange_T_grip_tcp':np.eye(4).tolist()}
-                handeye={'installation':{'controller_firmware':'V1.7.0'},'flange_T_color_optical_camera':np.eye(4).tolist(),'camera':{'K':np.eye(3).tolist()}}
-                replies={'get_arm_software_info':{'Product_version':'RM75-BI','ctrl_info':{'version':'V1.7.0'}},
+                handeye={'installation':{'controller_firmware':'V1.7.3'},'flange_T_color_optical_camera':np.eye(4).tolist(),'camera':{'K':np.eye(3).tolist()}}
+                replies={'get_arm_software_info':{'Product_version':'RM75-BI','ctrl_info':{'version':'V1.7.3'}},
                     'get_current_tool_frame':tool_raw,'get_current_work_frame':{'frame_name':'Base','pose':[0]*6},
                     'get_joint_en_state':{'en_state':[1]*7},'get_joint_err_flag':{'err_flag':[0]*7},
                     'get_rm_plus_mode':{'mode':115200},
@@ -99,6 +99,29 @@ class GraspTests(unittest.TestCase):
                     execute.assert_not_called()
                     self.assertFalse(service.status['plan']['can_execute'])
                     self.assertEqual(service.status['plan']['force_limit_raw'], 17)
+
+    def test_legacy_firmware_is_diagnosed_before_vision_or_writes(self):
+        self.assertIsNotNone(register_support_issue({'ctrl_info': {'version': 'V1.7.0'}}))
+        self.assertIsNotNone(register_support_issue({'ctrl_info': {'version': 'V1.7.2'}}))
+        self.assertIsNone(register_support_issue({'ctrl_info': {'version': 'V1.7.3'}}))
+        self.assertIsNotNone(register_support_issue({}))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); cfg = root / 'grasp.json'; cfg.write_text(json.dumps(self.config()))
+            service = GraspController(root, None, cfg)
+            software = {'ctrl_info': {'version': 'V1.7.0'}}
+            from unittest.mock import Mock
+            robot = Mock()
+            robot.query.return_value = software
+            with patch('grasp_control.RobotClient', return_value=robot), \
+                 patch.object(service, 'calibration', return_value=({}, {})):
+                service.run()
+            robot.query.assert_called_once_with('get_arm_software_info')
+            robot.set_register.assert_not_called()
+            robot.open_gripper.assert_not_called()
+            robot.move_linear.assert_not_called()
+            self.assertIn('V1.7.3', service.status['error'])
+            report = json.loads(next((root / 'work/grasp/jobs').glob('*.json')).read_text())
+            self.assertFalse(report['robot_motion_sent'])
 
     def test_force_configuration_is_local_validated_and_locked_during_grasp(self):
         with tempfile.TemporaryDirectory() as directory:

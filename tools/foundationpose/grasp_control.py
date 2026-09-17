@@ -11,7 +11,7 @@ import numpy as np
 import yaml
 
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result
-from grasp_robot import RobotClient
+from grasp_robot import RobotClient, register_support_issue
 
 
 class GraspController:
@@ -55,12 +55,15 @@ class GraspController:
         config = json.loads(self.config_path.read_text())
         robot = RobotClient(config['robot_ip'], config['robot_port'], writes=False)
         try:
+            software = robot.query('get_arm_software_info')
             mode = robot.query('get_rm_plus_mode')['mode']
             base = robot.query('get_rm_plus_base_info')['base_info']
             state = robot.query('get_rm_plus_state_info')['state_info']
             names = {0:'正在松开',1:'正在闭合',2:'位置到位停止',3:'力控到位停止',4:'触觉到位停止',5:'电流保护停止',6:'发生故障'}
             return {'mode': mode, 'base': base, 'state': state, 'state_text': names.get(state.get('dof_state', [-1])[0], '未知'),
-                    'force_units': config['gripper']['force_units'], 'motion_sent': False}
+                    'force_units': config['gripper']['force_units'], 'motion_sent': False,
+                    'controller_version': software.get('ctrl_info', {}).get('version'),
+                    'register_access_issue': register_support_issue(software)}
         except Exception as error:
             raise ValueError('读取夹爪失败：' + str(error)) from error
 
@@ -179,9 +182,6 @@ class GraspController:
                     config['gripper']['force_limit_raw'] = self.force_override
             report['effective_gripper_config'] = dict(config['gripper'])
             report['config_sha256'] = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
-            initial = self.tracker.grasp_observation()
-            if initial['object_id'] not in config['objects']:
-                raise ValueError('当前物品尚未配置抓取位置；首轮仅支持怡宝水瓶')
             if self.mode == 'execute':
                 lock_path = self.root / 'work/grasp/robot.lock'
                 lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +190,13 @@ class GraspController:
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=self.mode == 'execute')
             handeye, tool = self.calibration(config)
             software = self.robot.query('get_arm_software_info')
+            report['controller_software'] = software
+            compatibility_issue = register_support_issue(software)
+            if self.mode == 'execute' and compatibility_issue:
+                raise ValueError(compatibility_issue)
+            initial = self.tracker.grasp_observation()
+            if initial['object_id'] not in config['objects']:
+                raise ValueError('当前物品尚未配置抓取位置；首轮仅支持怡宝水瓶')
             if software.get('Product_version') != 'RM75-BI' or software['ctrl_info']['version'] != handeye['installation']['controller_firmware']:
                 raise ValueError('机械臂型号/固件与标定记录不匹配')
             if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
@@ -230,7 +237,9 @@ class GraspController:
                 blockers.append('夹爪力控单位及限力实际生效尚未验证')
             if not grip['contact_state_verified']:
                 blockers.append('夹爪力控接触状态尚未实机验证')
-            for register in (1180, 1220):
+            if compatibility_issue:
+                blockers.append(compatibility_issue)
+            for register in (() if compatibility_issue else (1180, 1220)):
                 try:
                     self.robot.register(register)
                 except Exception as error:
