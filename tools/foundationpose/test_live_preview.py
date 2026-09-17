@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import tempfile
 import time
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ class LivePreviewTests(unittest.TestCase):
         root = Path(self.directory.name)
         mesh = root / 'model.obj'
         mesh.write_text('# fixture\n')
-        args = SimpleNamespace(mesh=mesh, serial='test', detector_class='bottle', auto_recover=True, recovery_interval=0.)
+        args = SimpleNamespace(mesh=mesh, grasp_config=live_tracker.ROOT / 'config/grasp/trial.json', serial='test', detector_class='bottle', auto_recover=True, recovery_interval=0.)
         with patch.object(live_tracker, 'ROOT', root):
             self.tracker = live_tracker.Tracker(args)
 
@@ -68,6 +69,41 @@ class LivePreviewTests(unittest.TestCase):
             return pose
         self.assertIsNone(t.catch_up(0, frames[0], np.eye(4), advance))
         self.assertEqual(t.state['state'], 'paused')
+
+    def test_adaptive_catchup_converges_when_fixed_stride_would_fall_behind(self):
+        t = self.tracker
+        clock = [100.]
+        frame = {'sequence': 0, 'time': 94.}
+        for i in range(91):
+            t.history.append({'sequence': i, 'time': 94. + i / 15})
+        visited = []
+        def advance(target, pose):
+            visited.append(target['time'])
+            clock[0] += .16  # Slower than the previous fixed 120 ms stride.
+            while t.history[-1]['time'] + 1 / 15 <= clock[0]:
+                t.history.append({'sequence': t.history[-1]['sequence'] + 1,
+                                  'time': t.history[-1]['time'] + 1 / 15})
+            return pose
+        with patch.object(live_tracker.time, 'time', side_effect=lambda: clock[0]), \
+             patch.object(live_tracker.time, 'perf_counter', side_effect=lambda: clock[0]):
+            result = t.catch_up(0, frame, np.eye(4), advance)
+        self.assertIsNotNone(result)
+        self.assertLessEqual(clock[0] - result[0]['time'], .25)
+        self.assertLessEqual(result[3], 12.2)
+        self.assertTrue(all(0 < delta <= .300001 for delta in np.diff([94.] + visited)))
+        events = [json.loads(line) for line in (t.output / 'events.jsonl').read_text().splitlines()]
+        self.assertIn('catchup_progress', [e['event'] for e in events])
+        self.assertEqual(events[-1]['event'], 'catchup_completed')
+
+    def test_adaptive_catchup_still_rejects_quality_failure(self):
+        t = self.tracker; now = time.time()
+        frames = [{'sequence': i, 'time': now - 1 + i * .1} for i in range(11)]
+        t.history.extend(frames)
+        def advance(frame, pose):
+            raise ValueError('bad pose')
+        with self.assertRaisesRegex(ValueError, 'bad pose'):
+            t.catch_up(0, frames[0], np.eye(4), advance)
+        self.assertIsNone(t.state['camera_T_object'])
 
     def test_object_switch_invalidates_pending_inference_and_old_overlay(self):
         t = self.tracker

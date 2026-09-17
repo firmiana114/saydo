@@ -2,14 +2,16 @@
 import numpy as np
 
 
-def catchup_frame(frames, previous_sequence, previous_time):
+def catchup_frame(frames, previous_sequence, previous_time, stride=.12):
     newer = [frame for frame in frames if frame['sequence'] > previous_sequence]
     if not newer:
         return None
     if newer[0]['time'] - previous_time > .3:
         raise ValueError('初始化期间的连续帧已不足，重新识别最新画面')
     # Follow intermediate observations rather than jumping several seconds.
-    return next((frame for frame in newer if frame['time'] - previous_time >= .12), newer[-1])
+    # Never bridge a large temporal gap, even when inference is slow.
+    eligible = [frame for frame in newer if frame['time'] - previous_time <= .3 + 1e-6]
+    return next((frame for frame in eligible if frame['time'] - previous_time >= stride), eligible[-1])
 
 
 def recovery_due(state, enabled, now, retry_at, frame_age):

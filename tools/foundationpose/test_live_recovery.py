@@ -14,7 +14,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
             root = Path(directory)
             mesh = root / 'model.obj'
             mesh.write_text('# fixture for state-machine test\n')
-            args = SimpleNamespace(mesh=mesh, serial='test', detector_class='bottle', auto_recover=True, recovery_interval=2.)
+            args = SimpleNamespace(mesh=mesh, grasp_config=live_tracker.ROOT / 'config/grasp/trial.json', serial='test', detector_class='bottle', auto_recover=True, recovery_interval=2.)
             with patch.object(live_tracker, 'ROOT', root):
                 tracker = live_tracker.Tracker(args)
             tracker.state['model_ready'] = True
@@ -38,7 +38,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
             root = Path(directory)
             mesh = root / 'model.obj'
             mesh.write_text('# fixture\n')
-            args = SimpleNamespace(mesh=mesh, serial='test', detector_class='bottle', auto_recover=True, recovery_interval=0.)
+            args = SimpleNamespace(mesh=mesh, grasp_config=live_tracker.ROOT / 'config/grasp/trial.json', serial='test', detector_class='bottle', auto_recover=True, recovery_interval=0.)
             with patch.object(live_tracker, 'ROOT', root):
                 tracker = live_tracker.Tracker(args)
             tracker.state['model_ready'] = True

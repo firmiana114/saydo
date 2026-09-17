@@ -23,6 +23,7 @@ import numpy as np
 from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
 from object_catalog import scan_objects, select_object, inferred_class
 from grasp_control import GraspController
+from live_events import EventLog
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,7 +40,7 @@ class Tracker:
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.latest = self.frozen = self.command = None
-        self.history = deque(maxlen=90)
+        self.history = deque(maxlen=180)  # 12 s at 15 FPS, bounded RGB-D memory.
         self.pose_history = deque(maxlen=60)
         self.jpeg = None
         self.generation = 0
@@ -51,6 +52,8 @@ class Tracker:
                       'recovery_attempts': 0, 'recovery_interval_s': args.recovery_interval}
         self.output = ROOT / 'work/foundationpose_live' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.output.mkdir(parents=True)
+        self.events = EventLog(self.output / 'events.jsonl')
+        self.last_heartbeat = 0.
         self.state['output'] = str(self.output)
         self.state.update(object_id=self.object_info['id'], object_name=self.object_info['name'],
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
@@ -60,6 +63,12 @@ class Tracker:
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
              'robot_commands': False, 'pose_frame': 'color optical camera; translation metres',
              'quality_gate': 'heuristic only; transparent surface depth and model dimensions unvalidated'}, indent=2))
+        self.event('session_started', history_frames=self.history.maxlen,
+                   catchup_max_step_s=.3, catchup_max_budget_s=12., catchup_target_age_s=.25)
+
+    def event(self, event, **values):
+        return self.events.write(event, **{'generation': self.generation,
+            'object_id': self.state.get('object_id'), **values})
 
     def capture(self):
         sys.path.insert(0, str(ROOT / 'work/foundationpose_realsense_py311'))
@@ -121,6 +130,7 @@ class Tracker:
                     self.state['sensor_age_at_receive_s'] = frame['sensor_age_at_receive_s']
                     self.state['alignment_seconds'] = frame['alignment_seconds']
         except Exception as error:
+            self.event('camera_failed', error=str(error), traceback=traceback.format_exc())
             with self.lock:
                 self.state.update(state='camera_error', error=str(error), camera_T_object=None)
             self.stop.set()
@@ -164,6 +174,7 @@ class Tracker:
 
     def mark_lost(self, error):
         with self.lock:
+            self.event('tracking_lost', error=error)
             self.retry_at = time.monotonic() + self.args.recovery_interval
             self.state.update(state='recovering' if self.args.auto_recover and self.state.get('auto_detection_supported') else 'lost',
                               error=error, camera_T_object=None)
@@ -201,6 +212,7 @@ class Tracker:
             self.frozen = None
             self.jpeg = None
             self.state.update(state='paused', camera_T_object=None)
+            self.event('paused')
 
     def switch_object(self, object_id):
         info = select_object(self.models_root, object_id)
@@ -279,25 +291,45 @@ class Tracker:
         """Advance the upstream tracker over a bounded recent-frame buffer."""
         started = time.perf_counter()
         count = 0
+        step_seconds = .06
+        last_progress = started
         with self.lock:
             if generation != self.generation or self.stop.is_set():
                 return None
             self.state.update(state='catching_up', camera_T_object=None)
+        initial_age = max(0., time.time() - frame['time'])
+        budget = min(12., max(3., initial_age * 2 + 1))
+        self.event('catchup_started', generation=generation, initial_age_s=initial_age, budget_s=budget)
         while True:
             with self.lock:
                 if generation != self.generation or self.stop.is_set():
+                    self.event('catchup_cancelled', generation=generation, steps=count)
                     return None
                 if time.time() - frame['time'] <= .25:
+                    self.event('catchup_completed', generation=generation, steps=count,
+                               seconds=time.perf_counter() - started, result_age_s=time.time() - frame['time'])
                     return frame, pose, count, time.perf_counter() - started
-                target = catchup_frame(list(self.history), frame['sequence'], frame['time'])
-            if time.perf_counter() - started > 3:
+                history = list(self.history)
+                stride = min(.3, max(.12, step_seconds * 2))
+                self.state['catchup_progress'] = {'steps': count, 'elapsed_s': time.perf_counter() - started,
+                    'remaining_age_s': time.time() - frame['time'], 'step_seconds': step_seconds,
+                    'stride_s': stride, 'budget_s': budget,
+                    'history_span_s': history[-1]['time'] - history[0]['time'] if history else 0}
+                target = catchup_frame(history, frame['sequence'], frame['time'], stride)
+            if time.perf_counter() - started > budget:
                 raise ValueError('重新定位后未能及时追上实时画面，重新识别')
             if target is None:
                 self.stop.wait(.01)
                 continue
+            step_started = time.perf_counter()
             pose = advance(target, pose)
+            duration = time.perf_counter() - step_started
+            step_seconds = duration if count == 0 else .5 * step_seconds + .5 * duration
             frame = target
             count += 1
+            if time.perf_counter() - last_progress >= 1:
+                self.event('catchup_progress', generation=generation, **self.state['catchup_progress'])
+                last_progress = time.perf_counter()
 
     def inference(self):
         try:
@@ -370,7 +402,10 @@ class Tracker:
                                          'object': info, 'mesh_sha256': hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest()}
                                 with (self.output / 'model_changes.jsonl').open('a') as changes:
                                     changes.write(json.dumps(event, ensure_ascii=False) + '\n')
+                                self.event('object_switched', mesh=info['mesh'], mesh_sha256=event['mesh_sha256'])
                         except Exception as error:
+                            self.event('model_switch_failed', generation=switch_generation,
+                                       error=str(error), traceback=traceback.format_exc())
                             with self.lock:
                                 if switch_generation == self.generation:
                                     self.state.update(state='model_error', error=str(error), model_ready=False, camera_T_object=None)
@@ -404,13 +439,25 @@ class Tracker:
                     initialization_seconds = None
                     catchup_count = 0
                     catchup_seconds = 0.
+                    stage = 'detection' if command and box is None else ('segmentation' if command else 'tracking')
+                    timings = {}
+                    last_health = None
+                    attempt_object_id = self.state.get('object_id')
+                    if command:
+                        self.event('attempt_started', generation=generation, object_id=attempt_object_id,
+                                   sequence=frame['sequence'], input_age_s=time.time() - frame['time'], automatic=box is None)
+                        self.state['catchup_progress'] = None
                     try:
                         with torch.inference_mode():
                             if command:
                                 if box is None:
+                                    stage_started = time.perf_counter()
                                     prediction = predict_detection(detector, rgb)
                                     candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
                                         prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), detector_label)
+                                    timings['detection_s'] = time.perf_counter() - stage_started
+                                    self.event('detection_completed', generation=generation, candidates=candidates,
+                                               seconds=timings['detection_s'])
                                     if not candidates:
                                         raise ValueError('没有检测到可靠的目标，请让物品完整入镜')
                                     with self.lock:
@@ -423,13 +470,25 @@ class Tracker:
                                             continue
                                         self.state['state'] = 'initializing'
                                     box = candidates[0]['box']
+                                stage = 'segmentation'
+                                stage_started = time.perf_counter()
                                 sam.set_image(rgb)
                                 masks, scores, _ = sam.predict(box=np.asarray(box), multimask_output=True)
                                 mask = masks[int(np.argmax(scores))]
-                                if mask.sum() < 100 or ((frame['depth'] >= .1) & (frame['depth'] <= 2) & mask).sum() < 100:
+                                timings['segmentation_s'] = time.perf_counter() - stage_started
+                                valid_pixels = int(((frame['depth'] >= .1) & (frame['depth'] <= 2) & mask).sum())
+                                self.event('segmentation_completed', generation=generation,
+                                    mask_pixels=int(mask.sum()), valid_depth_pixels=valid_pixels,
+                                    seconds=timings['segmentation_s'], box=np.asarray(box).tolist())
+                                if mask.sum() < 100 or valid_pixels < 100:
                                     raise ValueError('目标有效深度不足，请调整距离或视角后重新框选')
+                                stage = 'registration'
+                                stage_started = time.perf_counter()
                                 estimator.pose_last = None
                                 pose = estimator.register(K=frame['K'], rgb=rgb, depth=frame['depth'].copy(), ob_mask=mask, iteration=5)
+                                timings['registration_s'] = time.perf_counter() - stage_started
+                                self.event('registration_completed', generation=generation,
+                                    seconds=timings['registration_s'], input_age_s=time.time() - frame['time'])
                                 if estimator.pose_last is None:
                                     raise ValueError('FoundationPose 首帧初始化没有产生有效状态')
                                 previous = None
@@ -443,21 +502,26 @@ class Tracker:
                                 if not np.isfinite(pose).all():
                                     raise ValueError('FoundationPose returned nonfinite pose')
                                 def checked_render(current_pose, current_frame, last_pose=None, initial_mask=None):
+                                    nonlocal last_health
                                     _, rd, _ = nvdiffrast_render(K=current_frame['K'], H=360, W=640, mesh=mesh,
                                         ob_in_cams=torch.as_tensor(current_pose[None], device='cuda', dtype=torch.float32), glctx=context)
                                     health = pose_health(current_pose, rd[0].detach().cpu().numpy(), current_frame['depth'], last_pose, initial_mask)
+                                    last_health = health
                                     if not health['good']:
                                         raise ValueError('重新定位或追帧结果不可靠，重新识别')
+                                stage = 'initial_quality'
                                 checked_render(pose, frame, initial_mask=mask)
                                 def advance(target, last_pose):
                                     candidate = estimator.track_one(rgb=cv2.cvtColor(target['bgr'], cv2.COLOR_BGR2RGB),
                                         depth=target['depth'].copy(), K=target['K'], iteration=2)
                                     checked_render(candidate, target, last_pose)
                                     return candidate
+                                stage = 'catchup'
                                 caught = self.catch_up(generation, frame, pose, advance)
                                 if caught is None:
                                     continue
                                 frame, pose, catchup_count, catchup_seconds = caught
+                                timings['catchup_s'] = catchup_seconds
                                 rgb = cv2.cvtColor(frame['bgr'], cv2.COLOR_BGR2RGB)
                                 mask = None  # Initialization mask belongs to the older reference frame.
                             else:
@@ -468,6 +532,8 @@ class Tracker:
                                 ob_in_cams=torch.as_tensor(pose[None], device='cuda', dtype=torch.float32), glctx=context)
                             rendered = rendered[0].detach().cpu().numpy()
                             quality = pose_health(pose, rendered, frame['depth'], previous, mask)
+                            last_health = quality
+                        stage = 'publish'
                         duration = time.perf_counter() - started
                         failures = 0 if quality['good'] else failures + 1
                         lost = not quality['good'] and (bool(command) or failures >= 3)
@@ -513,16 +579,34 @@ class Tracker:
                             status_temp.replace(self.output / 'status.json')
                             (self.output / 'latest.jpg').write_bytes(self.jpeg)
                         records.write(json.dumps(record) + '\n')
+                        if command:
+                            self.event('attempt_completed', generation=generation, object_id=attempt_object_id,
+                                seconds=time.perf_counter() - started, timings=timings, quality=quality,
+                                result_age_s=time.time() - frame['time'], catchup_steps=catchup_count,
+                                outcome='lost' if lost else 'tracking')
+                        if time.monotonic() - self.last_heartbeat >= 5:
+                            self.event('tracking_summary', generation=generation, sequence=frame['sequence'],
+                                inference_s=duration, result_age_s=time.time() - frame['time'], quality=quality,
+                                tracked_frames=self.state['tracked_frames'])
+                            self.last_heartbeat = time.monotonic()
                         previous = np.asarray(pose).copy()
                         last_sequence = frame['sequence']
                     except Exception as error:
+                        failure = self.event('attempt_failed' if command else 'frame_failed',
+                            generation=generation, object_id=attempt_object_id, stage=stage,
+                            error=str(error), error_type=type(error).__name__, traceback=traceback.format_exc(),
+                            seconds=time.perf_counter() - started, timings=timings,
+                            input_age_s=time.time() - frame['time'], quality=last_health,
+                            catchup=self.state.get('catchup_progress') if stage == 'catchup' else None)
                         with self.lock:
                             if generation == self.generation:
+                                self.state['last_failure'] = failure
                                 self.mark_lost(str(error))
                         print('Frame failure:', repr(error), flush=True)
                         if not isinstance(error, ValueError):
                             traceback.print_exc()
         except Exception as error:
+            self.event('model_failed', error=str(error), traceback=traceback.format_exc())
             with self.lock:
                 self.state.update(state='model_error', error=str(error), camera_T_object=None)
             print('Model failure:', repr(error), flush=True)
@@ -689,6 +773,8 @@ def main():
         for thread in threads:
             thread.join(timeout=15)
         server.server_close()
+        tracker.event('session_stopped')
+        tracker.events.close()
         camera_lock.close()
 
 
