@@ -1,5 +1,26 @@
 # FoundationPose：环境、胶带重建与离线诊断
 
+## D435i 实时跟踪接入
+
+`live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 只负责框选后的首帧分割。没有机械臂控制、TF 发布或抓取接口。
+
+```bash
+source tools/foundationpose/runtime_env.sh
+# RealSense SDK 独立放在 work/，不替换已有 Python 环境依赖。
+python -m pip install --no-deps --target work/foundationpose_realsense_py311 pyrealsense2==2.58.4.10922
+python tools/foundationpose/live_tracker.py --mesh work/object_models/ob_yibao_350ml/model/model.obj
+```
+
+页面默认仅监听 MSI 的 `http://127.0.0.1:8089`；远端浏览器可用 `ssh -N -L 18889:127.0.0.1:8089 msi`，然后打开本机 `http://127.0.0.1:18889`。选择目标会冻结一张 RGB-D 图；拖框后初始化，出现跟踪结果后可缓慢移动目标。框坐标绑定冻结帧，旧选择会被拒绝。重新框选可在丢失后恢复。暂停仅停跟踪，停止按钮或 SIGTERM 会释放相机并退出服务。
+
+默认读取 D435i 彩色 1280×720/15 fps、深度 640×360/15 fps，对齐到彩色后缩至 640×360，内参同步缩放、深度按设备比例转米。相机线程持续取帧，推理只取最新一帧，不积压视频；输出记录相机原生帧号。启动通过现有预览的 pause API 释放相机，不执行设备重置。
+
+`GET /api/status` 给出状态和相机光学坐标系下的 `camera_T_object`（米）。过期、深度不足或不可靠时位姿为 null。深度残差/像素数/步间位移等只是启发式检查，不能证明透明物体跟踪准确；`pose_accepted_for_robot_control` 始终为 false。网页保留与估计对应的画面，过期时明确标示。仅同源浏览器可以发送控制 POST。
+
+每次运行记录在 `work/foundationpose_live/<时间>/`：模型哈希、实际流配置、初始化 RGB-D/mask、连续帧位姿与质量指标、最新预览。怡宝模型高度 170 mm、直径 60 mm 是待实测的假设，近似旋转对称与透明瓶身会影响深度和朝向判断。
+
+离线检查：`python -m unittest discover -s tools/foundationpose -p 'test_live_checks.py' -v`。相机与实物跟踪的实际结果按每次运行单独记录。
+
 ## 最新：set3 重建结果（2026-09-15）
 
 `tape_20260915_set3` 的 21 组候选、147 个原始文件哈希已检查。使用独立提示配置 `config/foundationpose/tape_20260915_set3_prompts.json`，修正了人手、桌面阴影和纸芯掩码；最终分割为 `work/object_scan/tape_20260915_set3/segmentation_final/`。最大连通区域清理去除了 1719 个孤立背景像素，原始采集未修改。
