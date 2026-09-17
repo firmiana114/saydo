@@ -22,6 +22,7 @@ import numpy as np
 
 from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
 from object_catalog import scan_objects, select_object, inferred_class
+from grasp_control import GraspController
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,6 +40,7 @@ class Tracker:
         self.stop = threading.Event()
         self.latest = self.frozen = self.command = None
         self.history = deque(maxlen=90)
+        self.pose_history = deque(maxlen=60)
         self.jpeg = None
         self.generation = 0
         self.retry_at = 0.
@@ -52,6 +54,7 @@ class Tracker:
         self.state['output'] = str(self.output)
         self.state.update(object_id=self.object_info['id'], object_name=self.object_info['name'],
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
+        self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'preview'))
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
              'camera_serial': args.serial, 'native_color': [1280, 720, 15], 'native_depth': [640, 360, 15],
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
@@ -127,11 +130,14 @@ class Tracker:
 
     def freeze(self):
         with self.lock:
+            if self.grasp.snapshot()['busy']:
+                raise ValueError('抓取任务处理中，请先停止抓取')
             if self.latest is None or time.time() - self.latest['time'] > 2:
                 raise ValueError('还没有新鲜的相机画面')
             if not self.state.get('model_ready'):
                 raise ValueError('模型仍在加载')
             self.generation += 1
+            self.pose_history.clear()
             self.frozen = self.latest
             self.command = None
             self.state.update(state='selecting', error=None, camera_T_object=None, selection_id=self.generation)
@@ -164,6 +170,8 @@ class Tracker:
 
     def recover_if_due(self):
         with self.lock:
+            if self.grasp.snapshot()['busy']:
+                return False
             age = time.time() - self.latest['time'] if self.latest else None
             new_frame = self.latest is not None and self.latest['sequence'] != self.last_attempt_sequence
             if new_frame and recovery_due(self.state['state'], self.args.auto_recover, time.monotonic(), self.retry_at, age):
@@ -184,6 +192,8 @@ class Tracker:
 
     def pause(self):
         with self.lock:
+            if self.grasp.snapshot()['busy']:
+                raise ValueError('抓取任务处理中，请使用“停止抓取”')
             if self.state['state'] == 'switching':
                 raise ValueError('模型正在切换，请加载完成后再暂停')
             self.generation += 1
@@ -195,8 +205,11 @@ class Tracker:
     def switch_object(self, object_id):
         info = select_object(self.models_root, object_id)
         with self.lock:
+            if self.grasp.snapshot()['busy']:
+                raise ValueError('抓取任务处理中，不能切换物品')
             self.generation += 1
             self.command = None
+            self.pose_history.clear()
             self.frozen = None
             self.jpeg = None
             self.pending_object = (self.generation, info)
@@ -212,7 +225,28 @@ class Tracker:
             result['pose_age_s'] = now - result['pose_frame_at'] if result.get('pose_frame_at') is not None else None
             if result['state'] != 'tracking' or result['pose_age_s'] is None or result['pose_age_s'] > 2 or not result.get('quality', {}).get('good'):
                 result['camera_T_object'] = None
+            result['grasp'] = self.grasp.snapshot()
             return result
+
+    def grasp_observation(self):
+        with self.lock:
+            s = self.state
+            if s['state'] != 'tracking' or not s.get('quality', {}).get('good') or s.get('camera_T_object') is None:
+                raise ValueError('当前没有可靠跟踪位姿')
+            if time.time() - s['pose_frame_at'] > .3:
+                raise ValueError('视觉位姿过期，不能用于抓取')
+            rows = [r for r in self.pose_history if r['generation'] == self.generation and r['time'] >= s['pose_frame_at'] - .8]
+            if len(rows) < 8 or rows[-1]['time'] - rows[0]['time'] < .5:
+                raise ValueError('请保持物品和机械臂静止，等待至少半秒稳定跟踪')
+            points = np.array([r['pose'] for r in rows])[:, :3, 3]
+            if np.max(np.linalg.norm(points - points[-1], axis=1)) > .005:
+                raise ValueError('目标位姿仍在变化，请先保持静止')
+            rotations = np.array([r['pose'] for r in rows])[:, :3, :3]
+            angles = np.arccos(np.clip((np.einsum('nij,ij->n', rotations, rotations[-1]) - 1) / 2, -1, 1))
+            if np.max(angles) > np.deg2rad(15):
+                raise ValueError('目标朝向不稳定，请等待稳定跟踪')
+            return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
+                    'object_id': s.get('object_id'), 'object_name': s.get('object_name')}
 
     def image(self):
         with self.lock:
@@ -467,6 +501,8 @@ class Tracker:
                                 self.state.update(initialization_seconds=initialization_seconds, catchup_frames=catchup_count,
                                                   catchup_seconds=catchup_seconds)
                             self.state['registered_frames' if command else 'tracked_frames'] += 1
+                            if quality['good'] and not lost:
+                                self.pose_history.append({'pose': pose.tolist(), 'time': frame['time'], 'generation': generation})
                             if lost:
                                 self.mark_lost('深度或位姿匹配不可靠，等待重新识别')
                             self.frozen = None
@@ -497,6 +533,8 @@ def main():
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--models-root', type=Path, default=ROOT / 'work/object_models')
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
+    parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='preview', help='Preview does not send robot writes; execute still requires all hardware/workspace checks')
+    parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
     parser.add_argument('--serial', default='135122077750')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
@@ -609,7 +647,16 @@ def main():
                 elif self.path == '/api/pause':
                     tracker.pause()
                     result = {'paused': True}
+                elif self.path == '/api/grasp':
+                    tracker.grasp.start()
+                    result = {'accepted': True, 'mode': args.grasp_mode}
+                elif self.path == '/api/gripper/status':
+                    result = tracker.grasp.hardware_status()
+                elif self.path == '/api/grasp/stop':
+                    tracker.grasp.abort()
+                    result = {'cancelled': True}
                 elif self.path == '/api/stop':
+                    tracker.grasp.abort()
                     tracker.stop.set()
                     result = {'stopping': True}
                     threading.Thread(target=server.shutdown, daemon=True).start()
@@ -617,7 +664,7 @@ def main():
                     self.reply(404, {'error': 'not found'})
                     return
                 self.reply(200, result)
-            except (ValueError, KeyError, TypeError) as error:
+            except (ValueError, KeyError, TypeError, RuntimeError) as error:
                 self.reply(400, {'error': str(error)})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
@@ -625,6 +672,10 @@ def main():
     for thread in threads:
         thread.start()
     def shutdown(*unused):
+        try:
+            tracker.grasp.abort()
+        except Exception as error:
+            print('Grasp stop failure:', error, flush=True)
         tracker.stop.set()
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)

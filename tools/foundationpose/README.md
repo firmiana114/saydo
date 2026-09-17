@@ -175,3 +175,35 @@ python tools/foundationpose/evaluate_mesh.py \
 `detector_class` 使用 Torchvision COCO 类别名称，例如 bottle、cup、remote；null 或不支持的类别采用手动框选，丢失后也不自动检测错误类别。已有水瓶、杯子、遥控器目录在无配置时可按目录名识别类别；新物品建议显式配置。`--models-root` 可指定列表根目录，`--detector-class` 仅覆盖命令行初始模型的类别。
 
 接口：`GET /api/objects` 列出目录，`POST /api/object` 携带 `{"id":"目录名"}` 请求切换。只接受列表内、路径位于该物品目录的模型；不接受任意文件路径。
+
+## 首轮视觉抓取接入（预览默认开启，实机动作尚未验收）
+
+网页提供“抓取当前被跟踪物品”“读取夹爪状态”“停止抓取”。默认 `--grasp-mode preview`，点击只读取状态、生成和检查路径，不发送机械臂或夹爪动作。首个配置仅支持 `ob_yibao_350ml`，保持当前 TCP 朝向，夹持模型中心，不抬起。用户已接受名义 grip_tcp，但这不代表几何精度已实测。
+
+配置为 `config/grasp/trial.json`。变换链严格使用：
+
+```text
+base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
+                @ flange_T_camera @ camera_T_object
+```
+
+点击时要求目标连续稳定至少半秒、位姿新鲜，查询机械臂前后状态验证静止并绑定期间取得的新视觉快照。检查型号、固件、关节使能/错误、工具/负载与 Base 工作坐标系及标定来源哈希。路径保持姿态，包含空爪抬至避让高度、移至预抓取上方、到预抓取点、接近抓取点；闭合后不追加抬起动作。
+
+离线逆解检查器使用项目现有 RealMan SDK 的 rm_algo 系列，不连接机器人。按约 10 mm 采样检查 IK、自碰撞/关节限位与相邻解连续性；先比较当前关节的 FK 与控制器 TCP 是否一致。它不能替代完整场景碰撞规划，工作区和桌面高度必须配置并核对。
+
+```bash
+g++ -std=c++14 tools/foundationpose/grasp_ik.cpp   -I ros2_rm_ws/src/ros2_rm_robot/rm_driver/include/rm_driver   -L ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/linux_x86_c++_v1.1.5   -Wl,-rpath,/home/pc/saydo/ros2_rm_ws/src/ros2_rm_robot/rm_driver/lib/linux_x86_c++_v1.1.5   -lapi_cpp -o work/grasp/rm75_ik_check
+```
+
+只有明确启动 `--grasp-mode execute`，且限力/限速寄存器能够读回真实数值、力控单位和接触状态已验证、工作区检查及 IK 全部通过，才允许执行。单纯返回 `set_state=true` 不作为设置生效证明。停止请求对已开始执行的任务发送机械臂停止及夹爪停止，不自动松开或抬起。运动和夹爪等待都有超时及错误检查。每次任务记录于 `work/grasp/jobs`。
+
+当前 CTAG2F90D 读回 RM Plus 115200、ZX/id=1/dof=1、force=true、touch=false、位置范围 0–1000、速度上限 500、力上限原始值 100。通用协议力单位为 0.001 N，但当前设备范围与厂商最大 25 N 不一致，尚未确认适配单位。1220 写入 10 返回成功，base_info 仍为 100，get_rm_plus_reg 不返回 plus_reg_data，因此未证明设置生效；已发送恢复原值 100 的指令，位置保持 499。当前配置的力控/接触验证标记为 false，工作区未录入，不能发送实机抓取动作。
+
+接触判定依据 RM Plus 状态 3（力控到位）、停止速度、尚未全闭的位置和正力反馈连续出现；状态 2 仅表示位置到位，状态 5 是电流保护，均不能当作抓到物体。该判据仍需本设备验证；即使触发也只表示疑似力控接触，不证明抓牢。
+
+厂商资料：
+- https://develop.realman-robotics.com/robot/json/endeffector/
+- https://develop.realman-robotics.com/robot/json/motionConfig/
+- https://www.changingtek.com/diandong/147
+
+检查：`python -m unittest discover -s tools/foundationpose -p 'test_grasp.py' -v`。不以模拟执行测试代替实机验收。

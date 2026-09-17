@@ -1,0 +1,39 @@
+{
+  "robot_ip": "192.168.1.19",
+  "robot_port": 8080,
+  "nominal_tcp_user_accepted": true,
+  "action": "close_only_no_lift",
+  "handeye_file": "config/calibration/handeye.yaml",
+  "tool_file": "config/calibration/tool_grip_tcp.yaml",
+  "ik_checker": "work/grasp/rm75_ik_check",
+  "arm_speed_percent": 2,
+  "pregrasp_distance_m": 0.05,
+  "clearance_height_m": 0.08,
+  "max_target_distance_m": 0.3,
+  "max_plan_age_s": 5,
+  "workspace_min_m": null,
+  "workspace_max_m": null,
+  "table_z_m": null,
+  "workspace_reviewed": false,
+  "gripper": {
+    "vendor": "ZX",
+    "device_id": 1,
+    "open_position": 900,
+    "closed_position": 0,
+    "contact_position_margin": 20,
+    "speed_limit_raw": 100,
+    "force_limit_raw": 10,
+    "force_target_raw": 10,
+    "force_units": "unverified_native_units_not_newtons",
+    "force_control_verified": false,
+    "contact_state_verified": false,
+    "close_timeout_s": 5
+  },
+  "objects": {
+    "ob_yibao_350ml": {
+      "grasp_point_object_m": [0, 0, 0],
+      "orientation": "keep_current_tcp",
+      "note": "First trial: 350 mL bottle, grip at nominal model centre, no lift. Nominal TCP explicitly accepted by user."
+    }
+  }
+}

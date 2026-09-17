@@ -86,6 +86,17 @@ class LivePreviewTests(unittest.TestCase):
         self.assertEqual(t.pending_object[1]['detector_class'], 'cup')
         self.assertIsNone(t.catch_up(0, {}, np.eye(4), lambda *args: None))
 
+    def test_grasp_snapshot_rejects_old_or_unstable_target(self):
+        t=self.tracker;now=time.time();pose=np.eye(4);pose[2,3]=.4
+        t.state.update(state='tracking',quality={'good':True},camera_T_object=pose.tolist(),pose_frame_at=now-.1,object_id='bottle')
+        for i in range(8):t.pose_history.append({'pose':pose.tolist(),'time':now-.8+i*.1,'generation':t.generation})
+        self.assertEqual(t.grasp_observation()['object_id'],'bottle')
+        t.state['pose_frame_at']=now-1
+        with self.assertRaisesRegex(ValueError,'过期'):t.grasp_observation()
+        t.state['pose_frame_at']=now-.1
+        t.pose_history[0]['pose'][0][3]=.1
+        with self.assertRaisesRegex(ValueError,'变化'):t.grasp_observation()
+
 
 if __name__ == '__main__':
     unittest.main()
