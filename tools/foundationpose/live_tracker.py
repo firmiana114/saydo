@@ -652,6 +652,8 @@ def main():
                     result = {'accepted': True, 'mode': args.grasp_mode}
                 elif self.path == '/api/gripper/status':
                     result = tracker.grasp.hardware_status()
+                elif self.path == '/api/gripper/force-config':
+                    result = tracker.grasp.set_force_config(value['value'])
                 elif self.path == '/api/grasp/stop':
                     tracker.grasp.abort()
                     result = {'cancelled': True}

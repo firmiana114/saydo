@@ -22,12 +22,30 @@ class GraspController:
         self.thread = None
         self.actuated = False
         self.robot = None
+        self.force_override = None
         self.status = {'state': 'idle', 'busy': False, 'mode': mode, 'motion_enabled': mode == 'execute',
                        'message': '首轮试抓：仅夹持，不抬起。' if mode == 'execute' else '方案预览模式，不发送运动或夹爪写入命令。'}
 
     def snapshot(self):
         with self.lock:
-            return dict(self.status)
+            return {**self.status, 'force_config': self.force_config()}
+
+    def force_config(self):
+        grip = json.loads(self.config_path.read_text())['gripper']
+        value = self.force_override if self.force_override is not None else grip['force_target_raw']
+        return {'value': value, 'minimum': 1, 'maximum': 100, 'hardware_applied': False,
+                'message': '本次服务的抓取配置；下一次抓取使用。未下发硬件，重启后恢复文件配置。'}
+
+    def set_force_config(self, value):
+        # This is a session setting, never a live force command on a held object.
+        with self.lock:
+            if self.status['busy']:
+                raise ValueError('抓取任务进行中，不能更改力度配置')
+            if type(value) is not int or not 1 <= value <= 100:
+                raise ValueError('力度必须为 1–100 的整数原始值，不能按牛顿输入')
+            self.force_override = value
+            self.status.update(plan=None)
+            return self.force_config()
 
     def update(self, **values):
         with self.lock:
@@ -154,7 +172,12 @@ class GraspController:
         report = {'started_at': time.time(), 'mode': self.mode, 'robot_motion_sent': False}
         robot_lock = None
         try:
-            config = json.loads(self.config_path.read_text())
+            with self.lock:
+                config = json.loads(self.config_path.read_text())
+                if self.force_override is not None:
+                    config['gripper']['force_target_raw'] = self.force_override
+                    config['gripper']['force_limit_raw'] = self.force_override
+            report['effective_gripper_config'] = dict(config['gripper'])
             report['config_sha256'] = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
             initial = self.tracker.grasp_observation()
             if initial['object_id'] not in config['objects']:

@@ -72,6 +72,7 @@ class GraspTests(unittest.TestCase):
                 observation={'pose':pose.tolist(),'time':time.time(),'generation':1,'object_id':'bottle','K':np.diag([.5,.5,1]).tolist()}
                 tracker=SimpleNamespace(grasp_observation=lambda:observation)
                 service=GraspController(root,tracker,cfg,mode)
+                service.set_force_config(17)
                 arm={'pose':[0,0,200000,0,0,0],'joint':[0]*7,'err':[0]}
                 tool_raw={'tool_name':'grip_tcp','pose':[0]*6}
                 tool={'controller_readback':{'tool_response_raw':tool_raw},'flange_T_grip_tcp':np.eye(4).tolist()}
@@ -87,6 +88,28 @@ class GraspTests(unittest.TestCase):
                     service.run()
                     execute.assert_not_called()
                     self.assertFalse(service.status['plan']['can_execute'])
+                    self.assertEqual(service.status['plan']['force_limit_raw'], 17)
+
+    def test_force_configuration_is_local_validated_and_locked_during_grasp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); cfg = root / 'grasp.json'
+            original = json.dumps(self.config()); cfg.write_text(original)
+            service = GraspController(root, None, cfg)
+            with patch('grasp_control.RobotClient') as client:
+                for invalid in (0, 101, -1, True, 1.5, '10', None):
+                    with self.assertRaises(ValueError):
+                        service.set_force_config(invalid)
+                for value in (1, 100, 12):
+                    result = service.set_force_config(value)
+                    self.assertEqual(result['value'], value)
+                    self.assertFalse(result['hardware_applied'])
+                service.update(busy=True)
+                with self.assertRaises(ValueError):
+                    service.set_force_config(20)
+                self.assertEqual(service.snapshot()['force_config']['value'], 12)
+                client.assert_not_called()
+            self.assertEqual(cfg.read_text(), original)
+            self.assertEqual(GraspController(root, None, cfg).snapshot()['force_config']['value'], 10)
 
     def test_executor_orders_open_path_and_contact_without_lift(self):
         with tempfile.TemporaryDirectory() as directory:

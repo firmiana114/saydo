@@ -2,7 +2,7 @@
 
 ## D435i 实时跟踪接入
 
-`live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 负责首帧像素分割，提示可来自手动框选或自动水瓶检测。没有机械臂控制、TF 发布或抓取接口。
+`live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 负责首帧像素分割，提示可来自手动框选或自动检测。受保护的试抓接口见本文“首轮视觉抓取接入”；默认只预览方案。
 
 ```bash
 source tools/foundationpose/runtime_env.sh
@@ -207,3 +207,9 @@ g++ -std=c++14 tools/foundationpose/grasp_ik.cpp   -I ros2_rm_ws/src/ros2_rm_rob
 - https://www.changingtek.com/diandong/147
 
 检查：`python -m unittest discover -s tools/foundationpose -p 'test_grasp.py' -v`。不以模拟执行测试代替实机验收。
+
+### 网页力度配置
+
+力度输入为 1–100 的整数原始值，不是牛顿。按回车或离开输入框时通过 `/api/gripper/force-config` 更新服务内配置，无需重启；下一次抓取同时使用此值作为目标力度和限力值，实际下发仍须通过原有验证。更新接口不向硬件发送指令，页面明确显示“未下发硬件”。服务重启后恢复 `trial.json`，抓取进行中拒绝更新。每次任务日志记录有效夹爪配置。未确认限力生效、接触状态及寄存器回读的运动保护保留。
+
+2026-09-17 再次只读查询实机：`force:true, touch:false`。官方文档中 `touch` 是触觉支持能力，`touch_sw` 才是触觉开关；通用 `set_rm_plus_touch` 接口的存在不代表当前设备支持触觉。此结论依据协议反馈，不等同于拆机鉴定。
