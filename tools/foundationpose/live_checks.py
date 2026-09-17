@@ -2,6 +2,10 @@
 import numpy as np
 
 
+def recovery_due(state, enabled, now, retry_at, frame_age):
+    return bool(enabled and state == 'recovering' and now >= retry_at and frame_age is not None and 0 <= frame_age < 2)
+
+
 def bottle_candidates(boxes, labels, scores, bottle_label, width=640, height=360):
     candidates = []
     for box, label, score in zip(boxes, labels, scores):

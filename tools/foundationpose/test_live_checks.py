@@ -1,9 +1,17 @@
 import unittest
 import numpy as np
-from live_checks import checked_box, pose_health, bottle_candidates
+from live_checks import checked_box, pose_health, bottle_candidates, recovery_due
 
 
 class LiveChecks(unittest.TestCase):
+    def test_recovery_waits_for_cooldown_fresh_frame_and_explicit_state(self):
+        self.assertTrue(recovery_due('recovering', True, 12, 11, .1))
+        for state in ['paused', 'selecting', 'choose_candidate', 'tracking', 'camera_error']:
+            self.assertFalse(recovery_due(state, True, 12, 11, .1))
+        self.assertFalse(recovery_due('recovering', True, 10, 11, .1))
+        self.assertFalse(recovery_due('recovering', True, 12, 11, 3))
+        self.assertFalse(recovery_due('recovering', False, 12, 11, .1))
+
     def test_detector_filters_classes_but_preserves_ambiguous_bottles(self):
         boxes = [[10, 10, 60, 160], [200, 10, 250, 160], [400, 20, 410, 50], [1, 1, 640, 360]]
         result = bottle_candidates(boxes, [44, 44, 44, 1], [.8, .9, .7, .99], 44)

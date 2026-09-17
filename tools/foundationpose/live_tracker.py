@@ -13,12 +13,13 @@ import socket
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 
 import cv2
 import numpy as np
 
-from live_checks import checked_box, pose_health, bottle_candidates
+from live_checks import checked_box, pose_health, bottle_candidates, recovery_due
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,9 +32,11 @@ class Tracker:
         self.latest = self.frozen = self.command = None
         self.jpeg = None
         self.generation = 0
+        self.retry_at = 0.
         self.state = {'state': 'loading', 'error': None, 'model': str(args.mesh), 'sequence': 0,
                       'tracked_frames': 0, 'registered_frames': 0, 'camera_T_object': None,
-                      'pose_accepted_for_robot_control': False}
+                      'pose_accepted_for_robot_control': False, 'auto_recover': args.auto_recover,
+                      'recovery_attempts': 0}
         self.output = ROOT / 'work/foundationpose_live' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.output.mkdir(parents=True)
         self.state['output'] = str(self.output)
@@ -130,11 +133,27 @@ class Tracker:
             self.command = (self.generation, self.frozen, box)
             self.state.update(state='initializing', error=None, camera_T_object=None)
 
-    def automatic(self):
-        self.freeze()
+    def automatic(self, recovery=False):
         with self.lock:
+            self.freeze()
             self.command = (self.generation, self.frozen, None)
             self.state.update(state='detecting', bottle_candidates=[], error=None)
+            if recovery:
+                self.state['recovery_attempts'] += 1
+
+    def mark_lost(self, error):
+        with self.lock:
+            self.retry_at = time.monotonic() + self.args.recovery_interval
+            self.state.update(state='recovering' if self.args.auto_recover else 'lost',
+                              error=error, camera_T_object=None)
+
+    def recover_if_due(self):
+        with self.lock:
+            age = time.time() - self.latest['time'] if self.latest else None
+            if recovery_due(self.state['state'], self.args.auto_recover, time.monotonic(), self.retry_at, age):
+                self.automatic(recovery=True)
+                return True
+            return False
 
     def choose(self, value):
         with self.lock:
@@ -189,6 +208,7 @@ class Tracker:
         try:
             import torch
             torch.set_num_threads(2)
+            from live_detection import predict_detection
             import trimesh
             import nvdiffrast.torch as dr
             from estimater import FoundationPose
@@ -221,6 +241,8 @@ class Tracker:
             auto_attempted = False
             with (self.output / 'poses.jsonl').open('a', buffering=1) as records:
                 while not self.stop.is_set():
+                    if self.recover_if_due():
+                        continue
                     with self.lock:
                         command = self.command
                         self.command = None
@@ -238,8 +260,7 @@ class Tracker:
                         self.stop.wait(.02)
                         continue
                     elif time.time() - frame['time'] > 2:
-                        with self.lock:
-                            self.state.update(state='lost', error='相机画面过期，请重新初始化', camera_T_object=None)
+                        self.mark_lost('相机画面过期，等待新画面后重新识别')
                         continue
                     started = time.perf_counter()
                     rgb = cv2.cvtColor(frame['bgr'], cv2.COLOR_BGR2RGB)
@@ -248,11 +269,11 @@ class Tracker:
                         with torch.inference_mode():
                             if command:
                                 if box is None:
-                                    prediction = detector([torch.from_numpy(rgb).permute(2, 0, 1).float().cuda() / 255])[0]
+                                    prediction = predict_detection(detector, rgb)
                                     candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
                                         prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), bottle_label)
                                     if not candidates:
-                                        raise ValueError('没有检测到可靠的水瓶；请让整瓶入镜后重试，或使用手动框选')
+                                        raise ValueError('没有检测到可靠的水瓶，请让整瓶入镜')
                                     with self.lock:
                                         if generation != self.generation:
                                             continue
@@ -303,6 +324,8 @@ class Tracker:
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
                                 pose_sequence=frame['sequence'], error=None)
                             self.state['registered_frames' if command else 'tracked_frames'] += 1
+                            if lost:
+                                self.mark_lost('深度或位姿匹配不可靠，等待重新识别')
                             self.frozen = None
                             self.jpeg = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
                             record = {**self.snapshot(), 'camera_frame_number': frame['camera_frame_number'], 'processed_at': time.time()}
@@ -316,8 +339,10 @@ class Tracker:
                     except Exception as error:
                         with self.lock:
                             if generation == self.generation:
-                                self.state.update(state='lost', error=str(error), camera_T_object=None)
+                                self.mark_lost(str(error))
                         print('Frame failure:', repr(error), flush=True)
+                        if not isinstance(error, ValueError):
+                            traceback.print_exc()
         except Exception as error:
             with self.lock:
                 self.state.update(state='model_error', error=str(error), camera_T_object=None)
@@ -331,7 +356,11 @@ def main():
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
+    parser.add_argument('--no-auto-recover', dest='auto_recover', action='store_false', help='Disable automatic detection/reinitialization after tracking loss')
+    parser.add_argument('--recovery-interval', type=float, default=2., help='Seconds between recovery attempts')
     args = parser.parse_args()
+    if not np.isfinite(args.recovery_interval) or args.recovery_interval < .5:
+        parser.error('recovery-interval must be at least 0.5 seconds')
     cv2.setNumThreads(1)
     runtime = ROOT / 'work/foundationpose_runtime'
     sys.path[:0] = [str(runtime), str(runtime / 'bundlesdf'), str(runtime / 'mycpp/build')]

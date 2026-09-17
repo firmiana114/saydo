@@ -11,7 +11,7 @@ python -m pip install --no-deps --target work/foundationpose_realsense_py311 pyr
 python tools/foundationpose/live_tracker.py --mesh work/object_models/ob_yibao_350ml/model/model.obj --auto-start
 ```
 
-页面默认仅监听 MSI 的 `http://127.0.0.1:8089`；远端浏览器可用 `ssh -N -L 18889:127.0.0.1:8089 msi`，然后打开本机 `http://127.0.0.1:18889`。选择目标会冻结一张 RGB-D 图；拖框后初始化，出现跟踪结果后可缓慢移动目标。框坐标绑定冻结帧，旧选择会被拒绝。重新框选可在丢失后恢复。暂停仅停跟踪，停止按钮或 SIGTERM 会释放相机并退出服务。
+页面默认仅监听 MSI 的 `http://127.0.0.1:8089`；远端浏览器可用 `ssh -N -L 18889:127.0.0.1:8089 msi`，然后打开本机 `http://127.0.0.1:18889`。选择目标会冻结一张 RGB-D 图；拖框后初始化，出现跟踪结果后可缓慢移动目标。框坐标绑定冻结帧，旧选择会被拒绝。默认丢失后会自动重新检测和初始化，手动重新框选也可恢复。暂停仅停跟踪，停止按钮或 SIGTERM 会释放相机并退出服务。
 
 用户需要直接通过局域网访问时，指定 MSI 的局域网地址（无需 SSH 隧道）：
 
@@ -21,7 +21,7 @@ python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --
 
 此时使用 `http://192.168.101.65:8089/`。服务只绑定指定网卡地址；该地址变化时需相应调整启动参数。
 
-可优先点击“自动识别并跟踪”，或启动时传入 `--auto-start`：Torchvision 官方 SSDLite320 MobileNetV3 COCO 权重检测 bottle 类别，检测框交给 SAM 生成像素掩码，再调用官方 FoundationPose。权重缓存于 `work/foundationpose_setup/torch_hub`。这是外部初始化适配器，不是 FoundationPose 自带物体检测；不识别品牌。只自动选择明显占主导的前景瓶子，多个大小接近的候选需要点击目标；没有可靠候选时提示重试，保留手动框选。不会在跟踪丢失后无提示地自动换对象。
+可优先点击“自动识别并跟踪”，或启动时传入 `--auto-start`：Torchvision 官方 SSDLite320 MobileNetV3 COCO 权重检测 bottle 类别，检测框交给 SAM 生成像素掩码，再调用官方 FoundationPose。权重缓存于 `work/foundationpose_setup/torch_hub`。这是外部初始化适配器，不是 FoundationPose 自带物体检测；不识别品牌。只自动选择明显占主导的前景瓶子，多个大小接近的候选需要点击目标；没有可靠候选时提示重试，保留手动框选。默认丢失后进入 recovering 状态，至少间隔 2 秒自动重新检测和初始化；无目标时继续等待，多个相近候选仍点选确认。自动检测不核验品牌，画面中应保留目标水瓶。暂停、手动选框和多候选选择期间不会自动恢复；可用 `--no-auto-recover` 禁用，`--recovery-interval` 设置重试间隔。
 
 预览使用 `/stream.mjpg` 连续传输最新结果，JPEG 质量为 75、限制发送缓存，替代原 400 ms 单张图片轮询。采集主动排空旧帧，使用可映射到系统时钟的设备时间戳记录帧年龄；CPU 推理线程数限制为 2、OpenCV 为 1，避免过度并行。页面的“服务端结果年龄”不包含浏览器显示和网络传输时间。
 
@@ -149,3 +149,5 @@ python tools/foundationpose/evaluate_mesh.py \
 - https://github.com/NVlabs/FoundationPose
 - https://kaolin.readthedocs.io/en/latest/notes/installation.html
 - https://github.com/facebookresearch/segment-anything
+
+设备隔离：上游 refiner 的 predict 会设置全局 CUDA 默认张量类型，Torchvision SSD 的内部锚框缓存仍在 CPU。`live_detection.predict_detection` 在局部 CPU factory 上下文调用检测器，图像与网络仍在 CUDA，退出后恢复调用方默认设备，避免首次跟踪后重新识别出现 CPU/CUDA 拼接错误。回归检查使用实际 Torchvision DefaultBoxGenerator 复现该错误，并验证连续三次修复调用及默认设备恢复。

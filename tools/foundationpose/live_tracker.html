@@ -5,7 +5,7 @@
 body{margin:0;background:#101820;color:#e7eef5;font:16px system-ui,sans-serif}main{max-width:1050px;margin:32px auto;padding:0 22px}h1{font-size:27px;margin-bottom:8px}p{color:#b9cad9;line-height:1.6}.bar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}button{background:#2d6c8b;color:white;border:0;border-radius:8px;padding:12px 18px;font-size:15px;cursor:pointer}button.danger{background:#853e43}button:disabled{opacity:.4;cursor:default}canvas,#stream{width:100%;background:#071017;border-radius:12px;touch-action:none;display:block}#status{padding:14px 0;font-weight:600}#detail{white-space:pre-wrap;color:#b9cad9;font-size:14px;line-height:1.7}#message{min-height:25px;color:#ffd27c}.note{font-size:13px;color:#93a8b9}
 </style><main>
 <h1>FoundationPose · 怡宝水瓶</h1>
-<p>让整瓶入镜，点击“自动识别并跟踪”，系统会自动检测并分割水瓶；多个候选时点击目标。也可手动框选。初始化时保持静止，出现跟踪框后可缓慢移动水瓶。</p>
+<p>让整瓶入镜，点击“自动识别并跟踪”，系统会自动检测并分割水瓶；多个候选时点击目标。也可手动框选。初始化时保持静止，出现跟踪框后可缓慢移动水瓶；丢失后会自动重新识别，暂停按钮可停止自动恢复。</p>
 <div class="bar"><button id="auto">自动识别并跟踪</button><button id="select">选择目标 / 重新初始化</button><button id="start" disabled>开始跟踪</button><button id="pause">暂停跟踪</button><button id="stop" class="danger">停止并释放相机</button></div>
 <div id="message"></div><img id="stream" src="/stream.mjpg" alt="实时跟踪画面"><canvas id="view" width="640" height="360" style="display:none"></canvas>
 <div id="status">正在连接…</div><div id="detail"></div>
@@ -17,7 +17,7 @@ function liveView(){canvas.style.display='none';stream.style.display='block';}
 stream.onerror=()=>{if(!stopped)setTimeout(()=>{stream.src='/stream.mjpg?t='+Date.now();},800);};
 let candidates=[],candidateSelection=null;
 let selection=null,box=null,anchor=null,frozenImage=null,busy=false,stopped=false;
-const labels={loading:'加载模型',ready:'等待初始化',detecting:'自动识别水瓶',choose_candidate:'检测到多个水瓶，请点击目标',selecting:'拖动鼠标框选整瓶',initializing:'正在初始化，请保持静止',tracking:'连续跟踪中',lost:'跟踪不可靠，请重新框选',paused:'跟踪已暂停',camera_error:'相机错误',model_error:'模型加载错误'};
+const labels={loading:'加载模型',ready:'等待初始化',detecting:'自动识别水瓶',choose_candidate:'检测到多个水瓶，请点击目标',selecting:'拖动鼠标框选整瓶',initializing:'正在初始化，请保持静止',tracking:'连续跟踪中',lost:'跟踪不可靠，请重新框选',recovering:'跟踪丢失，等待自动重新识别',paused:'跟踪已暂停',camera_error:'相机错误',model_error:'模型加载错误'};
 async function post(path,data={}){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.error);return j;}
 function message(s){document.querySelector('#message').textContent=s;}
 function point(e){const r=canvas.getBoundingClientRect();return [Math.max(0,Math.min(639,(e.clientX-r.left)*640/r.width)),Math.max(0,Math.min(359,(e.clientY-r.top)*360/r.height))];}
