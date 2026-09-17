@@ -9,7 +9,7 @@ body{margin:0;background:#101820;color:#e7eef5;font:16px system-ui,sans-serif}ma
 <div class="bar"><button id="auto">自动识别并跟踪</button><button id="select">选择目标 / 重新初始化</button><button id="start" disabled>开始跟踪</button><button id="pause">暂停跟踪</button><button id="stop" class="danger">停止并释放相机</button></div>
 <div id="message"></div><img id="stream" src="/stream.mjpg" alt="实时跟踪画面"><canvas id="view" width="640" height="360" style="display:none"></canvas>
 <div id="status">正在连接…</div><div id="detail"></div>
-<p class="note">只做视觉跟踪，不控制机械臂。当前瓶体模型尺寸约 170 × 60 mm，未实测验收；透明瓶身的深度和绕瓶轴方向的朝向可能不稳定。</p>
+<p class="note">坐标轴：X 红、Y 绿、Z 蓝，每根长 5 cm；原点为模型原点。只做视觉跟踪，不控制机械臂。当前瓶体模型尺寸约 170 × 60 mm，未实测验收；透明瓶身的深度和绕瓶轴方向的朝向可能不稳定。</p>
 </main><script>
 const canvas=document.querySelector('#view'),ctx=canvas.getContext('2d');
 const stream=document.querySelector('#stream');

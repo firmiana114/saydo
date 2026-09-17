@@ -252,7 +252,7 @@ class Tracker:
             from learning.training.predict_pose_refine import PoseRefinePredictor
             from segment_anything import SamPredictor, sam_model_registry
             from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
-            from Utils import draw_posed_3d_box, nvdiffrast_render
+            from Utils import draw_posed_3d_box, draw_xyz_axis, project_3d_to_2d, nvdiffrast_render
             mesh = trimesh.load(self.args.mesh, force='mesh')
             if not np.isfinite(mesh.vertices).all() or not (.01 < mesh.extents.max() < 1):
                 raise ValueError('Model must be a finite metre-scale object mesh')
@@ -375,6 +375,20 @@ class Tracker:
                         overlay = draw_posed_3d_box(frame['K'], img=rgb.copy(), ob_in_cam=pose @ np.linalg.inv(origin), bbox=bbox)
                         visible = rendered > 0
                         overlay[visible] = (.75 * overlay[visible] + .25 * np.array([0, 200, 255])).astype(np.uint8)
+                        axis_points = np.vstack([np.zeros(3), np.eye(3) * .05])
+                        axis_depths = (axis_points @ pose[:3, :3].T + pose[:3, 3])[:, 2]
+                        if quality['good'] and np.all(axis_depths > .001):
+                            # Draw the actual mesh frame returned as camera_T_object,
+                            # not the separately rotated oriented-bounding-box frame.
+                            overlay = draw_xyz_axis(overlay, ob_in_cam=pose, scale=.05, K=frame['K'], thickness=3, is_input_rgb=True)
+                            for axis, name, color in [(0, 'X', (255, 0, 0)), (1, 'Y', (0, 255, 0)), (2, 'Z', (0, 100, 255))]:
+                                endpoint = np.array([0., 0., 0., 1.])
+                                endpoint[axis] = .05
+                                u, v = project_3d_to_2d(endpoint, frame['K'], pose)
+                                if 0 <= u < 640 and 0 <= v < 360:
+                                    location = (int(u) + 3, int(v) - 3)
+                                    cv2.putText(overlay, name, location, 0, .55, (0, 0, 0), 3)
+                                    cv2.putText(overlay, name, location, 0, .55, color, 1)
                         bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
                         label = 'LOST - RESELECT' if lost else ('TRACKING' if quality['good'] else 'UNCERTAIN')
                         cv2.putText(bgr, f'{label} | {1/max(duration,.001):.1f} inference FPS', (8, 25), 0, .6, (0, 255, 0) if quality['good'] else (0, 120, 255), 2)
