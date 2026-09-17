@@ -1,9 +1,15 @@
 import unittest
 import numpy as np
-from live_checks import checked_box, pose_health
+from live_checks import checked_box, pose_health, bottle_candidates
 
 
 class LiveChecks(unittest.TestCase):
+    def test_detector_filters_classes_but_preserves_ambiguous_bottles(self):
+        boxes = [[10, 10, 60, 160], [200, 10, 250, 160], [400, 20, 410, 50], [1, 1, 640, 360]]
+        result = bottle_candidates(boxes, [44, 44, 44, 1], [.8, .9, .7, .99], 44)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(bottle_candidates(boxes, [44] * 4, [.1] * 4, 44), [])
+
     def test_box_rejects_invalid_or_clipped_input(self):
         self.assertEqual(checked_box([10, 20, 80, 100], 640, 360), [10, 20, 80, 100])
         for box in ([0, 0, 700, 100], [5, 5, 4, 20], [0, 0, float('nan'), 99], [1, 2]):

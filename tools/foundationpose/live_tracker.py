@@ -18,7 +18,7 @@ import urllib.request
 import cv2
 import numpy as np
 
-from live_checks import checked_box, pose_health
+from live_checks import checked_box, pose_health, bottle_candidates
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,6 +130,23 @@ class Tracker:
             self.command = (self.generation, self.frozen, box)
             self.state.update(state='initializing', error=None, camera_T_object=None)
 
+    def automatic(self):
+        self.freeze()
+        with self.lock:
+            self.command = (self.generation, self.frozen, None)
+            self.state.update(state='detecting', bottle_candidates=[], error=None)
+
+    def choose(self, value):
+        with self.lock:
+            if self.state['state'] != 'choose_candidate' or value['selection_id'] != self.generation:
+                raise ValueError('候选画面已失效，请重新识别')
+            index = value['index']
+            candidates = self.state['bottle_candidates']
+            if not isinstance(index, int) or not 0 <= index < len(candidates):
+                raise ValueError('候选编号无效')
+            self.command = (self.generation, self.frozen, candidates[index]['box'])
+            self.state.update(state='initializing', error=None, camera_T_object=None)
+
     def pause(self):
         with self.lock:
             self.generation += 1
@@ -151,14 +168,19 @@ class Tracker:
     def image(self):
         with self.lock:
             state = self.state['state']
-            frame = self.frozen if state in ('selecting', 'initializing') else self.latest
+            frame = self.frozen if state in ('selecting', 'initializing', 'detecting', 'choose_candidate') else self.latest
             cached = self.jpeg if state in ('tracking', 'lost') else None
             age = time.time() - self.state.get('pose_frame_at', time.time())
+            candidates = list(self.state.get('bottle_candidates', [])) if state == 'choose_candidate' else []
         if cached is not None and age <= 2:
             return cached
         if frame is None:
             return None
         bgr = frame['bgr'].copy()
+        for index, candidate in enumerate(candidates):
+            x0, y0, x1, y1 = candidate['box']
+            cv2.rectangle(bgr, (x0, y0), (x1, y1), (0, 220, 255), 2)
+            cv2.putText(bgr, str(index + 1), (x0, max(35, y0)), 0, .9, (0, 220, 255), 2)
         label = 'STALE / NEED REINITIALIZATION' if state == 'tracking' and age > 2 else state.upper()
         cv2.putText(bgr, label, (10, 26), 0, .65, (0, 170, 255), 2)
         return cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
@@ -173,6 +195,7 @@ class Tracker:
             from learning.training.predict_score import ScorePredictor
             from learning.training.predict_pose_refine import PoseRefinePredictor
             from segment_anything import SamPredictor, sam_model_registry
+            from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
             from Utils import draw_posed_3d_box, nvdiffrast_render
             mesh = trimesh.load(self.args.mesh, force='mesh')
             if not np.isfinite(mesh.vertices).all() or not (.01 < mesh.extents.max() < 1):
@@ -183,6 +206,10 @@ class Tracker:
             estimator = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
                 scorer=ScorePredictor(), refiner=PoseRefinePredictor(), debug_dir=str(self.output), debug=0, glctx=context)
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
+            torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
+            detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
+            detector = ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
+            bottle_label = detector_weights.meta['categories'].index('bottle')
             logging.getLogger().setLevel(logging.WARNING)
             with self.lock:
                 if self.stop.is_set():
@@ -191,6 +218,7 @@ class Tracker:
             previous = None
             last_sequence = -1
             failures = 0
+            auto_attempted = False
             with (self.output / 'poses.jsonl').open('a', buffering=1) as records:
                 while not self.stop.is_set():
                     with self.lock:
@@ -199,6 +227,11 @@ class Tracker:
                         active = self.state['state'] == 'tracking'
                         generation = self.generation
                         frame = self.latest
+                        startup_ready = self.state['state'] == 'ready'
+                    if self.args.auto_start and not auto_attempted and frame is not None and startup_ready:
+                        self.automatic()
+                        auto_attempted = True
+                        continue
                     if command:
                         generation, frame, box = command
                     elif not active or frame is None or frame['sequence'] == last_sequence:
@@ -214,6 +247,22 @@ class Tracker:
                     try:
                         with torch.inference_mode():
                             if command:
+                                if box is None:
+                                    prediction = detector([torch.from_numpy(rgb).permute(2, 0, 1).float().cuda() / 255])[0]
+                                    candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
+                                        prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), bottle_label)
+                                    if not candidates:
+                                        raise ValueError('没有检测到可靠的水瓶；请让整瓶入镜后重试，或使用手动框选')
+                                    with self.lock:
+                                        if generation != self.generation:
+                                            continue
+                                        self.state['bottle_candidates'] = candidates
+                                        self.state['detection_method'] = 'Torchvision SSDLite COCO bottle -> SAM -> FoundationPose'
+                                        if len(candidates) > 1:
+                                            self.state.update(state='choose_candidate', error=None)
+                                            continue
+                                        self.state['state'] = 'initializing'
+                                    box = candidates[0]['box']
                                 sam.set_image(rgb)
                                 masks, scores, _ = sam.predict(box=np.asarray(box), multimask_output=True)
                                 mask = masks[int(np.argmax(scores))]
@@ -280,6 +329,7 @@ def main():
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--serial', default='135122077750')
     parser.add_argument('--port', type=int, default=8089)
+    parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
     args = parser.parse_args()
     cv2.setNumThreads(1)
     runtime = ROOT / 'work/foundationpose_runtime'
@@ -340,7 +390,7 @@ def main():
                         with tracker.lock:
                             mode = tracker.state['state']
                             cached = mode in ('tracking', 'lost') and tracker.jpeg is not None and time.time() - tracker.state.get('pose_frame_at', 0) <= 2
-                            frame = tracker.frozen if mode in ('selecting', 'initializing') else tracker.latest
+                            frame = tracker.frozen if mode in ('selecting', 'initializing', 'detecting', 'choose_candidate') else tracker.latest
                             key = (tracker.generation, mode, tracker.state.get('pose_sequence') if cached else (frame['sequence'] if frame else -1))
                         if key == last_key:
                             tracker.stop.wait(.015)
@@ -370,6 +420,12 @@ def main():
                 value = json.loads(self.rfile.read(size) or b'{}')
                 if self.path == '/api/freeze':
                     result = tracker.freeze()
+                elif self.path == '/api/automatic':
+                    tracker.automatic()
+                    result = {'accepted': True}
+                elif self.path == '/api/choose':
+                    tracker.choose(value)
+                    result = {'accepted': True}
                 elif self.path == '/api/initialize':
                     tracker.initialize(value)
                     result = {'accepted': True}

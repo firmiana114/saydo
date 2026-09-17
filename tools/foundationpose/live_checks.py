@@ -2,6 +2,30 @@
 import numpy as np
 
 
+def bottle_candidates(boxes, labels, scores, bottle_label, width=640, height=360):
+    candidates = []
+    for box, label, score in zip(boxes, labels, scores):
+        if int(label) != bottle_label or float(score) < .4:
+            continue
+        x0, y0, x1, y1 = np.asarray(box, dtype=float)
+        if not np.isfinite([x0, y0, x1, y1, score]).all():
+            continue
+        area = (x1 - x0) * (y1 - y0)
+        if area < 256 or min(x1 - x0, y1 - y0) < 8:
+            continue
+        padded = [max(0, int(x0) - 4), max(0, int(y0) - 4), min(width, int(x1) + 5), min(height, int(y1) + 5)]
+        try:
+            padded = checked_box(padded, width, height)
+        except ValueError:
+            continue
+        candidates.append({'box': padded, 'score': float(score), 'area': float(area)})
+    candidates.sort(key=lambda row: row['area'], reverse=True)
+    # A much smaller background bottle is not the dominant foreground target.
+    if candidates:
+        candidates = [row for row in candidates if row['area'] >= .35 * candidates[0]['area']]
+    return candidates
+
+
 def checked_box(box, width, height):
     values = np.asarray(box, dtype=float)
     if values.shape != (4,) or not np.isfinite(values).all():

@@ -5,8 +5,8 @@
 body{margin:0;background:#101820;color:#e7eef5;font:16px system-ui,sans-serif}main{max-width:1050px;margin:32px auto;padding:0 22px}h1{font-size:27px;margin-bottom:8px}p{color:#b9cad9;line-height:1.6}.bar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}button{background:#2d6c8b;color:white;border:0;border-radius:8px;padding:12px 18px;font-size:15px;cursor:pointer}button.danger{background:#853e43}button:disabled{opacity:.4;cursor:default}canvas,#stream{width:100%;background:#071017;border-radius:12px;touch-action:none;display:block}#status{padding:14px 0;font-weight:600}#detail{white-space:pre-wrap;color:#b9cad9;font-size:14px;line-height:1.7}#message{min-height:25px;color:#ffd27c}.note{font-size:13px;color:#93a8b9}
 </style><main>
 <h1>FoundationPose · 怡宝水瓶</h1>
-<p>让整瓶入镜，点击“选择目标”后拖框，再开始跟踪。初始化时保持静止，出现跟踪框后可缓慢移动水瓶。</p>
-<div class="bar"><button id="select">选择目标 / 重新初始化</button><button id="start" disabled>开始跟踪</button><button id="pause">暂停跟踪</button><button id="stop" class="danger">停止并释放相机</button></div>
+<p>让整瓶入镜，点击“自动识别并跟踪”，系统会自动检测并分割水瓶；多个候选时点击目标。也可手动框选。初始化时保持静止，出现跟踪框后可缓慢移动水瓶。</p>
+<div class="bar"><button id="auto">自动识别并跟踪</button><button id="select">选择目标 / 重新初始化</button><button id="start" disabled>开始跟踪</button><button id="pause">暂停跟踪</button><button id="stop" class="danger">停止并释放相机</button></div>
 <div id="message"></div><img id="stream" src="/stream.mjpg" alt="实时跟踪画面"><canvas id="view" width="640" height="360" style="display:none"></canvas>
 <div id="status">正在连接…</div><div id="detail"></div>
 <p class="note">只做视觉跟踪，不控制机械臂。当前瓶体模型尺寸约 170 × 60 mm，未实测验收；透明瓶身的深度和绕瓶轴方向的朝向可能不稳定。</p>
@@ -15,8 +15,9 @@ const canvas=document.querySelector('#view'),ctx=canvas.getContext('2d');
 const stream=document.querySelector('#stream');
 function liveView(){canvas.style.display='none';stream.style.display='block';}
 stream.onerror=()=>{if(!stopped)setTimeout(()=>{stream.src='/stream.mjpg?t='+Date.now();},800);};
+let candidates=[],candidateSelection=null;
 let selection=null,box=null,anchor=null,frozenImage=null,busy=false,stopped=false;
-const labels={loading:'加载模型',ready:'等待框选',selecting:'拖动鼠标框选整瓶',initializing:'正在初始化，请保持静止',tracking:'连续跟踪中',lost:'跟踪不可靠，请重新框选',paused:'跟踪已暂停',camera_error:'相机错误',model_error:'模型加载错误'};
+const labels={loading:'加载模型',ready:'等待初始化',detecting:'自动识别水瓶',choose_candidate:'检测到多个水瓶，请点击目标',selecting:'拖动鼠标框选整瓶',initializing:'正在初始化，请保持静止',tracking:'连续跟踪中',lost:'跟踪不可靠，请重新框选',paused:'跟踪已暂停',camera_error:'相机错误',model_error:'模型加载错误'};
 async function post(path,data={}){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.error);return j;}
 function message(s){document.querySelector('#message').textContent=s;}
 function point(e){const r=canvas.getBoundingClientRect();return [Math.max(0,Math.min(639,(e.clientX-r.left)*640/r.width)),Math.max(0,Math.min(359,(e.clientY-r.top)*360/r.height))];}
@@ -24,10 +25,12 @@ function draw(){if(frozenImage)ctx.drawImage(frozenImage,0,0);if(box){ctx.stroke
 canvas.onpointerdown=e=>{if(selection===null)return;anchor=point(e);canvas.setPointerCapture(e.pointerId);};
 canvas.onpointermove=e=>{if(!anchor)return;const p=point(e);box=[Math.min(anchor[0],p[0]),Math.min(anchor[1],p[1]),Math.max(anchor[0],p[0]),Math.max(anchor[1],p[1])].map(Math.round);draw();};
 canvas.onpointerup=e=>{if(!anchor)return;anchor=null;document.querySelector('#start').disabled=!box||box[2]-box[0]<8||box[3]-box[1]<8;};
+document.querySelector('#auto').onclick=async()=>{try{selection=null;box=null;liveView();await post('/api/automatic');message('正在自动检测、分割并初始化，请保持水瓶静止。');}catch(e){message(e.message);}};
+stream.onclick=async e=>{if(!candidates.length)return;const r=stream.getBoundingClientRect(),x=(e.clientX-r.left)*640/r.width,y=(e.clientY-r.top)*360/r.height;const index=candidates.findIndex(c=>x>=c.box[0]&&x<=c.box[2]&&y>=c.box[1]&&y<=c.box[3]);if(index<0)return;try{await post('/api/choose',{selection_id:candidateSelection,index});candidates=[];message('正在初始化选中的水瓶。');}catch(e){message(e.message);}};
 document.querySelector('#select').onclick=async()=>{try{const r=await post('/api/freeze');selection=r.selection_id;box=null;canvas.style.display='block';stream.style.display='none';document.querySelector('#start').disabled=true;const im=new Image();im.onload=()=>{frozenImage=im;draw();};im.src='/frame.jpg?t='+Date.now();message('请拖框包含完整瓶身、瓶盖和瓶底。');}catch(e){message(e.message);}};
 document.querySelector('#start').onclick=async()=>{try{await post('/api/initialize',{selection_id:selection,box});selection=null;anchor=null;liveView();document.querySelector('#start').disabled=true;message('正在初始化，请保持水瓶静止。');}catch(e){message(e.message);}};
 document.querySelector('#pause').onclick=async()=>{try{await post('/api/pause');selection=null;box=null;liveView();message('已暂停跟踪，相机仍在预览。');}catch(e){message(e.message);}};
 document.querySelector('#stop').onclick=async()=>{try{await post('/api/stop');stopped=true;stream.src='';message('已停止服务并释放相机。');document.querySelector('#status').textContent='已停止';}catch(e){message(e.message);}};
-async function update(){if(stopped||busy)return;busy=true;try{const s=await(await fetch('/api/status')).json();document.querySelector('#status').textContent=labels[s.state]||s.state;document.querySelector('#select').disabled=!s.model_ready;if(s.error)message(s.error);else if(s.state==='tracking')message(s.quality?.good?'可缓慢移动水瓶，观察框是否贴合。':'当前结果不可靠，请保持静止或重新框选。');const q=s.quality||{};document.querySelector('#detail').textContent=`已处理连续帧：${s.tracked_frames}　相机序号：${s.sequence}\n推理耗时：${s.inference_seconds?(s.inference_seconds*1000).toFixed(0):'—'} ms　服务端结果年龄：${s.pose_age_s==null?'—':s.pose_age_s.toFixed(2)} s\n深度匹配偏差：${q.median_depth_residual_mm?.toFixed(1)??'—'} mm　重合深度像素：${q.overlap_depth_pixels??'—'}`;}catch(e){message('连接中断；请检查服务是否仍在运行。');}finally{busy=false;}}
+async function update(){if(stopped||busy)return;busy=true;try{const s=await(await fetch('/api/status')).json();document.querySelector('#status').textContent=labels[s.state]||s.state;document.querySelector('#select').disabled=!s.model_ready;document.querySelector('#auto').disabled=!s.model_ready;candidates=s.state==='choose_candidate'?(s.bottle_candidates||[]):[];candidateSelection=s.selection_id;if(s.error)message(s.error);else if(s.state==='tracking')message(s.quality?.good?'可缓慢移动水瓶，观察框是否贴合。':'当前结果不可靠，请保持静止或重新框选。');const q=s.quality||{};document.querySelector('#detail').textContent=`已处理连续帧：${s.tracked_frames}　相机序号：${s.sequence}\n推理耗时：${s.inference_seconds?(s.inference_seconds*1000).toFixed(0):'—'} ms　服务端结果年龄：${s.pose_age_s==null?'—':s.pose_age_s.toFixed(2)} s\n深度匹配偏差：${q.median_depth_residual_mm?.toFixed(1)??'—'} mm　重合深度像素：${q.overlap_depth_pixels??'—'}`;}catch(e){message('连接中断；请检查服务是否仍在运行。');}finally{busy=false;}}
 setInterval(update,250);update();
 </script></html>
