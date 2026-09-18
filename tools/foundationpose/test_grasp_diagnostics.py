@@ -1,11 +1,6 @@
 """Detailed blocking diagnostics without hardware commands."""
-from pathlib import Path
-import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
-from grasp_control import GraspController
 from grasp_geometry import workspace_blockers, minimum_table_clearance
 import test_grasp
 
@@ -39,31 +34,6 @@ class DiagnosticTests(unittest.TestCase):
         self.assertIn('差 3.543 毫米',reasons[1])
         self.assertIn('抬升点：Y=1200.000',reasons[2])
 
-    def test_inverse_failure_collision_and_jump_are_not_conflated(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);(root/'checker').touch()
-            service=GraspController(root,None,'unused')
-            plan={'waypoints':[{'name':'pregrasp','controller_pose':[0,0,200000,0,0,0]}]}
-            arm={'joint':[0]*7,'pose':[0,0,200000,0,0,0]}
-            tool={'controller_readback':{'tool_response_raw':{'pose':[0]*6}}}
-            for code,collision,joint,expected in [(1,-1,0,'未求得关节解'),(-1,-1,0,'输入关节角度'),(-2,-1,0,'四元数无效'),(0,1,0,'合并返回'),(0,0,11,'关节 1 跳变')]:
-                output=f'FK 0 0 0.2 0 0 0\nIK {code} {collision} {joint} 0 0 0 0 0 0\n'
-                result=SimpleNamespace(returncode=1 if code or collision else 0,stdout=output,stderr='')
-                with patch('grasp_control.subprocess.run',return_value=result):
-                    check=service.check_ik(plan,arm,tool,{'ik_checker':'checker'})
-                self.assertFalse(check['ok'])
-                self.assertIn(expected,check['reason'])
-                self.assertIn('前往预抓点',check['reason'])
-                if code:self.assertNotIn('max_joint_delta_deg',check)
-
-    def test_return_reports_coordinates_and_table_constraint(self):
-        service=GraspController('.',None,'unused');config=test_grasp.GraspTests().config();config['ik_checker']='unused'
-        result=SimpleNamespace(returncode=1,stdout='RETURN_FAIL 4 0 0 0 0.005\n',stderr='')
-        with patch('grasp_control.subprocess.run',return_value=result):
-            check=service.check_return([0]*7,[0]*7,{'pose':[0]*6},config)
-        self.assertIn('第 4 个采样点',check['reason'])
-        self.assertIn('5.000 毫米',check['reason'])
-        self.assertNotIn('碰撞',check['reason'])
 
 
 if __name__=='__main__':unittest.main()

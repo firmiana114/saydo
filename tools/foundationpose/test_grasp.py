@@ -202,12 +202,14 @@ class GraspTests(unittest.TestCase):
                 fake=Mock()
                 fake.query.side_effect=lambda command:copy.deepcopy(replies[command])
                 fake.register.side_effect=AssertionError('numeric readback must not be required')
-                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'check_ik',return_value={'ok':True}), patch.object(service,'execute') as execute:
+                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch('subprocess.run',side_effect=AssertionError('must not sample or solve the movel path offline')), patch.object(service,'execute') as execute:
                     service.run(observation, preview=preview)
                     self.assertEqual(client.call_args.kwargs['writes'], mode == 'execute' and not preview)
                     self.assertEqual(execute.call_count, int(mode == 'execute' and not preview))
                     self.assertEqual(service.status['plan']['can_execute'], mode == 'execute' and not preview)
                     self.assertEqual(service.status['plan']['force_limit_raw'], 17)
+                    self.assertFalse(service.status['plan']['motion_validation']['offline_path_checked'])
+                    self.assertNotIn('ik_check', service.status['plan'])
 
     def force_robot(self):
         robot = Mock()

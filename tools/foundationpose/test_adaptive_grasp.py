@@ -11,28 +11,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from grasp_geometry import controller_pose, pose_values, rotation_error, sample_motion, plan_grasp
+from grasp_geometry import controller_pose, pose_values, rotation_error, plan_grasp
 from grasp_control import GraspController
 import test_grasp
 
 
 class AdaptiveGraspTests(unittest.TestCase):
-    def test_ik_checker_samples_rotation_only_path(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory);(root/'checker').touch()
-            service = GraspController(root, None, root/'unused')
-            arm = {'pose':[0,0,200000,0,0,0], 'joint':[0]*7}
-            plan = {'waypoints':[{'controller_pose':[0,0,200000,0,0,1571]}]}
-            tool = {'controller_readback':{'tool_response_raw':{'pose':[0]*6}}}
-            def check(*args, **kwargs):
-                lines = kwargs['input'].splitlines()
-                count = int(lines[2])
-                self.assertGreaterEqual(count, 30)
-                self.assertEqual(count, len(lines)-3)
-                return SimpleNamespace(returncode=0, stdout='FK 0 0 0.2 0 0 0\n' + ('IK 0 0 0 0 0 0 0 0 0\n' * count))
-            with patch('grasp_control.subprocess.run', side_effect=check):
-                self.assertTrue(service.check_ik(plan, arm, tool, {'ik_checker':'checker'})['ok'])
-
     def config(self):
         config = test_grasp.GraspTests().config()
         config['grasp_profile'].update(orientation='follow_object', object_R_tcp=None,
@@ -70,20 +54,6 @@ class AdaptiveGraspTests(unittest.TestCase):
             T = controller_pose([100000,200000,300000,*angles_raw])
             raw = pose_values(T) * [1e6,1e6,1e6,1e3,1e3,1e3]
             np.testing.assert_allclose(controller_pose(raw), T, atol=1e-8)
-
-    def test_rotation_only_sampling_and_wrap_take_short_path(self):
-        start = [0,0,200000,0,0,0]
-        end = [0,0,200000,0,0,3142]
-        samples = sample_motion(start,end)
-        self.assertGreaterEqual(len(samples),60)
-        last = controller_pose(start)
-        for row in samples:
-            now = controller_pose(np.array(row)*[1e6,1e6,1e6,1e3,1e3,1e3])
-            self.assertLessEqual(rotation_error(last[:3,:3],now[:3,:3]), math.radians(3)+1e-7)
-            last = now
-        self.assertLess(rotation_error(last[:3,:3],controller_pose(end)[:3,:3]),1e-7)
-        samples = sample_motion([0,0,0,0,0,3124],[0,0,0,0,0,-3124])
-        self.assertEqual(len(samples),1)
 
     def test_teaching_saves_relative_pose_and_rejects_changed_model_or_tool(self):
         with tempfile.TemporaryDirectory() as directory:

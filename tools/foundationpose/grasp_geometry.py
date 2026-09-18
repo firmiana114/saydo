@@ -40,35 +40,6 @@ def pose_values(matrix):
     return np.r_[T[:3, 3], roll, pitch, yaw]
 
 
-def sample_motion(start_raw, end_raw, distance_step=.01, angle_step=math.radians(3)):
-    """Linear position / shortest rotation samples, including rotation-only moves."""
-    start, end = controller_pose(start_raw), controller_pose(end_raw)
-    relative = start[:3, :3].T @ end[:3, :3]
-    angle = rotation_error(start[:3, :3], end[:3, :3])
-    steps = max(1, int(math.ceil(np.linalg.norm(end[:3, 3] - start[:3, 3]) / distance_step)),
-                int(math.ceil(angle / angle_step)))
-    if angle < 1e-8:
-        axis = np.array([1., 0, 0])
-    elif abs(math.sin(angle)) > 1e-5:
-        axis = np.array([relative[2,1]-relative[1,2], relative[0,2]-relative[2,0],
-                         relative[1,0]-relative[0,1]]) / (2 * math.sin(angle))
-    else:
-        _, vectors = np.linalg.eigh((relative + relative.T + 2 * np.eye(3)) / 4)
-        axis = vectors[:, -1]
-    x, y, z = axis
-    cross = np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
-    samples = []
-    for n in range(1, steps + 1):
-        t = n / steps
-        T = np.eye(4)
-        T[:3, 3] = start[:3, 3] + t * (end[:3, 3] - start[:3, 3])
-        T[:3, :3] = start[:3, :3] @ (np.eye(3) + math.sin(t*angle)*cross + (1-math.cos(t*angle))*(cross @ cross))
-        if n == steps:
-            T = end
-        samples.append(pose_values(T).tolist())
-    return samples
-
-
 def object_in_base(base_tcp, flange_tcp, flange_camera, camera_object):
     return transform(base_tcp) @ np.linalg.inv(transform(flange_tcp)) @ transform(flange_camera) @ transform(camera_object)
 

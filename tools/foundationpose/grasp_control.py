@@ -4,14 +4,13 @@ import copy
 import fcntl
 import hashlib
 import json
-import subprocess
 import threading
 import time
 
 import numpy as np
 import yaml
 
-from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, sample_motion, minimum_table_clearance
+from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance
 from grasp_robot import RobotClient
 
 
@@ -301,96 +300,6 @@ class GraspController:
             raise ValueError('抓取视觉快照已过期')
         return last, observation
 
-    def check_ik(self, plan, arm, tool, config):
-        executable = self.root / config['ik_checker']
-        if not executable.is_file():
-            return {'ok': False, 'reason': '离线逆解检查器尚未编译'}
-        start = np.array(arm['pose'], dtype=float) / np.array([1e6]*3 + [1e3]*3)
-        tool_pose = np.array(tool['controller_readback']['tool_response_raw']['pose']) / np.array([1e6]*3 + [1e3]*3)
-        points = []
-        stages = []
-        last = arm['pose']
-        for waypoint in plan['waypoints']:
-            samples = sample_motion(last, waypoint['controller_pose'])
-            points.extend(samples)
-            stages.extend([(waypoint.get('name', '未知阶段'), n+1, len(samples)) for n in range(len(samples))])
-            last = waypoint['controller_pose']
-        if len(points) > 500:
-            return {'ok': False, 'reason': '路径检查采样数超过上限'}
-        text = ' '.join(map(str, tool_pose)) + '\n' + ' '.join(str(v / 1000) for v in arm['joint']) + '\n' + str(len(points)) + '\n'
-        text += '\n'.join(' '.join(map(str, row)) for row in points) + '\n'
-        result = subprocess.run([str(executable)], input=text, capture_output=True, text=True, timeout=10)
-        fk = [line for line in result.stdout.splitlines() if line.startswith('FK ')]
-        ik = [line for line in result.stdout.splitlines() if line.startswith('IK ')]
-        if not fk:
-            return {'ok': False, 'reason': f'离线检查器没有返回起始位置计算结果，退出码 {result.returncode}；错误输出：{result.stderr.strip()[:300] or "无"}'}
-        forward = np.array(list(map(float, fk[0].split()[1:])))
-        error = float(np.linalg.norm(forward[:3] - start[:3]))
-        angle_error = rotation_error(controller_pose(arm['pose'])[:3, :3],
-                                     controller_pose(forward * np.array([1e6]*3 + [1e3]*3))[:3, :3])
-        if error > .002 or angle_error > .01:
-            return {'ok': False, 'reason': f'离线计算与控制器起始姿态不一致：位置误差 {error*1000:.3f} 毫米（上限 2 毫米），朝向误差 {np.rad2deg(angle_error):.3f} 度（上限 {np.rad2deg(.01):.3f} 度）', 'position_error_m': error}
-        previous = np.array(arm['joint']) / 1000
-        for sample_index, line in enumerate(ik, 1):
-            row = list(map(float, line.split()[1:]))
-            if len(row) != 9 or not np.isfinite(row).all() or sample_index > len(points):
-                return {'ok':False, 'reason':f'离线检查器第 {sample_index} 条结果格式无效'}
-            stage, local_index, count = stages[sample_index-1]
-            names = {'pregrasp':'前往预抓点', 'grasp':'接近夹持点', 'lift':'抬升'}
-            point = points[sample_index-1]
-            context = f'{names.get(stage, stage)}：第 {local_index}/{count} 个采样点（全程第 {sample_index} 个），位置 [' + ', '.join(f'{v*1000:.3f}' for v in point[:3]) + '] 毫米'
-            detail = {'ok':False, 'failed_sample':sample_index, 'stage':stage, 'sample_pose':point,
-                      'ik_return_code':int(row[0]), 'self_collision_or_limit':int(row[1])}
-            if row[0] != 0:
-                codes = {1:'未求得关节解', -1:'输入关节角度为空或超出关节限位', -2:'目标朝向的四元数无效'}
-                detail['reason'] = context + f'：逆解失败（由目标位置和朝向求关节角度），返回码 {int(row[0])}：' + codes.get(int(row[0]), '未定义错误，需查看设备算法说明') + '；未进行自碰撞或关节跳变判断'
-                return detail
-            if row[1] != 0:
-                detail['reason'] = context + f'：自身碰撞/关节限位检查失败，返回标志 {int(row[1])}（算法把这两种情况合并返回，无法仅凭此标志区分）'
-                return detail
-            deltas = np.abs(np.array(row[2:]) - previous)
-            if deltas.max() > 10:
-                joint = int(deltas.argmax())
-                detail['max_joint_delta_deg'] = float(deltas[joint])
-                detail['reason'] = context + f'：关节 {joint+1} 跳变，从 {previous[joint]:.3f} 度到 {row[joint+2]:.3f} 度，变化 {deltas[joint]:.3f} 度，超过每采样点 10 度上限'
-                return detail
-            previous = np.array(row[2:])
-        if result.returncode == 0 and len(ik) == len(points) and plan.get('return_joint_raw') is not None:
-            check = self.check_return(np.rint(previous*1000).astype(int).tolist(), plan['return_joint_raw'],
-                                      tool['controller_readback']['tool_response_raw'], config)
-            plan['return_check'] = check
-            if not check['ok']:
-                return check
-        if result.returncode != 0 or len(ik) != len(points):
-            return {'ok':False, 'reason':f'离线路径检查未完成：退出码 {result.returncode}，返回 {len(ik)}/{len(points)} 个采样点结果；错误输出：{result.stderr.strip()[:300] or "无"}'}
-        return {'ok': result.returncode == 0 and len(ik) == len(points), 'sampled_poses': len(points),
-                'fk_position_error_m': error, 'scope': 'SDK kinematics and self-collision only; not full environment collision checking'}
-
-    def check_return(self, start_joints_raw, target_joints_raw, tool_raw, config):
-        executable = self.root / config['ik_checker']
-        tool_pose = np.asarray(tool_raw['pose']) / np.array([1e6]*3 + [1e3]*3)
-        rows = [tool_pose, np.asarray(start_joints_raw)/1000, np.asarray(target_joints_raw)/1000,
-                config['workspace_min_m'], config['workspace_max_m'], [config['table_z_m'], minimum_table_clearance(config)]]
-        data = '\n'.join(' '.join(map(str, row)) for row in rows) + '\n'
-        result = subprocess.run([str(executable), '--joint-path-v2'], input=data, capture_output=True, text=True, timeout=10)
-        lines = result.stdout.splitlines()
-        ok = result.returncode == 0 and len(lines) == 1 and lines[0].startswith('RETURN_OK ')
-        reason = None
-        if not ok:
-            reason = f'返回路径检查器未完成：退出码 {result.returncode}；输出：{result.stdout.strip()[:300] or "无"}；错误输出：{result.stderr.strip()[:300] or "无"}'
-            if len(lines) == 1 and lines[0].startswith('RETURN_FAIL '):
-                fields = lines[0].split()
-                if len(fields) >= 3:
-                    reasons = []
-                    if int(fields[2]) != 0:
-                        reasons.append(f'自身碰撞/关节限位检查标志 {fields[2]}（算法合并返回，无法仅凭标志区分）')
-                    if len(fields) == 6:
-                        point = [float(v) for v in fields[3:]]
-                        reasons.extend(workspace_blockers({'current_position_m':point,'waypoints':[]}, config))
-                    reason = f'返回路径第 {fields[1]} 个采样点（0 为起点）：' + '；'.join(reasons or ['检查失败；旧检查器未输出坐标，请重新编译以获取边界详情'])
-        return {'ok': ok, 'reason': reason,
-                'detail': result.stdout.strip()[:500], 'scope': 'joint interpolation approximation; no environment collision model'}
-
     @staticmethod
     def check_gripper_start(state, grip):
         position = state.get('pos')
@@ -463,9 +372,8 @@ class GraspController:
             blockers = workspace_blockers(plan, config)
             if not base.get('force'):
                 blockers.append('当前夹爪未声明支持力度控制')
-            plan['ik_check'] = self.check_ik(plan, arm, tool, config)
-            if not plan['ik_check']['ok']:
-                blockers.append(plan['ik_check'].get('reason', '路径逆解检查失败'))
+            plan['motion_validation'] = {'method':'controller_movel_movej', 'offline_path_checked':False,
+                                         'message':'不做中间点采样或运动途中几何/夹持检查；直线与返回运动均由控制器规划并返回结果'}
             plan['execution_blockers'] = blockers
             plan['can_execute'] = mode == 'execute' and not blockers
             report['grasp_profile'] = profile
@@ -473,7 +381,7 @@ class GraspController:
             self.update(plan=plan)
             self.check_cancel()
             if not plan['can_execute']:
-                self.update(state='blocked' if blockers else 'preview', message='已生成方案；未发送运动。' + ('\n阻塞原因：\n' + '\n'.join(f'{i+1}. {reason}' for i, reason in enumerate(blockers)) if blockers else '当前为预览模式，所有检查已通过。'))
+                self.update(state='blocked' if blockers else 'preview', message='已生成方案；未发送运动。' + ('\n阻塞原因：\n' + '\n'.join(f'{i+1}. {reason}' for i, reason in enumerate(blockers)) if blockers else '当前为预览模式，航点基础检查已通过；直线与返回轨迹均将在实际运动时由控制器规划。'))
                 return
             self.execute(plan, config, report)
         except Exception as error:
@@ -495,7 +403,7 @@ class GraspController:
 
     def execute(self, plan, config, report):
         grip = config['gripper']
-        minimum = minimum_table_clearance(config)
+        minimum_table_clearance(config)
         if any(type(grip[key]) is not int for key in ['force_target_raw', 'force_limit_raw', 'open_position', 'closed_position']):
             raise ValueError('夹爪参数必须为整数原始值')
         # The base-frame target is fixed for the job; tracking loss or target motion
@@ -524,18 +432,7 @@ class GraspController:
         else:
             raise TimeoutError('夹爪未到达张开位置')
         lifting = False
-        def watchdog():
-            self.check_cancel()
-            if self.robot.query('get_current_tool_frame') != plan['tool_response'] or self.robot.query('get_current_work_frame') != plan['work_response']:
-                raise ValueError('运动期间工具或工作坐标系发生变化')
-            if lifting:
-                grip_state = self.robot.query('get_rm_plus_state_info')['state_info']
-                if contact_result(grip_state, grip) not in ('force_contact', 'force_stop'):
-                    raise ValueError('抬升或返回期间夹持状态丢失或夹爪异常')
-            state = self.arm_state()
-            point = controller_pose(state['pose'])[:3, 3]
-            if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])) or point[2] < config['table_z_m'] + minimum:
-                raise ValueError('机械臂离开约定工作区')
+        watchdog = self.check_cancel
         def move_waypoint(waypoint):
             watchdog()
             names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
@@ -568,10 +465,6 @@ class GraspController:
                 move_waypoint(next(w for w in plan['waypoints'] if w['name'] == 'lift'))
                 watchdog()
                 if plan.get('return_joint_raw') is not None:
-                    current = self.arm_state()
-                    report['return_check_actual'] = self.check_return(current['joint'], plan['return_joint_raw'], plan['tool_response'], config)
-                    if not report['return_check_actual']['ok']:
-                        raise ValueError(report['return_check_actual']['reason'])
                     watchdog()
                     self.update(state='returning', message='抬升完成，保持夹持并返回记录的关节角度')
                     self.robot.move_joints(plan['return_joint_raw'], config['arm_speed_percent'], self.cancelled, watchdog)
