@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D435i/web adapter on official FoundationPose register/track_one; no robot API."""
+"""D435i/web adapter on official FoundationPose register/track_one; button-triggered grasp control."""
 import argparse
 from collections import deque
 import datetime
@@ -736,6 +736,8 @@ def main():
                     result = {'accepted': True, 'mode': args.grasp_mode}
                 elif self.path == '/api/gripper/status':
                     result = tracker.grasp.hardware_status()
+                elif self.path == '/api/gripper/open':
+                    result = tracker.grasp.open_gripper()
                 elif self.path == '/api/gripper/force-config':
                     result = tracker.grasp.set_force_config(value['value'])
                 elif self.path == '/api/grasp/stop':
@@ -750,7 +752,7 @@ def main():
                     self.reply(404, {'error': 'not found'})
                     return
                 self.reply(200, result)
-            except (ValueError, KeyError, TypeError, RuntimeError) as error:
+            except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
                 self.reply(400, {'error': str(error)})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)

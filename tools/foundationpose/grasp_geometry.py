@@ -33,16 +33,19 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
     point = np.asarray(object_profile['grasp_point_object_m'], dtype=float)
     if point.shape != (3,) or not np.isfinite(point).all() or np.linalg.norm(point) > .2:
         raise ValueError('物体抓取点配置无效')
-    if object_profile['orientation'] != 'keep_current_tcp' or config['action'] != 'close_only_no_lift':
-        raise ValueError('首轮仅支持保持当前朝向、夹持且不抬起')
+    if object_profile['orientation'] != 'keep_current_tcp' or config['action'] != 'grasp_and_lift':
+        raise ValueError('仅支持保持当前朝向、夹持后竖直抬升')
     target = (transform(base_object) @ np.r_[point, 1])[:3]
     distance = float(np.linalg.norm(target - current[:3, 3]))
     if distance > config['max_target_distance_m']:
         raise ValueError('目标距离超过本次试抓范围')
     pre = target - current[:3, 2] * config['pregrasp_distance_m']
     z = max(current[2, 3], pre[2], target[2]) + config['clearance_height_m']
-    points = [('raise_clearance', np.array([current[0, 3], current[1, 3], z])),
-              ('above_pregrasp', np.array([pre[0], pre[1], z])), ('pregrasp', pre), ('grasp', target)]
+    lift_height = config['lift_height_m']
+    if not isinstance(lift_height, (int, float)) or isinstance(lift_height, bool) or not np.isfinite(lift_height) or lift_height <= 0:
+        raise ValueError('抬升高度必须为有限正数，单位米')
+    points = [('above_pregrasp', np.array([pre[0], pre[1], z])),
+              ('pregrasp', pre), ('grasp', target), ('lift', target + [0, 0, lift_height])]
     waypoints = []
     for name, xyz in points:
         pose = [int(round(v * 1e6)) for v in xyz] + [int(v) for v in raw_tcp[3:]]
@@ -50,7 +53,7 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
     return {'base_T_object': transform(base_object).tolist(), 'target_position_m': target.tolist(),
             'current_position_m': current[:3, 3].tolist(),
             'orientation_policy': 'keep_current_tcp', 'waypoints': waypoints, 'target_distance_m': distance,
-            'lift_after_grasp': False}
+            'lift_after_grasp': True, 'lift_height_m': lift_height}
 
 
 def workspace_blockers(plan, config):
@@ -70,13 +73,12 @@ def contact_result(state, gripper):
     if state.get('sys_err', state.get('sys_error', -1)) or state.get('sys_state') != 0 or state.get('dof_err') != [0]:
         return 'fault'
     dof = state.get('dof_state', [-1])[0]
-    if state.get('force', [0])[0] > gripper.get('force_limit_raw', 1000) * 1.2 + 1:
-        return 'fault'
+    # Feedback and the setting have no established common physical unit.
     if dof in (5, 6) or dof not in (0, 1, 2, 3, 4):
         return 'fault'
     pos = state.get('pos', [0])[0]
-    if dof == 3 and state.get('speed') == [0] and pos > gripper['closed_position'] + gripper['contact_position_margin'] and state.get('force', [0])[0] > 0:
-        return 'force_contact'
+    if dof == 3 and state.get('speed') == [0] and pos > gripper['closed_position'] + gripper['contact_position_margin']:
+        return 'force_contact' if state.get('force', [0])[0] > 0 else 'force_stop'
     if dof == 2 and pos <= gripper['closed_position'] + gripper['contact_position_margin']:
         return 'empty_close'
     return 'pending'

@@ -1,6 +1,5 @@
 """Narrow RealMan JSON transport. Motion requires an explicitly enabled client."""
 import json
-import re
 import socket
 import time
 
@@ -8,18 +7,6 @@ import time
 READS = {'get_current_arm_state', 'get_current_tool_frame', 'get_current_work_frame', 'get_joint_en_state',
          'get_joint_err_flag', 'get_arm_software_info', 'get_rm_plus_mode', 'get_rm_plus_base_info',
          'get_rm_plus_state_info', 'get_rm_plus_reg'}
-
-
-def register_support_issue(software):
-    """RM release notes introduce ecosystem register read/write in V1.7.3."""
-    version = software.get('ctrl_info', {}).get('version', '')
-    match = re.fullmatch(r'V?(\d+)\.(\d+)\.(\d+)', version)
-    if not match:
-        return '无法识别控制器版本，不能确认 RM Plus 寄存器接口兼容性'
-    if tuple(map(int, match.groups())) < (1, 7, 3):
-        return (f'控制器 {version} 不支持本抓取流程所需的 RM Plus 寄存器读写接口'
-                '（V1.7.3 起新增）；限速、限力、力控闭合及夹爪停止均依赖该接口，需先解决固件兼容性')
-    return None
 
 
 class RobotClient:
@@ -64,7 +51,7 @@ class RobotClient:
         if reply.get('set_state') is not True:
             raise RuntimeError('夹爪命令未被接受')
 
-    def open_gripper(self, position):
+    def move_gripper(self, position):
         if not self.writes or not isinstance(position, int) or not 0 <= position <= 1000:
             raise ValueError('夹爪写入未启用或开度越界')
         if self._request({'command': 'hand_follow_pos', 'hand_pos': [position]}).get('set_state') is not True:
@@ -85,7 +72,7 @@ class RobotClient:
             raise RuntimeError('停止指令未全部确认：' + '; '.join(failures))
 
     def move_linear(self, pose, speed, cancelled, watchdog, timeout=60):
-        if not self.writes or len(pose) != 6 or not all(isinstance(v, int) for v in pose) or not 1 <= speed <= 5:
+        if not self.writes or len(pose) != 6 or not all(isinstance(v, int) for v in pose) or not 1 <= speed <= 100:
             raise ValueError('运动未启用或运动参数无效')
         command = {'command': 'movel', 'pose': pose, 'v': speed, 'r': 0, 'trajectory_connect': 0}
         with socket.create_connection(self.address, timeout=2) as connection:

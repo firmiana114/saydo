@@ -2,15 +2,15 @@
   "robot_ip": "192.168.1.19",
   "robot_port": 8080,
   "nominal_tcp_user_accepted": true,
-  "action": "close_only_no_lift",
+  "action": "grasp_and_lift",
+  "lift_height_m": 0.10,
   "handeye_file": "config/calibration/handeye.yaml",
   "tool_file": "config/calibration/tool_grip_tcp.yaml",
   "ik_checker": "work/grasp/rm75_ik_check",
-  "arm_speed_percent": 2,
+  "arm_speed_percent": 100,
   "pregrasp_distance_m": 0.05,
-  "clearance_height_m": 0.08,
+  "clearance_height_m": 0.05,
   "max_target_distance_m": 0.3,
-  "max_plan_age_s": 5,
   "workspace_min_m": [-1.0, -1.0, 0.0],
   "workspace_max_m": [1.0, 1.0, 1.0],
   "table_z_m": 0.0,
@@ -18,22 +18,33 @@
   "gripper": {
     "vendor": "ZX",
     "device_id": 1,
-    "open_position": 900,
+    "open_position": 1000,
     "closed_position": 0,
     "contact_position_margin": 20,
-    "speed_limit_raw": 100,
     "force_limit_raw": 10,
     "force_target_raw": 10,
-    "force_units": "unverified_native_units_not_newtons",
-    "force_control_verified": false,
-    "contact_state_verified": false,
-    "close_timeout_s": 5
-  },
-  "objects": {
-    "ob_yibao_350ml": {
-      "grasp_point_object_m": [0, 0, 0],
-      "orientation": "keep_current_tcp",
-      "note": "First trial: 350 mL bottle, grip at nominal model centre, no lift. Nominal TCP explicitly accepted by user."
+    "force_units": "native_units_not_newtons",
+    "force_control_verified": true,
+    "close_timeout_s": 5,
+    "verification": {
+      "date": "2026-09-18",
+      "source": "explicit_user_physical_test",
+      "controller_firmware": "V1.7.0",
+      "gripper_firmware": "V1.154",
+      "force_register": 1220,
+      "close_command": "hand_follow_pos",
+      "closed_position": 0,
+      "observations": {
+        "10": "轻轻夹住纸杯",
+        "50": "纸杯轻微变形"
+      },
+      "newton_conversion": "unknown",
+      "register_readback": "unavailable"
     }
+  },
+  "grasp_profile": {
+    "grasp_point_object_m": [0, 0, 0],
+    "orientation": "keep_current_tcp",
+    "note": "Any currently tracked model; freeze its model origin at grasp start, keep current tool orientation, lift vertically after grasp."
   }
 }

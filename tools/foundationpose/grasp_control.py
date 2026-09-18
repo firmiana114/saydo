@@ -1,5 +1,6 @@
 """First-trial grasp coordinator. Button-triggered execution with robot write gates."""
 from pathlib import Path
+import copy
 import fcntl
 import hashlib
 import json
@@ -11,7 +12,7 @@ import numpy as np
 import yaml
 
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result
-from grasp_robot import RobotClient, register_support_issue
+from grasp_robot import RobotClient
 
 
 class GraspController:
@@ -23,8 +24,10 @@ class GraspController:
         self.actuated = False
         self.robot = None
         self.force_override = None
+        self.force_acknowledged = False
+        self.force_error = None
         self.status = {'state': 'idle', 'busy': False, 'mode': mode, 'motion_enabled': mode == 'execute',
-                       'message': '首轮试抓：仅夹持，不抬起。' if mode == 'execute' else '方案预览模式，不发送运动或夹爪写入命令。'}
+                       'message': '抓取后按配置竖直抬升。' if mode == 'execute' else '方案预览模式，不发送运动或夹爪写入命令。'}
 
     def snapshot(self):
         with self.lock:
@@ -33,19 +36,105 @@ class GraspController:
     def force_config(self):
         grip = json.loads(self.config_path.read_text())['gripper']
         value = self.force_override if self.force_override is not None else grip['force_target_raw']
-        return {'value': value, 'minimum': 1, 'maximum': 100, 'hardware_applied': False,
-                'message': '本次服务的抓取配置；下一次抓取使用。未下发硬件，重启后恢复文件配置。'}
+        message = ('力度指令已下发并收到成功回复；下一次抓取也使用此值。'
+                   if self.force_acknowledged else '尚未从本次页面下发；下一次抓取将使用此值。')
+        if self.mode == 'preview':
+            message = '预览模式：仅更新下一次方案的配置，不下发硬件。'
+        if self.force_error:
+            message = '下发未确认：' + self.force_error + '；设备实际值未知，未自动重试。'
+        return {'value': value, 'minimum': 1, 'maximum': 100,
+                'hardware_applied': self.force_acknowledged,
+                'write_acknowledged': self.force_acknowledged, 'readback_verified': False,
+                'error': self.force_error, 'message': message}
 
     def set_force_config(self, value):
-        # This is a session setting, never a live force command on a held object.
         with self.lock:
             if self.status['busy']:
-                raise ValueError('抓取任务进行中，不能更改力度配置')
+                raise ValueError('抓取任务进行中，不能更改力度')
             if type(value) is not int or not 1 <= value <= 100:
                 raise ValueError('力度必须为 1–100 的整数原始值，不能按牛顿输入')
-            self.force_override = value
+            if self.mode == 'preview':
+                self.force_override = value
+                self.status.update(plan=None)
+                return self.force_config()
+            config = json.loads(self.config_path.read_text())
+            grip = config['gripper']
+            directory = self.root / 'work/grasp'
+            directory.mkdir(parents=True, exist_ok=True)
+            report = {'started_at': time.time(), 'requested_force_raw': value,
+                      'write_attempted': False, 'write_acknowledged': False}
             self.status.update(plan=None)
+            try:
+                # Share the grasp lock so another service cannot write during a grasp.
+                with (directory / 'robot.lock').open('a') as robot_lock:
+                    fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    robot = RobotClient(config['robot_ip'], config['robot_port'], writes=True)
+                    if robot.query('get_rm_plus_mode').get('mode') != 115200:
+                        raise ValueError('RM Plus 通信模式不匹配')
+                    base = robot.query('get_rm_plus_base_info')['base_info']
+                    if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
+                        raise ValueError('夹爪身份不匹配')
+                    state = robot.query('get_rm_plus_state_info')['state_info']
+                    if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
+                        raise ValueError('夹爪异常或正在运动，不能更改力度')
+                    if not base.get('force') or not 1 <= value <= base['force_up'][0]:
+                        raise ValueError('力度超出设备支持范围')
+                    self.force_acknowledged = False
+                    report['write_attempted'] = True
+                    robot.set_register(1220, value)
+                    self.force_override = value
+                    self.force_acknowledged = True
+                    self.force_error = None
+                    report['write_acknowledged'] = True
+            except Exception as error:
+                self.force_acknowledged = False
+                self.force_error = str(error)
+                report['error'] = str(error)
+                raise ValueError('力度下发未确认：' + str(error)) from error
+            finally:
+                records = directory / 'force_commands'
+                records.mkdir(exist_ok=True)
+                (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
             return self.force_config()
+
+    def open_gripper(self):
+        with self.lock:
+            if self.status['busy']:
+                raise ValueError('抓取任务进行中，不能打开夹爪')
+            if self.mode != 'execute':
+                raise ValueError('预览模式不发送夹爪运动指令')
+            config = json.loads(self.config_path.read_text())
+            grip = config['gripper']
+            directory = self.root / 'work/grasp'
+            directory.mkdir(parents=True, exist_ok=True)
+            report = {'started_at': time.time(), 'target_position': 1000,
+                      'write_attempted': False, 'write_acknowledged': False}
+            try:
+                with (directory / 'robot.lock').open('a') as robot_lock:
+                    fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    robot = RobotClient(config['robot_ip'], config['robot_port'], writes=True)
+                    if robot.query('get_rm_plus_mode').get('mode') != 115200:
+                        raise ValueError('RM Plus 通信模式不匹配')
+                    base = robot.query('get_rm_plus_base_info')['base_info']
+                    if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
+                        raise ValueError('夹爪身份不匹配')
+                    state = robot.query('get_rm_plus_state_info')['state_info']
+                    report['initial_gripper_state'] = state
+                    if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
+                        raise ValueError('夹爪异常或正在运动')
+                    report['write_attempted'] = True
+                    robot.move_gripper(1000)
+                    report['write_acknowledged'] = True
+                    self.status.update(plan=None)
+            except Exception as error:
+                report['error'] = str(error)
+                raise ValueError('打开夹爪未确认：' + str(error)) from error
+            finally:
+                records = directory / 'open_commands'
+                records.mkdir(exist_ok=True)
+                (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+            return {'target_position': 1000, 'write_acknowledged': True,
+                    'message': '打开指令已接受，目标位置 1000；实际到位可通过“读取夹爪状态”确认。'}
 
     def update(self, **values):
         with self.lock:
@@ -63,18 +152,22 @@ class GraspController:
             return {'mode': mode, 'base': base, 'state': state, 'state_text': names.get(state.get('dof_state', [-1])[0], '未知'),
                     'force_units': config['gripper']['force_units'], 'motion_sent': False,
                     'controller_version': software.get('ctrl_info', {}).get('version'),
-                    'register_access_issue': register_support_issue(software)}
+                    'force_control_verified': config['gripper']['force_control_verified'],
+                    'register_readback_available': False}
         except Exception as error:
             raise ValueError('读取夹爪失败：' + str(error)) from error
 
     def start(self):
+        # Take the tracker lock before the grasp lock (snapshot uses the same order).
+        observation = copy.deepcopy(self.tracker.grasp_observation())
         with self.lock:
             if self.status['busy']:
                 raise ValueError('已有抓取任务正在处理')
             self.cancelled.clear()
             self.actuated = False
-            self.status.update(state='checking', busy=True, message='检查定位、机械臂、夹爪与抓取路径…', error=None, plan=None)
-            self.thread = threading.Thread(target=self.run, daemon=True)
+            self.status.update(state='checking', busy=True, message='已锁定当前物品，检查机械臂、夹爪与抓取路径…', error=None, plan=None,
+                               target_object_id=observation['object_id'], target_captured_at=observation['time'])
+            self.thread = threading.Thread(target=self.run, args=(observation,), daemon=True)
             self.thread.start()
 
     def abort(self):
@@ -110,20 +203,12 @@ class GraspController:
             raise ValueError('机械臂存在错误状态')
         return state
 
-    def paired_observation(self):
-        # Only static-arm pairing is supported; never apply current arm pose to
-        # an old image taken while the eye-in-hand camera was moving.
+    def paired_observation(self, observation):
+        # Bind the click-time image to the stationary arm immediately at job start.
+        # Do not replace the frozen image with a later tracker result.
+        if time.time() - observation['time'] > .6:
+            raise ValueError('开始时的视觉快照已过期，请重新点击抓取')
         first = self.arm_state()
-        bracket_start = time.time()
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            self.check_cancel()
-            observation = self.tracker.grasp_observation()
-            if observation['time'] >= bracket_start:
-                break
-            time.sleep(.04)
-        else:
-            raise ValueError('没有获得机器人静止查询之后的新鲜视觉位姿')
         middle = self.arm_state()
         time.sleep(.15)
         last = self.arm_state()
@@ -171,8 +256,24 @@ class GraspController:
         return {'ok': result.returncode == 0 and len(ik) == len(points), 'sampled_poses': len(points),
                 'fk_position_error_m': error, 'scope': 'SDK kinematics and self-collision only; not full environment collision checking'}
 
-    def run(self):
-        report = {'started_at': time.time(), 'mode': self.mode, 'robot_motion_sent': False}
+    @staticmethod
+    def check_gripper_start(state, grip):
+        position = state.get('pos')
+        if (not isinstance(position, list) or len(position) != 1
+                or type(position[0]) not in (int, float) or not np.isfinite(position[0])
+                or not 0 <= position[0] <= 1000):
+            raise ValueError('夹爪位置反馈无效，无法确认复位状态')
+        if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
+            raise ValueError('夹爪异常或正在运动')
+        # The device can retain force-stop status after manual opening (pos=1000).
+        # Use the same open-position tolerance as the opening stage.
+        opened = abs(position[0] - grip['open_position']) <= 3
+        if not opened and (state.get('dof_state') == [3] or any(state.get('force', []))):
+            raise ValueError('夹爪可能已夹持物体，请先人工张开复位')
+
+    def run(self, observation):
+        report = {'started_at': time.time(), 'mode': self.mode, 'robot_motion_sent': False,
+                  'locked_observation': copy.deepcopy(observation)}
         robot_lock = None
         try:
             with self.lock:
@@ -188,15 +289,10 @@ class GraspController:
                 robot_lock = lock_path.open('a')
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=self.mode == 'execute')
+            arm, observation = self.paired_observation(observation)
             handeye, tool = self.calibration(config)
             software = self.robot.query('get_arm_software_info')
             report['controller_software'] = software
-            compatibility_issue = register_support_issue(software)
-            if self.mode == 'execute' and compatibility_issue:
-                raise ValueError(compatibility_issue)
-            initial = self.tracker.grasp_observation()
-            if initial['object_id'] not in config['objects']:
-                raise ValueError('当前物品尚未配置抓取位置；首轮仅支持怡宝水瓶')
             if software.get('Product_version') != 'RM75-BI' or software['ctrl_info']['version'] != handeye['installation']['controller_firmware']:
                 raise ValueError('机械臂型号/固件与标定记录不匹配')
             if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
@@ -210,40 +306,27 @@ class GraspController:
                 raise ValueError('RM Plus 通信模式不匹配')
             base = self.robot.query('get_rm_plus_base_info')['base_info']
             gripper_state = self.robot.query('get_rm_plus_state_info')['state_info']
+            report['initial_gripper_state'] = copy.deepcopy(gripper_state)
             grip = config['gripper']
             if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
                 raise ValueError('夹爪身份不匹配')
-            if contact_result(gripper_state, grip) == 'fault' or gripper_state.get('speed') != [0]:
-                raise ValueError('夹爪异常或正在运动')
-            if gripper_state.get('dof_state') == [3] or any(gripper_state.get('force', [])):
-                raise ValueError('夹爪可能已夹持物体，请先人工处理')
-            arm, observation = self.paired_observation()
+            self.check_gripper_start(gripper_state, grip)
             expected_K = np.array(handeye['camera']['K'], dtype=float)
             expected_K[:2] *= .5  # The live adapter uses 640x360 from calibrated 1280x720 color.
             observed_K = np.asarray(observation.get('K'), dtype=float)
             if observed_K.shape != (3, 3) or not np.allclose(observed_K, expected_K, atol=.05):
                 raise ValueError('实际视觉内参与手眼标定使用的彩色流不匹配')
-            profile = config['objects'].get(observation['object_id'])
-            if profile is None:
-                raise ValueError('当前物品尚未配置抓取位置；首轮仅支持怡宝水瓶')
+            profile = config['grasp_profile']
             base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
             plan = plan_grasp(arm['pose'], base_object, profile, config)
-            plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'],
+            plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
+                        object_name=observation.get('object_name'),
                         current_arm=arm, gripper_base=base, gripper_state=gripper_state,
                         tool_response=tool['controller_readback']['tool_response_raw'], work_response=work,
                         force_limit_raw=grip['force_limit_raw'], force_units=grip['force_units'])
             blockers = workspace_blockers(plan, config)
-            if not base.get('force') or not grip['force_control_verified']:
-                blockers.append('夹爪力控单位及限力实际生效尚未验证')
-            if not grip['contact_state_verified']:
-                blockers.append('夹爪力控接触状态尚未实机验证')
-            if compatibility_issue:
-                blockers.append(compatibility_issue)
-            for register in (() if compatibility_issue else (1180, 1220)):
-                try:
-                    self.robot.register(register)
-                except Exception as error:
-                    blockers.append(str(error))
+            if not base.get('force'):
+                blockers.append('当前夹爪未声明支持力度控制')
             plan['ik_check'] = self.check_ik(plan, arm, tool, config)
             if not plan['ik_check']['ok']:
                 blockers.append(plan['ik_check'].get('reason', '路径逆解检查失败'))
@@ -255,7 +338,7 @@ class GraspController:
             if not plan['can_execute']:
                 self.update(state='blocked' if blockers else 'preview', message='已生成方案；未发送运动。' + ('；'.join(blockers) if blockers else '当前为预览模式。'))
                 return
-            self.execute(plan, observation, config, report)
+            self.execute(plan, config, report)
         except Exception as error:
             if self.actuated:
                 try:
@@ -273,32 +356,24 @@ class GraspController:
             directory.mkdir(parents=True, exist_ok=True)
             (directory / f'{time.time_ns()}.json').write_text(json.dumps(report, indent=2, ensure_ascii=False))
 
-    def execute(self, plan, observation, config, report):
+    def execute(self, plan, config, report):
         grip = config['gripper']
-        if any(type(grip[key]) is not int for key in ['force_target_raw', 'force_limit_raw', 'speed_limit_raw', 'open_position']):
+        if any(type(grip[key]) is not int for key in ['force_target_raw', 'force_limit_raw', 'open_position', 'closed_position']):
             raise ValueError('夹爪参数必须为整数原始值')
-        # Recheck snapshot, identity and unchanged arm immediately before writes.
-        now = self.tracker.grasp_observation()
-        if now['generation'] != observation['generation'] or now['object_id'] != observation['object_id'] or time.time() - observation['time'] > config['max_plan_age_s']:
-            raise ValueError('抓取方案已过期或物品已切换')
-        if np.linalg.norm(np.asarray(now['pose'])[:3, 3] - np.asarray(observation['pose'])[:3, 3]) > .005:
-            raise ValueError('目标在规划后发生移动')
+        # The base-frame target is fixed for the job; tracking loss or target motion
+        # must not change it. Only robot state is rechecked before actuation.
         current = self.arm_state()
         if np.max(np.abs(np.asarray(current['joint']) - plan['current_arm']['joint'])) > 30:
             raise ValueError('机械臂在规划后发生移动')
         if not (0 < grip['force_target_raw'] <= grip['force_limit_raw'] <= plan['gripper_base']['force_up'][0]):
             raise ValueError('夹爪力参数越界')
-        if not (0 < grip['speed_limit_raw'] <= plan['gripper_base']['speed_up'][0]):
-            raise ValueError('夹爪速度参数越界')
         self.check_cancel()
         self.actuated = True
-        # No arm movement unless both settings can be read back exactly.
-        for register, value in [(1180, grip['speed_limit_raw']), (1220, grip['force_limit_raw'])]:
-            self.robot.set_register(register, value)
-            if self.robot.register(register) != value:
-                raise ValueError('夹爪限速/限力回读不一致，拒绝机械臂运动')
+        # User verified register 1220 + position following on the installed firmware.
+        # Numeric register readback is unavailable; reject failed write acknowledgements.
+        self.robot.set_register(1220, grip['force_limit_raw'])
         self.update(state='opening', message='张开夹爪')
-        self.robot.open_gripper(grip['open_position'])
+        self.robot.move_gripper(grip['open_position'])
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             self.check_cancel()
@@ -310,24 +385,34 @@ class GraspController:
             time.sleep(.1)
         else:
             raise TimeoutError('夹爪未到达张开位置')
+        lifting = False
         def watchdog():
             self.check_cancel()
             if self.robot.query('get_current_tool_frame') != plan['tool_response'] or self.robot.query('get_current_work_frame') != plan['work_response']:
                 raise ValueError('运动期间工具或工作坐标系发生变化')
+            if lifting:
+                grip_state = self.robot.query('get_rm_plus_state_info')['state_info']
+                if contact_result(grip_state, grip) not in ('force_contact', 'force_stop'):
+                    raise ValueError('抬升期间夹持状态丢失或夹爪异常')
             state = self.arm_state()
             point = controller_pose(state['pose'])[:3, 3]
             if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])):
                 raise ValueError('机械臂离开约定工作区')
-        for waypoint in plan['waypoints']:
-            names = {'raise_clearance':'抬高空爪', 'above_pregrasp':'到达预抓上方', 'pregrasp':'到达预抓取点', 'grasp':'接近夹持点'}
-            self.update(state='moving', message='执行路径：' + names[waypoint['name']])
+        def move_waypoint(waypoint):
+            watchdog()
+            names = {'above_pregrasp':'到达预抓上方', 'pregrasp':'到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
+            self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
             report['robot_motion_sent'] = True
             self.robot.move_linear(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
             reached = self.arm_state()
             if np.linalg.norm((np.array(reached['pose'][:3]) - waypoint['controller_pose'][:3]) / 1e6) > .002:
                 raise ValueError('机械臂实际位置与目标不符')
-        self.update(state='closing', message='低力度闭合，等待力控接触反馈')
-        self.robot.set_register(1470, grip['force_target_raw'])
+        for waypoint in plan['waypoints']:
+            if waypoint['name'] != 'lift':
+                move_waypoint(waypoint)
+        self.update(state='closing', message='按指定力度闭合，等待力控接触反馈')
+        self.robot.set_register(1220, grip['force_limit_raw'])
+        self.robot.move_gripper(grip['closed_position'])
         deadline = time.monotonic() + grip['close_timeout_s']
         stable = 0
         while time.monotonic() < deadline:
@@ -336,9 +421,13 @@ class GraspController:
             result = contact_result(state, grip)
             if result in ('fault', 'empty_close'):
                 raise ValueError('夹爪异常或空夹到位')
-            stable = stable + 1 if result == 'force_contact' else 0
+            stable = stable + 1 if result in ('force_contact', 'force_stop') else 0
             if stable >= 3:
-                self.update(state='contact', message='检测到力控接触，保持当前位置；未抬起，不等同于抓牢验收。', gripper_contact=state)
+                self.update(gripper_contact=state)
+                lifting = True
+                move_waypoint(next(w for w in plan['waypoints'] if w['name'] == 'lift'))
+                watchdog()
+                self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，请观察物品是否保持夹持。")
                 return
             time.sleep(.1)
         raise TimeoutError('未确认稳定接触，停止本次抓取')
