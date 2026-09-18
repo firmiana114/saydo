@@ -55,7 +55,7 @@ class Tracker:
         self.events = EventLog(self.output / 'events.jsonl')
         self.last_heartbeat = 0.
         self.state['output'] = str(self.output)
-        self.state.update(object_id=self.object_info['id'], object_name=self.object_info['name'],
+        self.state.update(model_sha256=hashlib.sha256(args.mesh.read_bytes()).hexdigest(), object_id=self.object_info['id'], object_name=self.object_info['name'],
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
         self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
@@ -258,7 +258,8 @@ class Tracker:
             if np.max(angles) > np.deg2rad(15):
                 raise ValueError('目标朝向不稳定，请等待稳定跟踪')
             return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
-                    'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K')}
+                    'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K'),
+                    'model_sha256': s.get('model_sha256')}
 
     def image(self):
         with self.lock:
@@ -390,7 +391,7 @@ class Tracker:
                                 self.object_info = info
                                 detector_class = info['detector_class']
                                 detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
-                                self.state.update(state='ready', model_ready=True, model=info['mesh'], object_id=info['id'],
+                                self.state.update(state='ready', model_ready=True, model_sha256=hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest(), model=info['mesh'], object_id=info['id'],
                                     object_name=info['name'], pending_object_name=None, detector_class=detector_class,
                                     auto_detection_supported=detector_label is not None, model_extents_m=mesh.extents.tolist(),
                                     initialization_seconds=None, catchup_seconds=None, catchup_frames=0,
@@ -734,6 +735,11 @@ def main():
                 elif self.path == '/api/grasp':
                     tracker.grasp.start()
                     result = {'accepted': True, 'mode': args.grasp_mode}
+                elif self.path == '/api/grasp/preview':
+                    tracker.grasp.start(preview=True)
+                    result = {'accepted': True, 'mode': 'preview'}
+                elif self.path == '/api/grasp/teach':
+                    result = tracker.grasp.teach(value.get('use_current_point', False))
                 elif self.path == '/api/gripper/status':
                     result = tracker.grasp.hardware_status()
                 elif self.path == '/api/gripper/open':

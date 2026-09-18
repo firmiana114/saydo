@@ -11,7 +11,7 @@ import time
 import numpy as np
 import yaml
 
-from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result
+from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, sample_motion
 from grasp_robot import RobotClient
 
 
@@ -157,7 +157,88 @@ class GraspController:
         except Exception as error:
             raise ValueError('读取夹爪失败：' + str(error)) from error
 
-    def start(self):
+    def profile_for(self, config, observation, tool, handeye):
+        profile = copy.deepcopy(config['grasp_profile'])
+        if profile['orientation'] != 'follow_object':
+            return profile
+        path = self.root / 'work/grasp/taught_profiles.json'
+        records = json.loads(path.read_text()) if path.exists() else {}
+        record = records.get(observation['object_id'])
+        if record is not None:
+            if record['model_sha256'] != observation.get('model_sha256'):
+                raise ValueError('物品模型已变化，请重新记录夹法')
+            if record['tool_response'] != tool['controller_readback']['tool_response_raw']:
+                raise ValueError('工具参数已变化，请重新记录夹法')
+            if record.get('flange_T_camera') != handeye['flange_T_color_optical_camera']:
+                raise ValueError('手眼标定已变化，请重新记录夹法')
+            profile.update(record['profile'])
+        return profile
+
+    def teach(self, use_current_point=False):
+        if type(use_current_point) is not bool:
+            raise ValueError('记录位置选项必须为布尔值')
+        observation = copy.deepcopy(self.tracker.grasp_observation())
+        if not observation.get('object_id') or not observation.get('model_sha256'):
+            raise ValueError('记录夹法需要已登记的物品模型')
+        with self.lock:
+            if self.status['busy']:
+                raise ValueError('已有抓取任务正在处理')
+            self.status.update(busy=True, state='teaching', message='正在读取当前夹法，不发送运动…', error=None)
+            self.actuated = False
+            self.cancelled.clear()
+        directory = self.root / 'work/grasp'
+        report = {'at': time.time(), 'observation': observation, 'use_current_point': use_current_point, 'motion_sent': False}
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with (directory / 'robot.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                config = json.loads(self.config_path.read_text())
+                self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=False)
+                arm, observation = self.paired_observation(observation)
+                handeye, tool = self.calibration(config)
+                if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
+                    raise ValueError('当前工具参数与记录不一致')
+                work = self.robot.query('get_current_work_frame')
+                if work.get('frame_name') != 'Base' or work.get('pose') != [0]*6:
+                    raise ValueError('当前工作坐标系必须是零偏移 Base')
+                expected = np.asarray(handeye['camera']['K'], dtype=float).copy();expected[:2] *= .5
+                observed = np.asarray(observation.get('K'), dtype=float)
+                if observed.shape != (3, 3) or not np.allclose(observed, expected, atol=.05):
+                    raise ValueError('实际视觉内参与手眼标定不匹配')
+                base_tcp = controller_pose(arm['pose'])
+                base_object = object_in_base(base_tcp, tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
+                relative = np.linalg.inv(base_object) @ base_tcp
+                profile = copy.deepcopy(config['grasp_profile'])
+                profile.update(orientation='follow_object', object_R_tcp=relative[:3, :3].tolist())
+                profile['approach_axis_tcp'] = [0, 0, 1]  # User-confirmed tool forward axis.
+                if use_current_point:
+                    profile['grasp_point_object_m'] = relative[:3, 3].tolist()
+                # Validate rotation, point, approach and distances before saving.
+                plan_grasp(arm['pose'], base_object, profile, config)
+                self.check_cancel()
+                record = {'profile': profile, 'model_sha256': observation['model_sha256'],
+                          'tool_response': tool['controller_readback']['tool_response_raw'],
+                          'flange_T_camera': handeye['flange_T_color_optical_camera'], 'recorded_at': time.time()}
+                path = directory / 'taught_profiles.json'
+                records = json.loads(path.read_text()) if path.exists() else {}
+                records[observation['object_id']] = record
+                temporary = path.with_suffix('.tmp')
+                temporary.write_text(json.dumps(records, ensure_ascii=False, indent=2))
+                temporary.replace(path)
+                report['record'] = record
+                message = '已记录当前物品的朝向' + ('及夹持位置' if use_current_point else '；夹持位置采用记录时的文件配置')
+                self.update(state='taught', message=message, plan=None)
+                return {'message': message, 'profile': profile, 'motion_sent': False}
+        except Exception as error:
+            report['error'] = str(error)
+            self.update(state='failed', message='记录夹法失败：' + str(error), error=str(error))
+            raise ValueError('记录夹法失败：' + str(error)) from error
+        finally:
+            self.update(busy=False)
+            records = directory / 'teach_commands';records.mkdir(exist_ok=True)
+            (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+
+    def start(self, preview=False):
         # Take the tracker lock before the grasp lock (snapshot uses the same order).
         observation = copy.deepcopy(self.tracker.grasp_observation())
         with self.lock:
@@ -167,7 +248,7 @@ class GraspController:
             self.actuated = False
             self.status.update(state='checking', busy=True, message='已锁定当前物品，检查机械臂、夹爪与抓取路径…', error=None, plan=None,
                                target_object_id=observation['object_id'], target_captured_at=observation['time'])
-            self.thread = threading.Thread(target=self.run, args=(observation,), daemon=True)
+            self.thread = threading.Thread(target=self.run, args=(observation,), kwargs={'preview': preview}, daemon=True)
             self.thread.start()
 
     def abort(self):
@@ -227,12 +308,12 @@ class GraspController:
         start = np.array(arm['pose'], dtype=float) / np.array([1e6]*3 + [1e3]*3)
         tool_pose = np.array(tool['controller_readback']['tool_response_raw']['pose']) / np.array([1e6]*3 + [1e3]*3)
         points = []
-        last = start.copy()
+        last = arm['pose']
         for waypoint in plan['waypoints']:
-            target = np.array(waypoint['controller_pose'], dtype=float) / np.array([1e6]*3 + [1e3]*3)
-            steps = max(1, int(np.ceil(np.linalg.norm(target[:3] - last[:3]) / .01)))
-            points.extend((last + (target - last) * n / steps).tolist() for n in range(1, steps + 1))
-            last = target
+            points.extend(sample_motion(last, waypoint['controller_pose']))
+            last = waypoint['controller_pose']
+        if len(points) > 500:
+            return {'ok': False, 'reason': '路径检查采样数超过上限'}
         text = ' '.join(map(str, tool_pose)) + '\n' + ' '.join(str(v / 1000) for v in arm['joint']) + '\n' + str(len(points)) + '\n'
         text += '\n'.join(' '.join(map(str, row)) for row in points) + '\n'
         result = subprocess.run([str(executable)], input=text, capture_output=True, text=True, timeout=10)
@@ -242,7 +323,8 @@ class GraspController:
             return {'ok': False, 'reason': 'SDK 正解检查没有有效输出'}
         forward = np.array(list(map(float, fk[0].split()[1:])))
         error = float(np.linalg.norm(forward[:3] - start[:3]))
-        angle_error = float(np.max(np.abs(np.arctan2(np.sin(forward[3:] - start[3:]), np.cos(forward[3:] - start[3:])))))
+        angle_error = rotation_error(controller_pose(arm['pose'])[:3, :3],
+                                     controller_pose(forward * np.array([1e6]*3 + [1e3]*3))[:3, :3])
         if error > .002 or angle_error > .01:
             return {'ok': False, 'reason': '离线 SDK 与控制器当前 TCP 正解不一致', 'position_error_m': error}
         previous = np.array(arm['joint']) / 1000
@@ -271,8 +353,9 @@ class GraspController:
         if not opened and (state.get('dof_state') == [3] or any(state.get('force', []))):
             raise ValueError('夹爪可能已夹持物体，请先人工张开复位')
 
-    def run(self, observation):
-        report = {'started_at': time.time(), 'mode': self.mode, 'robot_motion_sent': False,
+    def run(self, observation, preview=False):
+        mode = 'preview' if preview else self.mode
+        report = {'started_at': time.time(), 'mode': mode, 'robot_motion_sent': False,
                   'locked_observation': copy.deepcopy(observation)}
         robot_lock = None
         try:
@@ -283,12 +366,12 @@ class GraspController:
                     config['gripper']['force_limit_raw'] = self.force_override
             report['effective_gripper_config'] = dict(config['gripper'])
             report['config_sha256'] = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
-            if self.mode == 'execute':
+            if mode == 'execute':
                 lock_path = self.root / 'work/grasp/robot.lock'
                 lock_path.parent.mkdir(parents=True, exist_ok=True)
                 robot_lock = lock_path.open('a')
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=self.mode == 'execute')
+            self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=mode == 'execute')
             arm, observation = self.paired_observation(observation)
             handeye, tool = self.calibration(config)
             software = self.robot.query('get_arm_software_info')
@@ -316,7 +399,7 @@ class GraspController:
             observed_K = np.asarray(observation.get('K'), dtype=float)
             if observed_K.shape != (3, 3) or not np.allclose(observed_K, expected_K, atol=.05):
                 raise ValueError('实际视觉内参与手眼标定使用的彩色流不匹配')
-            profile = config['grasp_profile']
+            profile = self.profile_for(config, observation, tool, handeye)
             base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
             plan = plan_grasp(arm['pose'], base_object, profile, config)
             plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
@@ -331,7 +414,8 @@ class GraspController:
             if not plan['ik_check']['ok']:
                 blockers.append(plan['ik_check'].get('reason', '路径逆解检查失败'))
             plan['execution_blockers'] = blockers
-            plan['can_execute'] = self.mode == 'execute' and not blockers
+            plan['can_execute'] = mode == 'execute' and not blockers
+            report['grasp_profile'] = profile
             report['plan'] = plan
             self.update(plan=plan)
             self.check_cancel()
@@ -400,13 +484,15 @@ class GraspController:
                 raise ValueError('机械臂离开约定工作区')
         def move_waypoint(waypoint):
             watchdog()
-            names = {'above_pregrasp':'到达预抓上方', 'pregrasp':'到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
+            names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
             report['robot_motion_sent'] = True
             self.robot.move_linear(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
             reached = self.arm_state()
             if np.linalg.norm((np.array(reached['pose'][:3]) - waypoint['controller_pose'][:3]) / 1e6) > .002:
                 raise ValueError('机械臂实际位置与目标不符')
+            if rotation_error(controller_pose(reached['pose'])[:3, :3], controller_pose(waypoint['controller_pose'])[:3, :3]) > np.deg2rad(2):
+                raise ValueError('机械臂实际朝向与目标相差超过 2 度')
         for waypoint in plan['waypoints']:
             if waypoint['name'] != 'lift':
                 move_waypoint(waypoint)

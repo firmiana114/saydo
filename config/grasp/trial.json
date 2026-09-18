@@ -9,7 +9,6 @@
   "ik_checker": "work/grasp/rm75_ik_check",
   "arm_speed_percent": 100,
   "pregrasp_distance_m": 0.05,
-  "clearance_height_m": 0.05,
   "max_target_distance_m": 0.3,
   "workspace_min_m": [-1.0, -1.0, 0.0],
   "workspace_max_m": [1.0, 1.0, 1.0],
@@ -44,7 +43,9 @@
   },
   "grasp_profile": {
     "grasp_point_object_m": [0, 0, 0],
-    "orientation": "keep_current_tcp",
-    "note": "Any currently tracked model; freeze its model origin at grasp start, keep current tool orientation, lift vertically after grasp."
+    "orientation": "follow_object",
+    "object_R_tcp": null,
+    "approach_axis_tcp": [0, 0, 1],
+    "note": "Any currently tracked model; freeze the selected grasp pose at start, use taught object-relative position and orientation, lift vertically after grasp."
   }
 }

@@ -133,6 +133,20 @@ class GripperHTTPTests(unittest.TestCase):
                     self.assertEqual(open_gripper()[0], 400)
                     self.assertEqual(sum(x['command'] == 'hand_follow_pos' for x in requests), 2)
                     self.assertFalse(any(x['command'] == 'movel' for x in requests))
+                    self.assertIn('记录当前夹法', page)
+                    self.assertIn('预览抓取方案', page)
+                    with patch.object(trackers[0].grasp, 'teach', return_value={'motion_sent':False}) as teach:
+                        client.request('POST', '/api/grasp/teach', '{"use_current_point":true}', {'Content-Type':'application/json'})
+                        response=client.getresponse()
+                        self.assertEqual(response.status,200)
+                        self.assertFalse(json.loads(response.read())['motion_sent'])
+                        teach.assert_called_once_with(True)
+                    with patch.object(trackers[0].grasp, 'start') as start:
+                        client.request('POST', '/api/grasp/preview', '{}', {'Content-Type':'application/json'})
+                        response=client.getresponse()
+                        self.assertEqual(response.status,200)
+                        self.assertEqual(json.loads(response.read())['mode'],'preview')
+                        start.assert_called_once_with(preview=True)
                     client.close()
                 finally:
                     for tracker in trackers:

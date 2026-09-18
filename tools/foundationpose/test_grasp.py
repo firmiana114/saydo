@@ -132,11 +132,11 @@ class GraspTests(unittest.TestCase):
         got = object_in_base(base_flange @ flange_tcp, flange_tcp, flange_camera, camera_object)
         np.testing.assert_allclose(got, base_flange @ flange_camera @ camera_object, atol=1e-10)
 
-    def test_plan_starts_above_pregrasp_and_lifts_ten_cm(self):
+    def test_plan_starts_at_directional_pregrasp_and_lifts_ten_cm(self):
         target = np.eye(4);target[:3,3] = [.1,0,.2]
         plan = plan_grasp([0,0,200000,0,0,0], target, self.config()['grasp_profile'], self.config())
         self.assertTrue(plan['lift_after_grasp'])
-        self.assertEqual([w['name'] for w in plan['waypoints']], ['above_pregrasp', 'pregrasp', 'grasp', 'lift'])
+        self.assertEqual([w['name'] for w in plan['waypoints']], ['pregrasp', 'grasp', 'lift'])
         self.assertEqual(plan['waypoints'][-1]['name'], 'lift')
         self.assertEqual(plan['waypoints'][-1]['controller_pose'], [100000,0,300000,0,0,0])
         self.assertFalse(workspace_blockers(plan, self.config()))
@@ -179,9 +179,10 @@ class GraspTests(unittest.TestCase):
             robot.query('movel')
 
     def test_verified_legacy_device_executes_without_readback_and_preview_does_not(self):
-        for mode, verified in [('preview',True),('execute',True)]:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
-                root=Path(directory);config=self.config();config['gripper']['force_control_verified']=verified
+        for mode, preview in [('preview',False),('execute',False),('execute',True)]:
+            with self.subTest(mode=mode, preview=preview), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);config=self.config();config['gripper']['force_control_verified']=True
+                config['grasp_profile'].update(orientation='follow_object',object_R_tcp=np.eye(3).tolist())
                 cfg=root/'grasp.json';cfg.write_text(json.dumps(config))
                 pose=np.eye(4);pose[0,3]=.1
                 observation={'pose':pose.tolist(),'time':time.time(),'generation':1,'object_id':'never_configured_paper_cup','K':np.diag([.5,.5,1]).tolist()}
@@ -201,10 +202,11 @@ class GraspTests(unittest.TestCase):
                 fake=Mock()
                 fake.query.side_effect=lambda command:copy.deepcopy(replies[command])
                 fake.register.side_effect=AssertionError('numeric readback must not be required')
-                with patch('grasp_control.RobotClient',return_value=fake), patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'check_ik',return_value={'ok':True}), patch.object(service,'execute') as execute:
-                    service.run(observation)
-                    self.assertEqual(execute.call_count, int(mode == 'execute'))
-                    self.assertEqual(service.status['plan']['can_execute'], mode == 'execute')
+                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'check_ik',return_value={'ok':True}), patch.object(service,'execute') as execute:
+                    service.run(observation, preview=preview)
+                    self.assertEqual(client.call_args.kwargs['writes'], mode == 'execute' and not preview)
+                    self.assertEqual(execute.call_count, int(mode == 'execute' and not preview))
+                    self.assertEqual(service.status['plan']['can_execute'], mode == 'execute' and not preview)
                     self.assertEqual(service.status['plan']['force_limit_raw'], 17)
 
     def force_robot(self):
@@ -335,12 +337,12 @@ class GraspTests(unittest.TestCase):
             service.execute(plan,config,report)
             self.assertEqual(service.status['state'],'completed')
             moves=[x for x in robot.calls if x[0]=='move']
-            self.assertEqual(len(moves),4)
+            self.assertEqual(len(moves),3)
             self.assertEqual(moves[-1][1],plan['waypoints'][-1]['controller_pose'])
             self.assertEqual(robot.calls[:2],[('register',1220,10),('position',1000)])
             self.assertEqual(robot.calls[-3:-1],[('register',1220,10),('position',0)])
             self.assertEqual(moves[0][1], plan['waypoints'][0]['controller_pose'])
-            self.assertEqual(len([x for x in robot.calls[:robot.calls.index(('position',0))] if x[0]=='move']),3)
+            self.assertEqual(len([x for x in robot.calls[:robot.calls.index(('position',0))] if x[0]=='move']),2)
             self.assertLess(next(i for i,x in enumerate(robot.calls) if x==('position',1000)),next(i for i,x in enumerate(robot.calls) if x[0]=='move'))
             robot.calls.clear()
             arm['pose'] = [0,0,200000,0,0,0]
@@ -360,7 +362,17 @@ class GraspTests(unittest.TestCase):
                 with patch.object(robot, 'query', side_effect=failed_close):
                     with self.assertRaisesRegex(ValueError, '异常或空夹'):
                         service.execute(plan, config, {})
-                self.assertEqual(len([c for c in robot.calls if c[0] == 'move']), 3)
+                self.assertEqual(len([c for c in robot.calls if c[0] == 'move']), 2)
+            robot.calls.clear()
+            arm['pose'] = [0,0,200000,0,0,0]
+            move = robot.move_linear
+            def wrong_orientation(*args):
+                move(*args)
+                arm['pose'][3] += 100  # About 5.7 degrees, above the 2-degree tolerance.
+            with patch.object(robot, 'move_linear', side_effect=wrong_orientation):
+                with self.assertRaisesRegex(ValueError, '朝向'):
+                    service.execute(plan, config, {})
+            self.assertNotIn(('position', 0), robot.calls)
 
 
 if __name__ == '__main__':
