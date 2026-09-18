@@ -335,8 +335,26 @@ class GraspController:
                         'failed_sample': sample_index, 'ik_return_code': int(row[0]), 'self_collision_or_limit': int(row[1]),
                         'max_joint_delta_deg': float(np.max(np.abs(np.array(row[2:]) - previous)))}
             previous = np.array(row[2:])
+        if result.returncode == 0 and len(ik) == len(points) and plan.get('return_joint_raw') is not None:
+            check = self.check_return(np.rint(previous*1000).astype(int).tolist(), plan['return_joint_raw'],
+                                      tool['controller_readback']['tool_response_raw'], config)
+            plan['return_check'] = check
+            if not check['ok']:
+                return check
         return {'ok': result.returncode == 0 and len(ik) == len(points), 'sampled_poses': len(points),
                 'fk_position_error_m': error, 'scope': 'SDK kinematics and self-collision only; not full environment collision checking'}
+
+    def check_return(self, start_joints_raw, target_joints_raw, tool_raw, config):
+        executable = self.root / config['ik_checker']
+        tool_pose = np.asarray(tool_raw['pose']) / np.array([1e6]*3 + [1e3]*3)
+        rows = [tool_pose, np.asarray(start_joints_raw)/1000, np.asarray(target_joints_raw)/1000,
+                config['workspace_min_m'], config['workspace_max_m'], [config['table_z_m']]]
+        data = '\n'.join(' '.join(map(str, row)) for row in rows) + '\n'
+        result = subprocess.run([str(executable), '--joint-path'], input=data, capture_output=True, text=True, timeout=10)
+        lines = result.stdout.splitlines()
+        ok = result.returncode == 0 and len(lines) == 1 and lines[0].startswith('RETURN_OK ')
+        return {'ok': ok, 'reason': None if ok else '返回关节路径未通过检查（需新版离线检查器、有效工作区和无自碰撞路径）',
+                'detail': result.stdout.strip()[:500], 'scope': 'joint interpolation approximation; no environment collision model'}
 
     @staticmethod
     def check_gripper_start(state, grip):
@@ -477,10 +495,10 @@ class GraspController:
             if lifting:
                 grip_state = self.robot.query('get_rm_plus_state_info')['state_info']
                 if contact_result(grip_state, grip) not in ('force_contact', 'force_stop'):
-                    raise ValueError('抬升期间夹持状态丢失或夹爪异常')
+                    raise ValueError('抬升或返回期间夹持状态丢失或夹爪异常')
             state = self.arm_state()
             point = controller_pose(state['pose'])[:3, 3]
-            if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])):
+            if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])) or point[2] < config['table_z_m'] + .01:
                 raise ValueError('机械臂离开约定工作区')
         def move_waypoint(waypoint):
             watchdog()
@@ -513,6 +531,20 @@ class GraspController:
                 lifting = True
                 move_waypoint(next(w for w in plan['waypoints'] if w['name'] == 'lift'))
                 watchdog()
+                if plan.get('return_joint_raw') is not None:
+                    current = self.arm_state()
+                    report['return_check_actual'] = self.check_return(current['joint'], plan['return_joint_raw'], plan['tool_response'], config)
+                    if not report['return_check_actual']['ok']:
+                        raise ValueError(report['return_check_actual']['reason'])
+                    watchdog()
+                    self.update(state='returning', message='抬升完成，保持夹持并返回记录的关节角度')
+                    self.robot.move_joints(plan['return_joint_raw'], config['arm_speed_percent'], self.cancelled, watchdog)
+                    watchdog()
+                    reached = self.arm_state()
+                    if np.max(np.abs(np.asarray(reached['joint']) - plan['return_joint_raw'])) > 500:
+                        raise ValueError('返回关节角度误差超过 0.5 度')
+                    self.update(state='completed', message='已完成夹持、抬升并返回记录姿态；夹爪保持闭合。')
+                    return
                 self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，请观察物品是否保持夹持。")
                 return
             time.sleep(.1)

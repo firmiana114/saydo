@@ -2,6 +2,8 @@
 #include "rm_interface.h"
 #include <cmath>
 #include <iostream>
+#include <algorithm>
+#include <string>
 
 static bool read_pose(rm_pose_t& pose) {
   if (!(std::cin >> pose.position.x >> pose.position.y >> pose.position.z
@@ -10,13 +12,37 @@ static bool read_pose(rm_pose_t& pose) {
   return true;
 }
 
-int main() {
+static int joint_path(float* start) {
+  float target[7], low[3], high[3], table;
+  for (float& v : target) if (!(std::cin >> v) || !std::isfinite(v)) return 2;
+  for (float& v : low) if (!(std::cin >> v) || !std::isfinite(v)) return 2;
+  for (float& v : high) if (!(std::cin >> v) || !std::isfinite(v)) return 2;
+  if (!(std::cin >> table) || !std::isfinite(table)) return 2;
+  int steps = 1;
+  for (int j = 0; j < 7; ++j) steps = std::max(steps, (int)std::ceil(std::abs(target[j]-start[j])/2.0));
+  if (steps > 500) return 2;
+  for (int n = 0; n <= steps; ++n) {
+    float joints[ARM_DOF]{};
+    for (int j = 0; j < 7; ++j) joints[j] = start[j] + (target[j]-start[j])*n/steps;
+    int collision = rm_algo_safety_robot_self_collision_detection(joints);
+    auto pose = rm_algo_forward_kinematics(nullptr, joints);
+    float xyz[] = {pose.position.x, pose.position.y, pose.position.z};
+    bool valid = collision == 0 && xyz[2] >= table + .01f;
+    for (int k = 0; k < 3; ++k) valid = valid && std::isfinite(xyz[k]) && xyz[k] >= low[k] && xyz[k] <= high[k];
+    if (!valid) { std::cout << "RETURN_FAIL " << n << ' ' << collision << '\n'; return 1; }
+  }
+  std::cout << "RETURN_OK " << steps+1 << '\n';
+  return 0;
+}
+
+int main(int argc, char** argv) {
   rm_algo_init_sys_data(RM_MODEL_RM_75_E, RM_MODEL_RM_B_E);
   rm_frame_t tool{};
   if (!read_pose(tool.pose)) return 2;
   rm_algo_set_toolframe(&tool);
   float joints[ARM_DOF]{};
   for (int i = 0; i < 7; ++i) if (!(std::cin >> joints[i])) return 2;
+  if (argc == 2 && std::string(argv[1]) == "--joint-path") return joint_path(joints);
   auto fk = rm_algo_forward_kinematics(nullptr, joints);
   std::cout.precision(9);
   std::cout << "FK " << fk.position.x << ' ' << fk.position.y << ' ' << fk.position.z

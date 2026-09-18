@@ -113,11 +113,17 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
         T = np.eye(4);T[:3, :3] = target_rotation;T[:3, 3] = xyz
         pose = np.rint(pose_values(T) * np.array([1e6]*3 + [1e3]*3)).astype(int).tolist()
         waypoints.append({'name': name, 'position_m': xyz.tolist(), 'controller_pose': pose})
+    return_target = None
+    if config.get('return_after_lift') is not None:
+        values = np.asarray(config['return_after_lift']['joint_deg'], dtype=float)
+        if values.shape != (7,) or not np.isfinite(values).all() or np.any(np.abs(values) > 360):
+            raise ValueError('返回目标必须包含七个有限关节角度，单位度')
+        return_target = np.rint(values * 1000).astype(int).tolist()
     return {'base_T_object': transform(base_object).tolist(), 'target_position_m': target.tolist(),
             'current_position_m': current[:3, 3].tolist(),
             'orientation_policy': policy, 'target_rotation': target_rotation.tolist(),
             'approach_direction_base': approach.tolist(), 'grasp_point_object_m': point.tolist(), 'waypoints': waypoints, 'target_distance_m': distance,
-            'lift_after_grasp': True, 'lift_height_m': lift_height}
+            'lift_after_grasp': True, 'lift_height_m': lift_height, 'return_joint_raw': return_target}
 
 
 def workspace_blockers(plan, config):

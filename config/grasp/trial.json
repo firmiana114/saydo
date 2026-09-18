@@ -47,5 +47,14 @@
     "object_R_tcp": null,
     "approach_axis_tcp": [0, 0, 1],
     "note": "Any currently tracked model; freeze the selected grasp pose at start, use taught object-relative position and orientation, lift vertically after grasp."
+  },
+  "return_after_lift": {
+    "joint_deg": [-43.681, -71.382, 0.763, 132.967, -2.416, 67.927, 120.559],
+    "captured_pose_raw": [141263, -152950, 203388, 2315, -356, 440],
+    "source": {
+      "path": "work/grasp/return_pose_capture_1789712701618801073.json",
+      "sha256": "bbf5b5c48a13f3968b623802beb617c25a91b1be7fdcb1c8e7f2a19b58925f8c"
+    },
+    "note": "User-positioned seven-joint target; return after lift while holding the object."
   }
 }

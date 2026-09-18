@@ -75,6 +75,20 @@ class RobotClient:
         if not self.writes or len(pose) != 6 or not all(isinstance(v, int) for v in pose) or not 1 <= speed <= 100:
             raise ValueError('运动未启用或运动参数无效')
         command = {'command': 'movel', 'pose': pose, 'v': speed, 'r': 0, 'trajectory_connect': 0}
+        return self._move(command, cancelled, watchdog, timeout)
+
+    def move_joints(self, joints, speed, cancelled, watchdog, timeout=60):
+        if not self.writes or len(joints) != 7 or not all(type(v) is int for v in joints) or not 1 <= speed <= 100:
+            raise ValueError('关节运动未启用或参数无效')
+        return self._move({'command':'movej', 'joint':joints, 'v':speed, 'r':0, 'trajectory_connect':0},
+                          cancelled, watchdog, timeout)
+
+    def _move(self, command, cancelled, watchdog, timeout):
+        if not self.writes:
+            raise ValueError('运动未启用')
+        if cancelled.is_set():
+            raise RuntimeError('操作员取消抓取')
+        watchdog()
         with socket.create_connection(self.address, timeout=2) as connection:
             connection.settimeout(.2)
             connection.sendall((json.dumps(command) + '\r\n').encode())
@@ -102,9 +116,9 @@ class RobotClient:
                     if not line.strip():
                         continue
                     reply = json.loads(line)
-                    if reply.get('command') == 'movel':
+                    if reply.get('command') == command['command']:
                         if reply.get('receive_state') is not True:
-                            raise RuntimeError('控制器拒绝直线运动')
+                            raise RuntimeError('控制器拒绝运动指令')
                         accepted = True
                     if reply.get('state') == 'current_trajectory_state':
                         if not accepted or reply.get('trajectory_state') is not True:
