@@ -13,6 +13,7 @@
   "workspace_min_m": [-1.0, -1.0, 0.0],
   "workspace_max_m": [1.0, 1.0, 1.0],
   "table_z_m": 0.0,
+  "min_table_clearance_m": 0.01,
   "workspace_reviewed": true,
   "gripper": {
     "vendor": "ZX",

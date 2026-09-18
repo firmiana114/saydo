@@ -11,7 +11,7 @@ import time
 import numpy as np
 import yaml
 
-from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, sample_motion
+from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, sample_motion, minimum_table_clearance
 from grasp_robot import RobotClient
 
 
@@ -370,9 +370,9 @@ class GraspController:
         executable = self.root / config['ik_checker']
         tool_pose = np.asarray(tool_raw['pose']) / np.array([1e6]*3 + [1e3]*3)
         rows = [tool_pose, np.asarray(start_joints_raw)/1000, np.asarray(target_joints_raw)/1000,
-                config['workspace_min_m'], config['workspace_max_m'], [config['table_z_m']]]
+                config['workspace_min_m'], config['workspace_max_m'], [config['table_z_m'], minimum_table_clearance(config)]]
         data = '\n'.join(' '.join(map(str, row)) for row in rows) + '\n'
-        result = subprocess.run([str(executable), '--joint-path'], input=data, capture_output=True, text=True, timeout=10)
+        result = subprocess.run([str(executable), '--joint-path-v2'], input=data, capture_output=True, text=True, timeout=10)
         lines = result.stdout.splitlines()
         ok = result.returncode == 0 and len(lines) == 1 and lines[0].startswith('RETURN_OK ')
         reason = None
@@ -495,6 +495,7 @@ class GraspController:
 
     def execute(self, plan, config, report):
         grip = config['gripper']
+        minimum = minimum_table_clearance(config)
         if any(type(grip[key]) is not int for key in ['force_target_raw', 'force_limit_raw', 'open_position', 'closed_position']):
             raise ValueError('夹爪参数必须为整数原始值')
         # The base-frame target is fixed for the job; tracking loss or target motion
@@ -533,7 +534,7 @@ class GraspController:
                     raise ValueError('抬升或返回期间夹持状态丢失或夹爪异常')
             state = self.arm_state()
             point = controller_pose(state['pose'])[:3, 3]
-            if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])) or point[2] < config['table_z_m'] + .01:
+            if np.any(point < np.asarray(config['workspace_min_m'])) or np.any(point > np.asarray(config['workspace_max_m'])) or point[2] < config['table_z_m'] + minimum:
                 raise ValueError('机械臂离开约定工作区')
         def move_waypoint(waypoint):
             watchdog()

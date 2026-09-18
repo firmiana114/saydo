@@ -126,7 +126,18 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
             'lift_after_grasp': True, 'lift_height_m': lift_height, 'return_joint_raw': return_target}
 
 
+def minimum_table_clearance(config):
+    value = config.get('min_table_clearance_m', .01)
+    if type(value) not in (int, float) or not np.isfinite(value) or value < 0:
+        raise ValueError('min_table_clearance_m 必须为有限非负数，单位米')
+    return value
+
+
 def workspace_blockers(plan, config):
+    try:
+        minimum = minimum_table_clearance(config)
+    except ValueError as error:
+        return [str(error)]
     if not config.get('workspace_reviewed') or config.get('workspace_min_m') is None or config.get('workspace_max_m') is None or config.get('table_z_m') is None:
         return ['尚未配置并核对抓取工作区和桌面高度']
     low, high = np.asarray(config['workspace_min_m']), np.asarray(config['workspace_max_m'])
@@ -144,8 +155,8 @@ def workspace_blockers(plan, config):
             if p[i] < low[i] or p[i] > high[i]:
                 reasons.append(f'{name}：{axis}={p[i]*1000:.3f} 毫米，超出允许范围 [{low[i]*1000:.3f}, {high[i]*1000:.3f}] 毫米')
         clearance = p[2] - config['table_z_m']
-        if clearance < .01:
-            reasons.append(f'{name}：工具参考点距配置桌面 {clearance*1000:.3f} 毫米，要求至少 10.000 毫米，差 {(0.01-clearance)*1000:.3f} 毫米（Z={p[2]*1000:.3f}，桌面 Z={config["table_z_m"]*1000:.3f} 毫米）')
+        if clearance < minimum:
+            reasons.append(f'{name}：工具参考点距配置桌面 {clearance*1000:.3f} 毫米，要求至少 {minimum*1000:.3f} 毫米，差 {(minimum-clearance)*1000:.3f} 毫米（Z={p[2]*1000:.3f}，桌面 Z={config["table_z_m"]*1000:.3f} 毫米）')
     return reasons
 
 
