@@ -1,5 +1,7 @@
 # MSI 睿尔曼机械臂驱动验证
 
+2026-09-18 工具 Z 再次同步：用户在示教器将 grip_tcp 从 200.5 毫米改为 190.5 毫米；已通过只读 get_current_tool_frame 确认仅 Z 变化，同步 config/calibration/tool_grip_tcp.yaml 的 translation_m、flange_T_grip_tcp、原始读回及来源哈希，并更新标定 README。新原始记录 work/calibration/controller_readback_20260918T073240261291Z.json，旧配置及来源链保留。实际调用 GraspController.calibration 校验通过，当前控制器工具、矩阵、负载及质心一致；未写控制器或发送运动。下次抓取自动重读配置，无需重启 8089；现有夹法绑定旧工具，需重新记录，未自动改写夹法。用户 trial.json 及相机独立改动不纳入提交。
+
 2026-09-18 预抓阶段改为 movej_p：GraspController.execute 仅对 pregrasp 调用 RobotClient.move_joint_pose，按目标位置和朝向进行关节运动；接近与抬升仍为 movel，抬升后返回仍为 movej。沿用控制器接受/完成反馈、取消、超时与段后位置/朝向核对，不恢复离线求解或中间采样；前端方案信息与日志明确各段指令。协议已核对官方 https://develop.realman-robotics.com/robot/json/motionConfig/ 的 movej_p 定义。48 项模拟回归测试及 git diff --check 通过，覆盖阶段分派、请求字段、拒绝/失败/取消与无写入权限；当前设备的实际执行未验证，本轮未发送实机运动。需重启 8089 服务生效；用户 trial.json、相机改动及 bi_he.py 保持不动且不纳入本次提交。
 
 2026-09-18 当前运动检查策略（替代下文此前采样检查记录）：按用户要求移除直线路径中间点生成、离线逆解/自身碰撞/关节跳变检查和返回路径离线关节采样；也移除运动途中工作区/离桌距离、工具变化、夹持状态的轮询。movel/movej 直接交控制器逐段规划，保留运动前设备/静止/标定与航点边界检查、夹爪开合反馈、段后到位核对、取消/停止、控制器拒绝和超时处理。min_table_clearance_m 仅检查起始及预抓/夹持/抬升航点，不再检查中间过程或返回路径。预览和日志明确未检查完整轨迹，离线 grasp_ik.cpp 保留但不再被抓取调用。47 项回归测试通过，覆盖不调用离线工具、途中不查询状态、到位/拒绝/取消处理；前端脚本语法及 git diff --check 通过。需重启 8089，本轮未实机运动；保留用户 min_table_clearance_m=0.005 的未提交修改及独立相机改动，不修改 bi_he.py。

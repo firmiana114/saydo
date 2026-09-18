@@ -1,6 +1,6 @@
 # 变换方向和状态见本目录 README.md；位置统一用米。
 schema_version: 1
-recorded_at: '2026-09-18T03:24:13.242307+00:00'
+recorded_at: '2026-09-18T07:32:40.261291+00:00'
 frame_convention: A_T_B maps coordinates in B into A
 frame_names_are: logical names; ROS TF link mapping is not configured
 units:
@@ -21,7 +21,7 @@ frames:
 translation_m:
 - 0.0
 - 0.0
-- 0.2005
+- 0.1905
 rpy_rad:
 - 0.0
 - 0.0
@@ -39,7 +39,7 @@ flange_T_grip_tcp:
 - - 0.0
   - 0.0
   - 1.0
-  - 0.2005
+  - 0.1905
 - - 0.0
   - 0.0
   - 0.0
@@ -61,18 +61,18 @@ geometry:
     previous_translation_m:
     - 0.0
     - 0.0
-    - 0.2225
+    - 0.2005
     current_translation_m:
     - 0.0
     - 0.0
-    - 0.2005
-    source: explicit_user_confirmation
-    reason: User observed gripping on the object front surface and intentionally shortened
-      tool Z by 22 mm.
-    previous_config_path: work/calibration/tool_grip_tcp_before_20260918T032413242307Z.yaml
+    - 0.1905
+    source: explicit_user_confirmation_and_controller_readback
+    reason: User edited grip_tcp tool Z on teach pendant; synchronized 200.5 mm to
+      190.5 mm without writing controller parameters.
+    previous_config_path: work/calibration/tool_grip_tcp_before_20260918T073240261291Z.yaml
     previous_controller_readback:
-      path: work/calibration/controller_readback_20260915T015315Z.json
-      sha256: 91021007988bdf73aba5488880f10e3f64bd9f0b31c38389a7d19739d8b77e53
+      path: work/calibration/controller_readback_20260918T032413242307Z.json
+      sha256: db46ad24fb09a91efc06b88e78f31411e432f5129222e0b0b0679520ef65ba83
 load:
   mass_kg: 1.061
   center_of_mass_m:
@@ -98,17 +98,17 @@ gripper:
   firmware: V1.154
   position_units: dimensionless_logical
 controller_readback:
-  path: work/calibration/controller_readback_20260918T032413242307Z.json
+  path: work/calibration/controller_readback_20260918T073240261291Z.json
   path_base: repository_root
-  sha256: db46ad24fb09a91efc06b88e78f31411e432f5129222e0b0b0679520ef65ba83
-  read_at: '2026-09-18T03:24:13.242307+00:00'
+  sha256: 237ad9b746afbde46cad0ee373523cef5cab873e659158ba4393c5801dbbcbf6
+  read_at: '2026-09-18T07:32:40.261291+00:00'
   tool_was_active: true
   tool_response_raw:
     payload: 1061
     pose:
     - 0
     - 0
-    - 200500
+    - 190500
     - 0
     - 0
     - 0
@@ -123,7 +123,7 @@ controller_readback:
     pose_rotation: 0.001 rad
     payload: g
     position: 0.001 mm
-  gripper_position_observed: 1000
+  gripper_position_observed: 0
   work_frame:
     frame_name: Base
     pose:
