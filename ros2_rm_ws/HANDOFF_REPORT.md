@@ -1,5 +1,7 @@
 # MSI 睿尔曼机械臂驱动验证
 
+2026-09-18 完善抓取运动诊断：任务日志 work/grasp/jobs/*.json 新增 active_stage、motion_events（完整运动指令、发送完成标记、接受/完成反馈、限长原始应答及顺序耗时、结果和异常类型）、arrival_checks（目标及段后反馈）、异常调用栈；停止错误独立保留。前端区分拒绝、缺少接受确认、控制器报告失败、超时和断连，并显示具体阶段。原运动决策及查询频率不变；原始应答每段最多保留最近 32 条、每条 2048 字符，接受/完成应答单独保留。53 项模拟回归及 git diff --check 通过，未发送实机运动；需重启 8089 生效，旧日志不能追补原始应答。保留用户 trial.json 和相机独立改动。
+
 2026-09-18 工具 Z 再次同步：用户在示教器将 grip_tcp 从 200.5 毫米改为 190.5 毫米；已通过只读 get_current_tool_frame 确认仅 Z 变化，同步 config/calibration/tool_grip_tcp.yaml 的 translation_m、flange_T_grip_tcp、原始读回及来源哈希，并更新标定 README。新原始记录 work/calibration/controller_readback_20260918T073240261291Z.json，旧配置及来源链保留。实际调用 GraspController.calibration 校验通过，当前控制器工具、矩阵、负载及质心一致；未写控制器或发送运动。下次抓取自动重读配置，无需重启 8089；现有夹法绑定旧工具，需重新记录，未自动改写夹法。用户 trial.json 及相机独立改动不纳入提交。
 
 2026-09-18 预抓阶段改为 movej_p：GraspController.execute 仅对 pregrasp 调用 RobotClient.move_joint_pose，按目标位置和朝向进行关节运动；接近与抬升仍为 movel，抬升后返回仍为 movej。沿用控制器接受/完成反馈、取消、超时与段后位置/朝向核对，不恢复离线求解或中间采样；前端方案信息与日志明确各段指令。协议已核对官方 https://develop.realman-robotics.com/robot/json/motionConfig/ 的 movej_p 定义。48 项模拟回归测试及 git diff --check 通过，覆盖阶段分派、请求字段、拒绝/失败/取消与无写入权限；当前设备的实际执行未验证，本轮未发送实机运动。需重启 8089 服务生效；用户 trial.json、相机改动及 bi_he.py 保持不动且不纳入本次提交。

@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import time
+import traceback
 
 import numpy as np
 import yaml
@@ -334,6 +335,7 @@ class GraspController:
                 robot_lock = lock_path.open('a')
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=mode == 'execute')
+            self.robot.motion_log = report.setdefault('motion_events', [])
             arm, observation = self.paired_observation(observation)
             handeye, tool = self.calibration(config)
             software = self.robot.query('get_arm_software_info')
@@ -390,8 +392,10 @@ class GraspController:
                     self.robot.stop()
                 except Exception as stop_error:
                     report['stop_error'] = str(stop_error)
-            self.update(state='cancelled' if self.cancelled.is_set() else 'failed', error=str(error), message=str(error))
-            report['error'] = str(error)
+            stage = report.get('active_stage', '抓取准备')
+            detail = f'{stage}：{error}'
+            self.update(state='cancelled' if self.cancelled.is_set() else 'failed', error=detail, message=detail)
+            report.update(error=detail, error_type=type(error).__name__, traceback=traceback.format_exc())
         finally:
             self.update(busy=False)
             report['result'] = self.snapshot()
@@ -417,7 +421,9 @@ class GraspController:
         self.actuated = True
         # User verified register 1220 + position following on the installed firmware.
         # Numeric register readback is unavailable; reject failed write acknowledgements.
+        report['active_stage'] = '设置张开前力度'
         self.robot.set_register(1220, grip['force_limit_raw'])
+        report['active_stage'] = '张开夹爪'
         self.update(state='opening', message='张开夹爪')
         self.robot.move_gripper(grip['open_position'])
         deadline = time.monotonic() + 8
@@ -436,11 +442,15 @@ class GraspController:
         def move_waypoint(waypoint):
             watchdog()
             names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
+            report['active_stage'] = names[waypoint['name']]
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
             report['robot_motion_sent'] = True
+            self.robot.motion_stage = report['active_stage']
             move = self.robot.move_joint_pose if waypoint['name'] == 'pregrasp' else self.robot.move_linear
             move(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
+            report.setdefault('arrival_checks', []).append({'stage': report['active_stage'], 'target_pose': waypoint['controller_pose']})
             reached = self.arm_state()
+            report['arrival_checks'][-1]['actual_arm_state'] = reached
             if np.linalg.norm((np.array(reached['pose'][:3]) - waypoint['controller_pose'][:3]) / 1e6) > .002:
                 raise ValueError('机械臂实际位置与目标不符')
             if rotation_error(controller_pose(reached['pose'])[:3, :3], controller_pose(waypoint['controller_pose'])[:3, :3]) > np.deg2rad(2):
@@ -448,6 +458,7 @@ class GraspController:
         for waypoint in plan['waypoints']:
             if waypoint['name'] != 'lift':
                 move_waypoint(waypoint)
+        report['active_stage'] = '设置力度并闭合夹爪'
         self.update(state='closing', message='按指定力度闭合，等待力控接触反馈')
         self.robot.set_register(1220, grip['force_limit_raw'])
         self.robot.move_gripper(grip['closed_position'])
@@ -467,10 +478,13 @@ class GraspController:
                 watchdog()
                 if plan.get('return_joint_raw') is not None:
                     watchdog()
+                    report['active_stage'] = '抬升后返回记录姿态'
                     self.update(state='returning', message='抬升完成，保持夹持并返回记录的关节角度')
+                    self.robot.motion_stage = report['active_stage']
                     self.robot.move_joints(plan['return_joint_raw'], config['arm_speed_percent'], self.cancelled, watchdog)
                     watchdog()
                     reached = self.arm_state()
+                    report.setdefault('arrival_checks', []).append({'stage': report['active_stage'], 'target_joint': plan['return_joint_raw'], 'actual_arm_state': reached})
                     if np.max(np.abs(np.asarray(reached['joint']) - plan['return_joint_raw'])) > 500:
                         raise ValueError('返回关节角度误差超过 0.5 度')
                     self.update(state='completed', message='已完成夹持、抬升并返回记录姿态；夹爪保持闭合。')
