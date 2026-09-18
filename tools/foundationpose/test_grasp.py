@@ -57,6 +57,19 @@ class GraspTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '正在运动'):service.open_gripper()
                 self.assertEqual(robot.move_gripper.call_count, 2)
 
+    def test_full_open_reset_is_independent_of_smaller_grasp_opening(self):
+        grip = self.config()['gripper']; grip['open_position'] = 300
+        state = {'sys_err':0, 'sys_state':0, 'dof_err':[0], 'dof_state':[3],
+                 'pos':[1000], 'speed':[0], 'force':[0]}
+        for position in (997, 1000, 297, 300, 303):
+            GraspController.check_gripper_start({**state, 'pos':[position]}, grip)
+        for position in (0, 296, 304, 500, 996):
+            with self.subTest(position=position), self.assertRaisesRegex(ValueError, '当前位置'):
+                GraspController.check_gripper_start({**state, 'pos':[position]}, grip)
+        for change in ({'speed':[1]}, {'dof_err':[1]}, {'sys_err':1}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                GraspController.check_gripper_start({**state, **change}, grip)
+
     def test_manual_open_allows_retained_force_stop_but_not_closed_contact(self):
         state = {'sys_err': 0, 'sys_state': 0, 'dof_err': [0],
                  'dof_state': [3], 'pos': [1000], 'speed': [0], 'force': [0]}

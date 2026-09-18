@@ -311,10 +311,10 @@ class GraspController:
         if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
             raise ValueError('夹爪异常或正在运动')
         # The device can retain force-stop status after manual opening (pos=1000).
-        # Use the same open-position tolerance as the opening stage.
-        opened = abs(position[0] - grip['open_position']) <= 3
+        # A full manual/UI opening remains a reset even when the grasp opening is smaller.
+        opened = any(abs(position[0] - target) <= 3 for target in (grip['open_position'], 1000))
         if not opened and (state.get('dof_state') == [3] or any(state.get('force', []))):
-            raise ValueError('夹爪可能已夹持物体，请先人工张开复位')
+            raise ValueError(f"夹爪可能已夹持物体，请先人工张开复位（当前位置 {position[0]}，抓取张开目标 {grip['open_position']}，完全张开目标 1000，状态 {state.get('dof_state')}，力度反馈 {state.get('force')}）")
 
     def run(self, observation, preview=False):
         mode = 'preview' if preview else self.mode
