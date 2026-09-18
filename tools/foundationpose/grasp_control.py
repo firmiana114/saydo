@@ -372,8 +372,8 @@ class GraspController:
             blockers = workspace_blockers(plan, config)
             if not base.get('force'):
                 blockers.append('当前夹爪未声明支持力度控制')
-            plan['motion_validation'] = {'method':'controller_movel_movej', 'offline_path_checked':False,
-                                         'message':'不做中间点采样或运动途中几何/夹持检查；直线与返回运动均由控制器规划并返回结果'}
+            plan['motion_validation'] = {'method':'controller_movej_p_movel_movej', 'offline_path_checked':False,
+                                         'message':'不做中间点采样或运动途中几何/夹持检查；预抓 movej_p、接近/抬升 movel、返回 movej 均由控制器规划并返回结果'}
             plan['execution_blockers'] = blockers
             plan['can_execute'] = mode == 'execute' and not blockers
             report['grasp_profile'] = profile
@@ -381,7 +381,7 @@ class GraspController:
             self.update(plan=plan)
             self.check_cancel()
             if not plan['can_execute']:
-                self.update(state='blocked' if blockers else 'preview', message='已生成方案；未发送运动。' + ('\n阻塞原因：\n' + '\n'.join(f'{i+1}. {reason}' for i, reason in enumerate(blockers)) if blockers else '当前为预览模式，航点基础检查已通过；直线与返回轨迹均将在实际运动时由控制器规划。'))
+                self.update(state='blocked' if blockers else 'preview', message='已生成方案；未发送运动。' + ('\n阻塞原因：\n' + '\n'.join(f'{i+1}. {reason}' for i, reason in enumerate(blockers)) if blockers else '当前为预览模式，航点基础检查已通过；各段轨迹均将在实际运动时由控制器规划。'))
                 return
             self.execute(plan, config, report)
         except Exception as error:
@@ -438,7 +438,8 @@ class GraspController:
             names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
             report['robot_motion_sent'] = True
-            self.robot.move_linear(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
+            move = self.robot.move_joint_pose if waypoint['name'] == 'pregrasp' else self.robot.move_linear
+            move(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
             reached = self.arm_state()
             if np.linalg.norm((np.array(reached['pose'][:3]) - waypoint['controller_pose'][:3]) / 1e6) > .002:
                 raise ValueError('机械臂实际位置与目标不符')

@@ -77,6 +77,12 @@ class RobotClient:
         command = {'command': 'movel', 'pose': pose, 'v': speed, 'r': 0, 'trajectory_connect': 0}
         return self._move(command, cancelled, watchdog, timeout)
 
+    def move_joint_pose(self, pose, speed, cancelled, watchdog, timeout=60):
+        if not self.writes or len(pose) != 6 or not all(type(v) is int for v in pose) or not 1 <= speed <= 100:
+            raise ValueError('目标位姿关节运动未启用或参数无效')
+        return self._move({'command':'movej_p', 'pose':pose, 'v':speed, 'r':0, 'trajectory_connect':0},
+                          cancelled, watchdog, timeout)
+
     def move_joints(self, joints, speed, cancelled, watchdog, timeout=60):
         if not self.writes or len(joints) != 7 or not all(type(v) is int for v in joints) or not 1 <= speed <= 100:
             raise ValueError('关节运动未启用或参数无效')

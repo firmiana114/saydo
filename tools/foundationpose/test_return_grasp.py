@@ -45,6 +45,9 @@ class ReturnGraspTests(unittest.TestCase):
                     self.assertEqual(robot.query.call_count,before)
                     calls.append(('linear',pose));arm['pose']=pose
                 robot.move_linear.side_effect=linear
+                def joint_pose(pose,speed,cancelled,watchdog):
+                    watchdog();calls.append(('joint_pose',pose));arm['pose']=pose
+                robot.move_joint_pose.side_effect=joint_pose
                 def joints(target,speed,cancelled,watchdog):
                     before=robot.query.call_count
                     watchdog()
@@ -58,6 +61,8 @@ class ReturnGraspTests(unittest.TestCase):
                     else:
                         service.execute(plan,config,{})
                         self.assertEqual(service.status['state'],'completed')
+                        robot.move_joint_pose.assert_called_once_with(plan['waypoints'][0]['controller_pose'],config['arm_speed_percent'],service.cancelled,unittest.mock.ANY)
+                        self.assertEqual(robot.move_linear.call_count,2)
                         self.assertEqual(calls[-1],('return',[1000,2000,3000,4000,5000,6000,7000]))
                         self.assertEqual(calls[-2],('linear',plan['waypoints'][-1]['controller_pose']))
                     if failure == 'empty':robot.move_joints.assert_not_called()
@@ -100,6 +105,30 @@ class ReturnGraspTests(unittest.TestCase):
                 else:
                     with self.assertRaises(RuntimeError):robot.move_linear([0]*6,10,threading.Event(),lambda:None)
                 self.assertEqual(json.loads(connection.sendall.call_args.args[0])['command'],'movel')
+
+    def test_movej_p_transport_and_validation(self):
+        robot=RobotClient('test',writes=True)
+        pose=[100000,200000,300000,400,500,600]
+        for accepted, completed in ((False,False),(True,False),(True,True)):
+            with self.subTest(accepted=accepted,completed=completed):
+                connection=Mock()
+                connection.recv.return_value=(json.dumps({'command':'movej_p','receive_state':accepted})+'\n'+
+                    json.dumps({'state':'current_trajectory_state','trajectory_state':completed})+'\n').encode()
+                with patch('grasp_robot.socket.create_connection') as connect:
+                    connect.return_value.__enter__.return_value=connection
+                    if accepted and completed:robot.move_joint_pose(pose,20,threading.Event(),lambda:None)
+                    else:
+                        with self.assertRaises(RuntimeError):robot.move_joint_pose(pose,20,threading.Event(),lambda:None)
+                    self.assertEqual(json.loads(connection.sendall.call_args.args[0]),
+                        {'command':'movej_p','pose':pose,'v':20,'r':0,'trajectory_connect':0})
+        with patch('grasp_robot.socket.create_connection') as connect:
+            cancel=threading.Event();cancel.set()
+            with self.assertRaises(RuntimeError):robot.move_joint_pose(pose,20,cancel,lambda:None)
+            for invalid in ([0]*7,[0]*5,[0.,0,0,0,0,0]):
+                with self.assertRaises(ValueError):robot.move_joint_pose(invalid,20,threading.Event(),lambda:None)
+            robot.writes=False
+            with self.assertRaises(ValueError):robot.move_joint_pose(pose,20,threading.Event(),lambda:None)
+            connect.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

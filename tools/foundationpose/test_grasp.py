@@ -333,6 +333,8 @@ class GraspTests(unittest.TestCase):
                 def move_gripper(self,position):
                     self.calls.append(('position',position))
                     self.contact=position==0
+                def move_joint_pose(self,pose,speed,cancelled,watchdog):
+                    watchdog();self.calls.append(('move',pose));arm['pose']=list(pose)
                 def move_linear(self,pose,speed,cancelled,watchdog):
                     watchdog();self.calls.append(('move',pose));arm['pose']=list(pose)
             robot=FakeRobot();service.robot=robot;report={}
