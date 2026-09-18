@@ -132,11 +132,22 @@ def workspace_blockers(plan, config):
     low, high = np.asarray(config['workspace_min_m']), np.asarray(config['workspace_max_m'])
     if low.shape != (3,) or high.shape != (3,) or not np.isfinite(np.r_[low, high, config['table_z_m']]).all() or np.any(low >= high):
         return ['工作区配置无效']
-    for waypoint in [{'position_m': plan['current_position_m']}] + plan['waypoints']:
-        p = np.asarray(waypoint['position_m'])
-        if np.any(p < low) or np.any(p > high) or p[2] < config['table_z_m'] + .01:
-            return ['抓取路径超出工作区或 TCP 离桌面不足 10 mm']
-    return []
+    reasons = []
+    names = {'current':'起始点', 'pregrasp':'预抓点', 'grasp':'夹持点', 'lift':'抬升点', 'return':'返回路径点'}
+    for waypoint in [{'name':'current', 'position_m': plan['current_position_m']}] + plan['waypoints']:
+        p = np.asarray(waypoint['position_m'], dtype=float)
+        name = names.get(waypoint.get('name'), waypoint.get('name', '路径点'))
+        if p.shape != (3,) or not np.isfinite(p).all():
+            reasons.append(f'{name}：位置不是有效的三个有限数值')
+            continue
+        for i, axis in enumerate('XYZ'):
+            if p[i] < low[i] or p[i] > high[i]:
+                reasons.append(f'{name}：{axis}={p[i]*1000:.3f} 毫米，超出允许范围 [{low[i]*1000:.3f}, {high[i]*1000:.3f}] 毫米')
+        clearance = p[2] - config['table_z_m']
+        if clearance < .01:
+            reasons.append(f'{name}：工具参考点距配置桌面 {clearance*1000:.3f} 毫米，要求至少 10.000 毫米，差 {(0.01-clearance)*1000:.3f} 毫米（Z={p[2]*1000:.3f}，桌面 Z={config["table_z_m"]*1000:.3f} 毫米）')
+    return reasons
+
 
 
 def contact_result(state, gripper):

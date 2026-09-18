@@ -29,7 +29,7 @@ static int joint_path(float* start) {
     float xyz[] = {pose.position.x, pose.position.y, pose.position.z};
     bool valid = collision == 0 && xyz[2] >= table + .01f;
     for (int k = 0; k < 3; ++k) valid = valid && std::isfinite(xyz[k]) && xyz[k] >= low[k] && xyz[k] <= high[k];
-    if (!valid) { std::cout << "RETURN_FAIL " << n << ' ' << collision << '\n'; return 1; }
+    if (!valid) { std::cout << "RETURN_FAIL " << n << ' ' << collision << ' ' << xyz[0] << ' ' << xyz[1] << ' ' << xyz[2] << '\n'; return 1; }
   }
   std::cout << "RETURN_OK " << steps+1 << '\n';
   return 0;

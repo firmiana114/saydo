@@ -20,8 +20,8 @@ class ReturnGraspTests(unittest.TestCase):
     def test_return_checker_rejects_old_output_and_failed_path(self):
         service=GraspController('.',None,'unused')
         config=test_grasp.GraspTests().config();config['ik_checker']='unused'
-        for result in (SimpleNamespace(returncode=0,stdout='FK 0 0 0 0 0 0\n'),
-                       SimpleNamespace(returncode=1,stdout='RETURN_FAIL 5 1\n')):
+        for result in (SimpleNamespace(returncode=0,stderr='',stdout='FK 0 0 0 0 0 0\n'),
+                       SimpleNamespace(returncode=1,stderr='',stdout='RETURN_FAIL 5 1\n')):
             with patch('grasp_control.subprocess.run',return_value=result):
                 self.assertFalse(service.check_return([0]*7,[1]*7,{'pose':[0]*6},config)['ok'])
 
