@@ -1,8 +1,10 @@
-"""Object-frame reorientation at a fixed table location and endpoint reachability checks."""
+"""Object orientation with bounded position search and sampled path checks."""
 import hashlib
 from functools import lru_cache
 from pathlib import Path
 import subprocess
+import itertools
+import time
 
 import numpy as np
 
@@ -39,8 +41,12 @@ def checked_rotation(value):
 
 
 def reorientation_settings(value):
+    value = {'adaptive_max_shift_m': .10, 'search_step_m': .025,
+             'translation_step_m': .01, 'max_joint_step_deg': 20., **value}
     for key, low, high in [('planning_timeout_s', 1, 60), ('rotation_step_deg', 1, 10),
-                          ('position_tolerance_m', .0001, .005), ('orientation_tolerance_deg', .1, 3)]:
+                          ('position_tolerance_m', .0001, .005), ('orientation_tolerance_deg', .1, 3),
+                          ('adaptive_max_shift_m', .005, .20), ('search_step_m', .005, .05),
+                          ('translation_step_m', .002, .02), ('max_joint_step_deg', 1, 30)]:
         n = value.get(key)
         if type(n) not in (int, float) or not np.isfinite(n) or not low <= n <= high:
             raise ValueError(f'姿态调整配置 {key} 无效')
@@ -103,22 +109,117 @@ def endpoint_reachability(executable, tool, arm, waypoints, timeout):
     rows = [line.split() for line in result.stdout.splitlines() if line.startswith('IK ')]
     valid = result.returncode == 0 and len(rows) == len(waypoints) and all(
         len(row) == 10 and row[1:3] == ['0','0'] and np.isfinite([float(x) for x in row[3:]]).all() for row in rows)
-    return valid, {'returncode':result.returncode, 'stdout':result.stdout[-2048:], 'stderr':result.stderr[-512:]}
+    detail = {'returncode':result.returncode, 'stdout':result.stdout[-2048:], 'stderr':result.stderr[-512:]}
+    if valid:
+        solutions = np.asarray([[float(x) for x in row[3:]] for row in rows])
+        differences = np.abs(np.diff(np.vstack([joints, solutions]), axis=0))
+        detail.update(max_joint_step_deg=float(differences.max()), joint_travel_deg=float(differences.sum()))
+    return valid, detail
 
 
-def plan_reorientation(held, vertices, rotation, arm, config, settings, reachable, cancelled):
+def checked_position_request(mode, radius, settings):
+    if mode not in ('fixed', 'adaptive'):
+        raise ValueError('位置模式必须是 fixed 或 adaptive')
+    if radius is None:
+        radius = settings['adaptive_max_shift_m']
+    if type(radius) not in (int,float) or not np.isfinite(radius) or not 0 < radius <= settings['adaptive_max_shift_m']:
+        raise ValueError(f"最大位移必须大于 0 且不超过 {settings['adaptive_max_shift_m']*100:g} 厘米")
+    return mode, float(radius)
+
+
+def position_offsets(radius, step):
+    yield np.zeros(3)
+    # Finite radial directions, nearest shell first. Never search below the initial TCP.
+    directions = [np.asarray(v,dtype=float) for v in itertools.product([-1,0,1],[-1,0,1],[0,1]) if any(v)]
+    directions.sort(key=lambda v:(-v[2],np.count_nonzero(v),tuple(v)))
+    radii = list(np.arange(step, radius+1e-9, step))
+    if not radii or radii[-1] < radius-1e-9:
+        radii.append(radius)
+    for distance in radii:
+        for direction in directions:
+            yield direction/np.linalg.norm(direction)*distance
+
+
+def segment_distance(point, start, end):
+    point,start,end = [np.asarray(x,dtype=float) for x in (point,start,end)]
+    delta=end-start;length2=float(delta@delta)
+    t=float(np.clip((point-start)@delta/length2,0,1)) if length2>1e-16 else 0.
+    return float(np.linalg.norm(point-(start+t*delta)))
+
+
+def adaptive_candidate(held, vertices, rotation, arm, config, settings, offset):
+    current=controller_pose(arm['pose']);shifted=current.copy();shifted[:3,3]+=offset
+    shifted_raw=pose_waypoint('translate',shifted)['controller_pose']
+    plan=reorientation_waypoints(held,vertices,rotation,shifted_raw,config,settings)
+    samples=[];points=np.asarray(vertices);attachment=transform(held['object_T_tcp'])
+    low,high=np.asarray(config['workspace_min_m']),np.asarray(config['workspace_max_m'])
+    offset=np.asarray(shifted_raw[:3])/1e6-current[:3,3]
+    distance=float(np.linalg.norm(offset))
+    if distance>1e-9:
+        count=max(1,int(np.ceil(distance/settings['translation_step_m'])))
+        for i,fraction in enumerate(np.linspace(0,1,count+1)):
+            pose=current.copy();pose[:3,3]+=offset*fraction
+            xyz=pose[:3,3];obj=pose@np.linalg.inv(attachment)
+            world=points@obj[:3,:3].T+obj[:3,3]
+            if np.any(xyz<low) or np.any(xyz>high) or xyz[2]<config['table_z_m']+minimum_table_clearance(config):
+                raise ValueError('移位路径的工具中心超出工作区或离桌距离不足')
+            if np.any(world<low-1e-8) or np.any(world>high+1e-8) or world[:,2].min()<config['table_z_m']-1e-6:
+                raise ValueError('移位路径的物品超出工作区或碰到桌面')
+            samples.append(pose_waypoint(f'translation_sample_{i}',pose))
+        translation=pose_waypoint('translate',controller_pose(shifted_raw))
+        plan['waypoints'].insert(0,translation)
+    plan['path_samples']=samples+plan['rotation_samples'][1:] if samples else plan['rotation_samples']
+    plan.update(start_tcp_position_m=current[:3,3].tolist(),target_tcp_position_m=plan.pop('fixed_tcp_position_m'),
+                offset_m=offset.tolist(),offset_distance_m=distance,tcp_position_fixed=distance<1e-9)
+    plan.pop('fixed_tcp_position_raw',None)
+    return plan
+
+
+def plan_reorientation(held, vertices, rotation, arm, config, settings, reachable, cancelled,
+                       position_mode='fixed', max_shift_m=None, diagnostics=None):
     settings = reorientation_settings(settings)
+    position_mode,radius=checked_position_request(position_mode,max_shift_m,settings)
+    checked_rotation(rotation)
     if not config.get('workspace_reviewed'):
         raise ValueError('尚未核对姿态调整工作区')
     low, high = np.asarray(config.get('workspace_min_m'), dtype=float), np.asarray(config.get('workspace_max_m'), dtype=float)
     if low.shape != (3,) or high.shape != (3,) or not np.isfinite(np.r_[low,high,config.get('table_z_m')]).all() or np.any(low >= high):
         raise ValueError('姿态调整工作区配置无效')
-    cancelled()
-    plan = reorientation_waypoints(held, vertices, rotation, arm['pose'], config, settings)
-    valid, detail = reachable(plan['rotation_samples'], settings['planning_timeout_s'])
-    cancelled()
-    if not valid:
-        raise ValueError(f'原地姿态调整不可达或采样检查失败，未发送运动：{detail}')
-    plan.update(reachability_check=detail, current_arm=arm,
-                validation='sampled_rotations_not_full_path_or_environment_collision')
-    return plan
+    attempts=diagnostics if diagnostics is not None else []
+    deadline=time.monotonic()+settings['planning_timeout_s']
+    offsets=position_offsets(radius,settings['search_step_m']) if position_mode=='adaptive' else [np.zeros(3)]
+    for offset in offsets:
+        cancelled()
+        if time.monotonic()>=deadline:
+            raise TimeoutError('姿态位置搜索超时，未发送运动')
+        attempt={'offset_m':offset.tolist()};attempts.append(attempt)
+        try:
+            plan=adaptive_candidate(held,vertices,rotation,arm,config,settings,offset)
+        except ValueError as error:
+            attempt['reason']=str(error)
+            if position_mode=='fixed':raise
+            continue
+        remaining=deadline-time.monotonic()
+        if remaining<=0:raise TimeoutError('姿态位置搜索超时，未发送运动')
+        try:
+            valid,detail=reachable(plan['path_samples'],min(remaining,3.))
+        except subprocess.TimeoutExpired:
+            attempt['reason']='单个候选逆解检查超时'
+            cancelled()
+            if position_mode=='fixed':raise TimeoutError('原地姿态检查超时，未发送运动')
+            continue
+        cancelled()
+        if time.monotonic()>deadline:raise TimeoutError('姿态位置搜索超时，未发送运动')
+        jump=detail.get('max_joint_step_deg',0.)
+        attempt.update(reachable=bool(valid),max_joint_step_deg=jump,
+                       reason=None if valid else str(detail)[-700:])
+        if valid and jump>settings['max_joint_step_deg']:
+            attempt['reason']=f"相邻采样关节变化 {jump:.2f}° 超过 {settings['max_joint_step_deg']:g}°"
+            continue
+        if valid:
+            plan.update(reachability_check=detail,current_arm=arm,position_mode=position_mode,
+                        max_shift_m=radius if position_mode=='adaptive' else 0.,search_attempts=attempts,
+                        validation='sampled_translation_and_rotation_not_full_environment_collision')
+            return plan
+    reason=attempts[-1].get('reason') if attempts else '无候选'
+    raise ValueError(f"{'限定范围内姿态调整' if position_mode=='adaptive' else '原地姿态调整'}不可达或采样检查失败，未发送运动：{reason}")

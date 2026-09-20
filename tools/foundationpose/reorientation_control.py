@@ -13,7 +13,7 @@ import yaml
 from grasp_geometry import controller_pose, transform, rotation_error, contact_result
 from grasp_robot import RobotClient
 from reorientation_visual import model_appearance
-from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability
+from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request, segment_distance
 
 
 class ReorientationMixin:
@@ -64,7 +64,9 @@ class ReorientationMixin:
         geometry['holding'] = bool(held and held['object_id']==object_id)
         geometry['pivot_object_m'] = (np.asarray(held['object_T_tcp'])[:3,3].tolist()
                                       if geometry['holding'] else None)
-        geometry['preview_mode'] = 'fixed_tcp_orientation'
+        geometry['preview_mode'] = 'adaptive_or_fixed_orientation'
+        settings = reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
+        geometry['max_shift_m'] = settings['adaptive_max_shift_m']
         return geometry
 
     def start_reorient(self, value, preview=False):
@@ -77,11 +79,13 @@ class ReorientationMixin:
                 raise ValueError('本次服务尚无成功抓取记录，请先抓取物品后再调整姿态')
             if value.get('hold_id') != held['hold_id'] or value.get('object_id') != held['object_id'] or value.get('model_sha256') != held['model_sha256']:
                 raise ValueError('预览模型或夹持记录已变化，请重新加载物品模型')
+            settings = reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
+            position_mode,max_shift_m = checked_position_request(value.get('position_mode','fixed'),value.get('max_shift_m'),settings)
             self.cancelled.clear();self.actuated=False;self.robot=None
             self.status.update(state='reorient_planning',operation='reorient',busy=True,error=None,plan=None,
                                reorientation_plan=None,target_object_id=held['object_id'],
-                               message='正在锁定当前末端位置，检查原地旋转路径…')
-            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview),daemon=True)
+                               message='正在检查目标朝向，优先尝试原地旋转…')
+            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview,position_mode,max_shift_m),daemon=True)
             self.thread.start()
         return {'accepted':True,'mode':'preview' if preview or self.mode=='preview' else 'execute'}
 
@@ -115,10 +119,10 @@ class ReorientationMixin:
             raise ValueError('夹持反馈已变化或未保持夹持，停止姿态调整')
         return state
 
-    def run_reorient(self, held, rotation, preview=False):
+    def run_reorient(self, held, rotation, preview=False, position_mode='fixed', max_shift_m=None):
         mode='preview' if preview else self.mode
         report={'started_at':time.time(),'operation':'reorient','mode':mode,'held_object':held,
-                'requested_rotation':rotation,'robot_motion_sent':False,'active_stage':'姿态调整前检查'}
+                'requested_rotation':rotation,'position_mode':position_mode,'max_shift_m':max_shift_m,'robot_motion_sent':False,'active_stage':'姿态调整前检查'}
         directory=self.root/'work/grasp/reorient_jobs';robot_lock=None
         try:
             directory.mkdir(parents=True,exist_ok=True)
@@ -131,21 +135,23 @@ class ReorientationMixin:
             self.robot.motion_log=report.setdefault('motion_events',[])
             self.check_cancel()
             arm,tool=self.reorientation_hardware(held,config)
+            report['initial_arm']=copy.deepcopy(arm)
+            report['tool']=copy.deepcopy(tool)
             mesh=model_geometry(self.tracker.models_root,held['object_id'])
             if mesh['model_sha256']!=held['model_sha256']:
                 raise ValueError('物品模型已变化，不能沿用抓取关系调整姿态')
             checker=(self.root/config['ik_checker']).resolve()
             if not checker.is_file():raise ValueError('缺少姿态调整航点可达性检查程序')
-            report['active_stage']='检查原地姿态路径'
+            report['active_stage']='检查姿态路径及允许的位置范围'
             plan=plan_reorientation(held,mesh['vertices'],rotation,arm,config,settings,
-                lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel)
+                lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel,position_mode,max_shift_m,report.setdefault('search_attempts',[]))
             plan.update(object_id=held['object_id'],object_name=held['object_name'],hold_id=held['hold_id'],
                         can_execute=mode=='execute')
             report['plan']=plan
             self.update(reorientation_plan=plan)
             self.check_cancel()
             if mode!='execute':
-                self.update(state='reorient_preview',message='原地姿态方案已生成：末端 XYZ 固定，夹爪保持夹持；未发送运动。')
+                self.update(state='reorient_preview',message=f"方案已生成：末端移位 {plan['offset_distance_m']*100:.1f} 厘米后调整至指定姿态，继续夹持；未发送运动。")
                 return
             if np.max(np.abs(np.asarray(self.arm_state()['joint'])-arm['joint']))>30:
                 raise ValueError('机械臂在姿态调整规划后发生移动')
@@ -169,37 +175,51 @@ class ReorientationMixin:
                 self.update(busy=False)
 
     def execute_reorient(self, plan, held, config, settings, report):
-        target = plan['waypoints'][0]
-        fixed = np.asarray(plan['fixed_tcp_position_m'])
+        start = np.asarray(plan.get('start_tcp_position_m',plan.get('fixed_tcp_position_m')))
+        # Keep tests and archived fixed-position plans usable without any translation fallback.
+        if start.shape != (3,):
+            raise ValueError('姿态计划缺少有效的起始位置')
         tolerance = settings['position_tolerance_m']
-        def watchdog():
-            self.check_cancel()
-            actual = self.arm_state()
-            reached = controller_pose(actual['pose'])
-            drift = float(np.linalg.norm(reached[:3,3]-fixed))
-            report['max_observed_tcp_drift_m'] = max(report.get('max_observed_tcp_drift_m', 0.), drift)
-            if drift > tolerance:
-                raise ValueError(f'末端位置偏移 {drift*1000:.2f} 毫米，超过允许值 {tolerance*1000:g} 毫米')
-            self.check_reorient_contact(held,config)
-            return reached
-        report['active_stage'] = '保持末端位置并调整物品姿态'
-        self.update(state='reorienting',message='正在原地旋转末端，夹爪保持夹持…')
-        watchdog()
-        self.actuated = True
-        report['robot_motion_sent'] = True
-        self.robot.motion_stage = report['active_stage']
-        # MOVEL supports changing orientation with an unchanged TCP position.
-        # Never fall back to joint-space motion, translation, or opening the gripper.
-        self.robot.move_linear(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
-        reached = watchdog()
-        expected = controller_pose(target['controller_pose'])
-        report['arrival_checks'] = [{'target_pose':target['controller_pose'], 'actual_tcp':reached.tolist()}]
-        if rotation_error(expected[:3,:3],reached[:3,:3]) > np.deg2rad(settings['orientation_tolerance_deg']):
-            raise ValueError('末端目标朝向未到位')
+        initial_rotation = controller_pose(plan['current_arm']['pose'])[:3,:3]
+        reached = None
+        for target in plan['waypoints']:
+            end = np.asarray(target['position_m'])
+            translating = target['name']=='translate'
+            def watchdog():
+                self.check_cancel()
+                actual = self.arm_state()
+                pose = controller_pose(actual['pose'])
+                deviation = segment_distance(pose[:3,3],start,end)
+                report['max_observed_path_deviation_m'] = max(report.get('max_observed_path_deviation_m',0.),deviation)
+                if deviation>tolerance:
+                    raise ValueError(f'末端偏离规划路径 {deviation*1000:.2f} 毫米，超过允许值 {tolerance*1000:g} 毫米')
+                if translating and rotation_error(initial_rotation,pose[:3,:3])>np.deg2rad(settings['orientation_tolerance_deg']):
+                    raise ValueError('移位阶段的末端朝向发生异常变化')
+                self.check_reorient_contact(held,config)
+                return pose
+            report['active_stage'] = '保持夹持移至可旋转位置' if translating else '在选定位置调整物品姿态'
+            self.update(state='reorienting',message=report['active_stage']+'…')
+            # Reject a stale plan before its first command, not just a point anywhere along its path.
+            reached=watchdog()
+            if np.linalg.norm(reached[:3,3]-start)>tolerance:
+                raise ValueError('末端已离开本段规划起点')
+            self.actuated = True
+            report['robot_motion_sent'] = True
+            self.robot.motion_stage = report['active_stage']
+            self.robot.move_linear(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
+            reached = watchdog()
+            expected = controller_pose(target['controller_pose'])
+            report.setdefault('arrival_checks',[]).append({'stage':report['active_stage'],'target_pose':target['controller_pose'],'actual_tcp':reached.tolist()})
+            if np.linalg.norm(expected[:3,3]-reached[:3,3])>tolerance:
+                raise ValueError('末端目标位置未到位')
+            if rotation_error(expected[:3,:3],reached[:3,:3])>np.deg2rad(settings['orientation_tolerance_deg']):
+                raise ValueError('末端目标朝向未到位')
+            start=end
         actual_object = reached @ np.linalg.inv(transform(held['object_T_tcp']))
         updated = copy.deepcopy(held)
         updated['current_object_rotation'] = actual_object[:3,:3].tolist()
         updated['orientation_version'] = held.get('orientation_version',0)+1
         with self.lock:
             self.held_object = updated
-        self.update(state='completed',message='已将物品摆至指定姿态，末端位置保持不变，夹爪继续夹持。')
+        shifted=plan.get('offset_distance_m',0.)
+        self.update(state='completed',message=f'已将物品摆至指定姿态，末端移位 {shifted*100:.1f} 厘米，夹爪继续夹持。')

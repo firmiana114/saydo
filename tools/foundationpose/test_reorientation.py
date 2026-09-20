@@ -106,15 +106,16 @@ class ReorientationTests(unittest.TestCase):
             self.assertIn('object_T_tcp',service.held_snapshot())
 
     def test_model_preview_uses_held_tcp_pivot_and_current_object_rotation(self):
-        config,_,held,_,_=fixture();held['current_object_rotation']=np.eye(3).tolist()
+        config,settings,held,_,_=fixture();held['current_object_rotation']=np.eye(3).tolist()
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);cfg=root/'trial.json';cfg.write_text(json.dumps(config));service=GraspController(root,SimpleNamespace(models_root=root),cfg)
             service.held_object=held
+            (root/'config/grasp').mkdir(parents=True);(root/'config/grasp/reorientation.json').write_text(json.dumps(settings))
             with patch('reorientation_control.model_geometry',return_value={}),patch('reorientation_control.model_appearance',return_value={}):
                 model=service.reorientation_model('sample')
             self.assertEqual(model['pivot_object_m'],[.02,0,.04])
             self.assertEqual(model['initial_rotation'],held['current_object_rotation'])
-            self.assertEqual(model['preview_mode'],'fixed_tcp_orientation')
+            self.assertEqual(model['preview_mode'],'adaptive_or_fixed_orientation');self.assertEqual(model['max_shift_m'],.10)
             self.assertNotIn('release_clearance_m',model);self.assertNotIn('target_xy_m',model)
 
     def test_only_cartesian_rotation_no_gripper_writes_and_hold_retained(self):

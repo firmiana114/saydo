@@ -288,26 +288,31 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 
 ## 将物品摆至指定姿态
 
-操作链路：**成功抓取并保持夹持 → 旋转预览模型 → 预览姿态方案 → 保持当前 TCP 位置，只旋转末端 → 继续夹持**。
+网页默认选择“自适应位置”：优先尝试原地旋转，失败后在用户允许范围内找一个可达位置，**保持夹持移位 → 转至指定物品朝向 → 在新位置继续夹持**。可切回“固定位置”，此时仍严格保持本次读取的 `grip_tcp` 工具中心 XYZ。
 
-TCP 指当前工具坐标系 `grip_tcp` 的中心点。执行时锁定它在基座中的 X/Y/Z，根据物品与夹爪的固定关系，将网页指定的物品朝向换算为末端朝向：`base_R_tcp_target = base_R_object_target × object_R_tcp`。物品原点通常不在 TCP 上，因此绕 TCP 翻转时，物品原点会移动；模型预览显示的金色标记是保持固定的旋转中心。
+- 朝向始终是硬目标：`base_R_tcp_target = requested_object_rotation × object_R_tcp`。搜索只改变目标位置，不放宽用户指定的物品朝向。物品原点未必等于夹持中心，模型按真实 `object_T_tcp` 显示。
+- 最大位移默认 10 厘米，可在页面选择更小范围；服务端独立验证上限，非法值拒绝。省略新请求字段的旧客户端仍按固定模式处理。预览与执行每次都重新读取静止起始姿态，执行前再次检查任务状态及起点。
+- 搜索采用有限个径向方向，先零偏移，再由近到远检查侧向/向上位置，不搜索低于起点的目标；同一距离层按固定顺序取第一个合格候选。它优先选择候选集内的小位移，不保证连续空间的全局最小位移。
+- 每个候选同时检查保持原朝向的直线移位和选定位置上的旋转；默认分别按 1 厘米、5° 采样。检查工具/物品的工作区和桌面距离、各采样逆解及自身碰撞，并拒绝相邻关节解（包括第一点与起始关节）跳变超过阈值的候选。总规划预算覆盖全部搜索；单次逆解最多 3 秒且不超过剩余预算，候选超时后继续搜索，耗尽或总超时均不发动作。
+- 执行只使用 `movel`：原地方案一段；移位方案先平移、确认位置与朝向到位，再原地旋转。运行中的 watchdog 对比规划直线段或旋转点的距离，默认偏离超过 2 毫米停止；平移段还监测朝向，持续检查取消和夹持反馈。完成后保留夹持关系并更新当前物品朝向。不会自动返回原位置，也不会松开夹爪。
+- 模型预览保留原始纹理、物品轴、基座方向和物品自身轴拖拽；自适应方案显示起点/目标 TCP 及位移提示，文字列出基座 ΔX/ΔY/ΔZ 和最终 XYZ。调整朝向、位置模式或位移上限后清除旧位移预览。没有本次有效夹持记录时只可查看模型。
 
-- 保留真实纹理、物品坐标轴和固定基座方向提示；拖动自由旋转或选择物品自身轴约束，Shift 精调，滚轮缩放。未抓取时暂以模型原点预览，执行按钮不可用。
-- 每次执行重新读取静止末端的位置，不沿用上次预览的位置。目标运动命令的 XYZ 与本次读取的原始坐标完全相同，使用同位置 `movel` 改变姿态；失败后不会改走关节运动或移动位置避让。
-- 原有桌面放置逻辑、配置和接口已删除：不再计算固定落点，不抬高、下降、松开或退出。旧 `/api/place`、`/api/place/preview`、`/api/placement/model` 和旧预览脚本路径返回 404，旧页面必须刷新。
-- 原地旋转按最短姿态插值采样，检查物品网格的工作区/桌面范围及各采样末端的逆解和自身碰撞。运行中约每 0.3 秒通过现有运动 watchdog 检查取消、末端位置偏移与夹持状态；网络请求耗时会影响实际检查周期。
-- 完成后检查朝向，保留夹持关系，更新模型的当前朝向，可继续调整。运动异常时停止并清除不可信的夹持记录。成功抓取后记录当前物品朝向；服务重启不恢复旧夹持记录。
-
-配置位于 `config/grasp/reorientation.json`，工作区及桌面高度沿用 `config/grasp/trial.json`。
+配置仍位于 `config/grasp/reorientation.json`；新增项可省略并使用下表默认值，已有速度等用户设置不会被覆盖。
 
 | 配置 | 默认值 |
 |---|---|
-| `arm_speed_percent` | 10%，独立于抓取速度 |
-| `planning_timeout_s` | 20 秒，离线检查超时 |
-| `rotation_step_deg` | 5°，旋转采样的最大间隔 |
-| `position_tolerance_m` | 0.002 米，即 2 毫米，观测到的 TCP 偏移上限 |
-| `orientation_tolerance_deg` | 2°，到位朝向误差上限 |
+| `arm_speed_percent` | 配置文件原值，原默认 10% |
+| `planning_timeout_s` | 20 秒，全部候选的总规划预算 |
+| `rotation_step_deg` | 5°，旋转采样间隔 |
+| `position_tolerance_m` | 0.002 米，偏离规划线段/旋转点及段末位置的容差 |
+| `orientation_tolerance_deg` | 2°，段末朝向及平移段朝向容差 |
+| `adaptive_max_shift_m` | 0.10 米，服务端允许的最大移位 |
+| `search_step_m` | 0.025 米，候选距离层间隔 |
+| `translation_step_m` | 0.01 米，移位采样间隔 |
+| `max_joint_step_deg` | 20°，相邻采样逆解的最大单关节变化 |
 
-接口：`GET /api/reorient/model?object_id=...` 返回带纹理和旋转中心的模型；`POST /api/reorient/preview` 与 `POST /api/reorient` 接收 `{object_id, model_sha256, hold_id, rotation}`。朝向矩阵为物品坐标系相对于机器人基座的 3×3 旋转矩阵。夹持记录与模型须匹配，请求互斥并支持“停止运动”。`work/grasp/reorient_jobs/` 保存目标、固定位置、采样、控制器响应、到位反馈及观测最大偏移；历史任务日志保留。
+接口：`GET /api/reorient/model?object_id=...` 返回模型、夹持中心及 `max_shift_m` 上限；`POST /api/reorient/preview` 和 `POST /api/reorient` 接收 `{object_id, model_sha256, hold_id, rotation, position_mode, max_shift_m}`。`position_mode` 为 `adaptive` 或 `fixed`，缺省 `fixed`；位移单位为米。夹持编号与模型须匹配，所有动作仍共用任务锁、设备锁和“停止运动”。
 
-验证命令：`python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`；`node tools/foundationpose/test_reorientation_viewer.cjs`。软件验证不发送真实动作。旋转采样不等于完整连续路径或环境碰撞验证，夹爪反馈不能证明物品未滑动；实机保持位置精度和物品姿态精度仍待现场验收。
+日志 `work/grasp/reorient_jobs/` 保存规划前真实关节/位姿、工具参数、请求模式、上限、各候选结果、起终点/位移、采样、控制器响应、段末反馈及最大观测路径偏差。旧放置接口、落点和释放流程继续保持删除状态。
+
+验证：`python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`；`node tools/foundationpose/test_reorientation_viewer.cjs`。软件和离线验证不发送真实动作。采样及关节连续性检查仍不等于完整连续轨迹或环境碰撞证明，控制器可能选择不同的关节解；夹指/外部障碍与物品滑动未被完整建模，需现场验证实际运动。

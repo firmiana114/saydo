@@ -29,3 +29,6 @@ const keyboard=M.rotate(M.euler(0,0,90),M.axisAngle([1,0,0],5*Math.PI/180),'x');
 assert(near(M.angles(keyboard),[5,0,90]),'local X keyboard step after Z=90 degrees');
 assert(M.rotate(tilted,right,'free').every((row,i)=>near(row,M.multiply(right,tilted)[i])),'free drag remains screen-relative');
 console.log('Local-axis drag/keyboard and unchanged free-rotation checks passed.');
+
+const adaptiveShift=[0,-.035355,.035355],adaptiveOrigin=M.objectOrigin(tilted,pivot,adaptiveShift);assert(near(M.apply(tilted,pivot).map((v,i)=>v+adaptiveOrigin[i]),adaptiveShift),'adaptive preview places the held TCP at the planned displacement');
+console.log('Adaptive translated-pivot preview check passed.');

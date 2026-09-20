@@ -13,7 +13,7 @@ const ReorientationMath={
     return [(regular?Math.atan2(r[2][1],r[2][2]):0),y,(regular?Math.atan2(r[1][0],r[0][0]):Math.atan2(-r[0][1],r[1][1]))].map(v=>v*180/Math.PI);},
   column(r){return new Float32Array([r[0][0],r[1][0],r[2][0],r[0][1],r[1][1],r[2][1],r[0][2],r[1][2],r[2][2]]);},
   rotate(rotation,delta,mode='free'){return mode==='free'?this.multiply(delta,rotation):this.multiply(rotation,delta);},
-  objectOrigin(rotation,pivot){return this.apply(rotation,pivot).map(v=>-v);},
+  objectOrigin(rotation,pivot,translation=[0,0,0]){return this.apply(rotation,pivot).map((v,k)=>translation[k]-v);},
   axisAngle(axis,angle){const [x,y,z]=this.unit(axis),c=Math.cos(angle),s=Math.sin(angle),t=1-c;
     return [[t*x*x+c,t*x*y-s*z,t*x*z+s*y],[t*x*y+s*z,t*y*y+c,t*y*z-s*x],[t*x*z-s*y,t*y*z+s*x,t*z*z+c]];},
   ball(x,y,width,height){const radius=Math.min(width,height)*.42,p=[(x-width/2)/radius,(height/2-y)/radius],d=Math.hypot(...p);
@@ -30,7 +30,7 @@ const ReorientationMath={
 };
 class ReorientationViewer{
   constructor(canvas,overlay){
-    this.canvas=canvas;this.overlay=overlay;this.rotation=ReorientationMath.identity();this.zoom=1;this.version=0;this.textures=[];this.showAxes=true;
+    this.canvas=canvas;this.overlay=overlay;this.translation=[0,0,0];this.rotation=ReorientationMath.identity();this.zoom=1;this.version=0;this.textures=[];this.showAxes=true;
     this.basis=[[Math.SQRT1_2,Math.SQRT1_2,0],[-1/Math.sqrt(6),1/Math.sqrt(6),2/Math.sqrt(6)],[1/Math.sqrt(3),-1/Math.sqrt(3),1/Math.sqrt(3)]];
     const gl=this.gl=canvas.getContext('webgl',{antialias:true});
     if(!gl)throw Error('浏览器未启用三维绘图，请开启硬件加速后刷新。');
@@ -47,7 +47,7 @@ class ReorientationViewer{
   }
   setModel(model){
     const gl=this.gl,version=++this.version;for(const texture of this.textures)if(texture)gl.deleteTexture(texture);this.textures=[];
-    this.model=model;this.zoom=1;this.pivot=model.pivot_object_m||[0,0,0];this.radius=model.vertices.reduce((r,p)=>Math.max(r,Math.hypot(...p.map((v,k)=>v-this.pivot[k]))),.04);
+    this.model=model;this.translation=[0,0,0];this.zoom=1;this.pivot=model.pivot_object_m||[0,0,0];this.radius=model.vertices.reduce((r,p)=>Math.max(r,Math.hypot(...p.map((v,k)=>v-this.pivot[k]))),.04);
     const appearance=model.appearance||{},materials=appearance.materials?.length?appearance.materials:[{color:[.64,.79,.87,1]}];
     this.materials=materials;this.groups=[];this.textureState=appearance.status==='unavailable'?'纹理不可用，已显示基础材质':appearance.status==='colored'?'顶点颜色':'基础材质（源模型无可用纹理）';
     const rows=materials.map(()=>[]);
@@ -83,7 +83,7 @@ class ReorientationViewer{
     const gl=this.gl,canvas=this.canvas,ratio=Math.min(window.devicePixelRatio||1,2),width=canvas.clientWidth,height=canvas.clientHeight;
     if(!width||!height)return;
     const pw=Math.round(width*ratio),ph=Math.round(height*ratio);if(canvas.width!==pw||canvas.height!==ph){canvas.width=pw;canvas.height=ph;}
-    const origin=ReorientationMath.objectOrigin(this.rotation,this.pivot),center=[0,0,0],scale=Math.max(.1,this.radius*1.55)/this.zoom,aspect=width/height;
+    const origin=ReorientationMath.objectOrigin(this.rotation,this.pivot,this.translation),center=this.translation.map(v=>v/2),scale=Math.max(.1,this.radius*1.55+Math.hypot(...this.translation)/2)/this.zoom,aspect=width/height;
     const [right,up,depth]=this.basis,dot=ReorientationMath.dot,sx=1/(scale*aspect),sy=1/scale,sz=-1/(this.radius*16);
     const view=new Float32Array([right[0]*sx,up[0]*sy,depth[0]*sz,0,right[1]*sx,up[1]*sy,depth[1]*sz,0,right[2]*sx,up[2]*sy,depth[2]*sz,0,-dot(right,center)*sx,-dot(up,center)*sy,-dot(depth,center)*sz,1]);
     gl.viewport(0,0,canvas.width,canvas.height);gl.clearColor(.028,.06,.085,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.useProgram(this.program);gl.uniformMatrix4fv(this.u.view,false,view);
@@ -107,7 +107,7 @@ class ReorientationViewer{
         label('物品 '+names[i],Math.max(8,Math.min(width-70,end[0]+9)),Math.max(24,Math.min(height-24,end[1]-10-i*3)),colors[i]);}
       add('circle',{cx:origin[0],cy:origin[1],r:5,fill:'#fff',stroke:'#071017','stroke-width':2});label('物品原点',origin[0]+10,origin[1]+23,'#b8c6d0',12);
     }
-    const pivot=project([0,0,0]);add('circle',{cx:pivot[0],cy:pivot[1],r:8,fill:'none',stroke:'#ffe19b','stroke-width':2,'stroke-dasharray':'3 2'});add('line',{x1:pivot[0]+8,y1:pivot[1]+8,x2:pivot[0]+48,y2:pivot[1]+45,stroke:'#ffe19b','stroke-width':1,'stroke-dasharray':'3 3'});label(this.model.holding?'固定 TCP':'预览中心（未抓取）',pivot[0]+50,pivot[1]+51,'#ffe19b',12);
+    const pivot=project(this.translation);if(Math.hypot(...this.translation)>1e-6){const from=project([0,0,0]);arrow(from,pivot,'#ffe19b',true);add('circle',{cx:from[0],cy:from[1],r:5,fill:'none',stroke:'#b8c6d0'});label('起点',from[0]-25,from[1]-12,'#b8c6d0',12);}add('circle',{cx:pivot[0],cy:pivot[1],r:8,fill:'none',stroke:'#ffe19b','stroke-width':2,'stroke-dasharray':'3 2'});add('line',{x1:pivot[0]+8,y1:pivot[1]+8,x2:pivot[0]+48,y2:pivot[1]+45,stroke:'#ffe19b','stroke-width':1,'stroke-dasharray':'3 3'});label(this.model.holding?(Math.hypot(...this.translation)>1e-6?'目标 TCP':'旋转中心 TCP'):'预览中心（未抓取）',pivot[0]+50,pivot[1]+51,'#ffe19b',12);
     const small=width<450,cardW=small?112:146,cardH=small?98:115,anchor=[small?62:80,height-(small?54:65)],length=small?30:42;
     add('rect',{x:12,y:height-cardH-12,width:cardW,height:cardH,rx:9,fill:'#101c28',stroke:'#385267'});
     label('固定基座坐标',22,height-cardH+6,'#cedce6',small?10:12);
@@ -122,10 +122,12 @@ class ReorientationPanel{
     this.key=null;this.pending=false;this.loading=false;this.generation=0;this.held=null;this.disabled=true;
     this.info=document.querySelector('#reorientation-info');this.feedback=document.querySelector('#reorientation-feedback');
     this.preview=document.querySelector('#reorient-preview');this.execute=document.querySelector('#reorient');this.restore=document.querySelector('#reorientation-restore');
+    this.positionMode=document.querySelector('#reorientation-position-mode');this.maxShift=document.querySelector('#reorientation-max-shift');
     this.inputs=['x','y','z'].map(axis=>document.querySelector('#reorientation-'+axis));
     try{this.viewer=new ReorientationViewer(document.querySelector('#reorientation-view'),document.querySelector('#reorientation-overlay'));}catch(e){this.info.textContent=e.message;return;}
     for(const input of this.inputs)input.oninput=()=>{if(this.disabled)return;if(!this.anglesValid()){this.preview.disabled=true;this.execute.disabled=true;this.feedback.textContent='请填写三个有效角度，每项在 −180 到 180 度之间。';return;}this.viewer.rotation=ReorientationMath.euler(...this.inputs.map(x=>Number(x.value)));this.changed();};
     this.restore.onclick=()=>{this.viewer.rotation=this.viewer.model.initial_rotation.map(row=>row.slice());this.syncAngles();this.changed();};
+    this.positionMode.onchange=this.maxShift.oninput=()=>{this.changed();};
     this.dragMode=document.querySelector('#reorientation-drag-mode');
     this.axes=document.querySelector('#reorientation-axes');this.axes.onchange=()=>{this.viewer.showAxes=this.axes.checked;this.viewer.draw();};
     this.viewReset=document.querySelector('#reorientation-view-reset');this.viewReset.onclick=()=>{this.viewer.zoom=1;this.viewer.draw();};
@@ -142,11 +144,12 @@ class ReorientationPanel{
   }
   syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});}
   anglesValid(){return this.inputs.every(x=>x.value!==''&&x.checkValidity());}
-  changed(){this.poseDirty=true;this.viewer.draw();this.feedback.textContent='朝向已调整；点击“预览姿态方案”检查此朝向能否到达。';}
+  positionValid(){return this.positionMode.value==='fixed'||(this.maxShift.value!==''&&this.maxShift.checkValidity());}
+  changed(){this.poseDirty=true;this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent=this.positionValid()?'目标已调整；预览可查看位移方向和距离，执行时重新检查。':'请输入允许范围内的最大位移。';if(!this.positionValid()){this.preview.disabled=true;this.execute.disabled=true;}}
   async load(id,key){
     this.key=key;this.loading=true;const generation=++this.generation;this.info.textContent='正在加载物品模型…';
     try{const response=await fetch('/api/reorient/model?object_id='+encodeURIComponent(id)),model=await response.json();if(!response.ok)throw Error(model.error);if(generation!==this.generation)return;
-      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为固定 TCP，物品围绕它旋转。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
+      this.viewer.setModel(model);const limit=(model.max_shift_m??.10)*100;this.maxShift.max=String(limit);this.maxShift.value=String(Math.min(Number(this.maxShift.value)||limit,limit));this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为旋转中心 TCP；预览方案会显示允许的移位。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
       this.feedback.textContent=model.holding?'已关联本次抓取，可以预览或调整姿态。':'可先旋转查看；成功抓取后加载该次抓取朝向，才能执行姿态调整。';
     }catch(e){if(generation===this.generation){this.viewer.model=null;this.info.textContent='模型加载失败：'+e.message;}}
     finally{if(generation===this.generation)this.loading=false;}
@@ -158,19 +161,22 @@ class ReorientationPanel{
     if(id&&key!==this.key)this.load(id,key);
     this.disabled=!!g.busy||otherPending||this.pending||this.loading||!this.viewer.model;
     if(this.disabled)this.cancelDrag();this.dragMode.disabled=this.disabled;this.viewReset.disabled=this.disabled;this.viewer.canvas.setAttribute('aria-disabled',String(this.disabled));
+    this.positionMode.disabled=this.disabled;this.maxShift.disabled=this.disabled||this.positionMode.value==='fixed';
     this.inputs.forEach(x=>x.disabled=this.disabled);this.restore.disabled=this.disabled;
-    const ready=!this.disabled&&this.anglesValid()&&this.held&&this.viewer.model?.object_id===this.held.object_id&&this.viewer.model?.model_sha256===this.held.model_sha256;
+    const ready=!this.disabled&&this.anglesValid()&&this.positionValid()&&this.held&&this.viewer.model?.object_id===this.held.object_id&&this.viewer.model?.model_sha256===this.held.model_sha256;
     this.preview.disabled=!ready;this.execute.disabled=!ready||!g.motion_enabled;
     if(g.operation==='reorient'&&g.busy)this.feedback.textContent=g.message;
     if(g.operation==='reorient'&&!g.busy&&!this.poseDirty&&g.reorientation_plan&&this.planShown!==g.reorientation_plan.hold_id+g.reorientation_plan.base_T_object_target.flat().join(',')){
       const p=g.reorientation_plan;this.planShown=p.hold_id+p.base_T_object_target.flat().join(',');
-      this.feedback.textContent=g.message+'\n固定末端位置（基座 X / Y / Z）：'+p.fixed_tcp_position_m.map(v=>(v*100).toFixed(1)).join(' / ')+' 厘米。';
+      this.viewer.translation=p.offset_m||[0,0,0];this.viewer.draw();
+      const offset=(p.offset_m||[0,0,0]).map(v=>(v>=0?'+':'')+(v*100).toFixed(1)).join(' / ');
+      this.feedback.textContent=g.message+'\n移位 ΔX / ΔY / ΔZ：'+offset+' 厘米（基座方向）\n最终末端 X / Y / Z：'+p.target_tcp_position_m.map(v=>(v*100).toFixed(1)).join(' / ')+' 厘米。';
     }else if(g.operation==='reorient'&&!g.busy&&!this.poseDirty&&g.error)this.feedback.textContent=g.error;
   }
   async request(preview){
-    if(this.pending||this.disabled||!this.held||!this.anglesValid())return;
+    if(this.pending||this.disabled||!this.held||!this.anglesValid()||!this.positionValid())return;
     this.pending=true;this.preview.disabled=true;this.execute.disabled=true;
-    try{await post(preview?'/api/reorient/preview':'/api/reorient',{object_id:this.held.object_id,hold_id:this.held.hold_id,model_sha256:this.viewer.model.model_sha256,rotation:this.viewer.rotation});this.poseDirty=false;this.feedback.textContent='正在检查固定末端位置下的目标姿态…';this.planShown=null;}
+    try{await post(preview?'/api/reorient/preview':'/api/reorient',{object_id:this.held.object_id,hold_id:this.held.hold_id,model_sha256:this.viewer.model.model_sha256,rotation:this.viewer.rotation,position_mode:this.positionMode.value,max_shift_m:this.positionMode.value==='adaptive'?Number(this.maxShift.value)/100:undefined});this.poseDirty=false;this.feedback.textContent='正在优先检查原地旋转，并按所选位置模式规划…';this.planShown=null;}
     catch(e){this.feedback.textContent=e.message;}
     finally{this.pending=false;}
   }
