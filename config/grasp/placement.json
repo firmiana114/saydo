@@ -1,0 +1,11 @@
+{
+  "approach_height_m": 0.10,
+  "release_clearance_m": 0.002,
+  "retreat_distance_m": 0.10,
+  "search_radius_m": 0.10,
+  "search_step_m": 0.01,
+  "arm_speed_percent": 10,
+  "release_position": 1000,
+  "release_timeout_s": 8,
+  "planning_timeout_s": 20
+}

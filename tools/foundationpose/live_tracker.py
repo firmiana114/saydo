@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import urllib.request
+import urllib.parse
 
 import cv2
 import numpy as np
@@ -683,6 +684,14 @@ def main():
             path = self.path.split('?')[0]
             if path == '/':
                 self.reply(200, Path(__file__).with_name('live_tracker.html').read_bytes(), 'text/html; charset=utf-8')
+            elif path == '/placement_viewer.js':
+                self.reply(200, Path(__file__).with_name('placement_viewer.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/api/placement/model':
+                try:
+                    params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    self.reply(200, tracker.grasp.placement_model(params.get('object_id',[None])[0]))
+                except (ValueError, TypeError, KeyError, OSError) as error:
+                    self.reply(400, {'error':str(error)})
             elif path == '/api/status':
                 self.reply(200, tracker.snapshot())
             elif path == '/api/objects':
@@ -764,6 +773,10 @@ def main():
                     result = tracker.grasp.set_open_position(value['value'])
                 elif self.path == '/api/arm/reset':
                     result = tracker.grasp.start_reset()
+                elif self.path == '/api/place/preview':
+                    result = tracker.grasp.start_place(value, preview=True)
+                elif self.path == '/api/place':
+                    result = tracker.grasp.start_place(value)
                 elif self.path == '/api/grasp/stop':
                     tracker.grasp.abort()
                     result = {'cancelled': True}

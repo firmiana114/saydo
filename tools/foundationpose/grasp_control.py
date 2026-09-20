@@ -17,9 +17,10 @@ import yaml
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance, return_joint_target
 from grasp_robot import RobotClient
 from camera_checks import camera_binding, check_camera_observation
+from placement_control import PlacementMixin
 
 
-class GraspController:
+class GraspController(PlacementMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()
@@ -27,6 +28,7 @@ class GraspController:
         self.thread = None
         self.actuated = False
         self.robot = None
+        self.held_object = None
         self.force_override = None
         self.force_acknowledged = False
         self.force_error = None
@@ -42,7 +44,7 @@ class GraspController:
                 reset_available = False
             return {**self.status, 'force_config': self.force_config(),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
-                    'reset_available': reset_available}
+                    'reset_available': reset_available, 'held_object': self.held_snapshot()}
 
     def set_open_position(self, value):
         if type(value) is not int or not 0 <= value <= 1000:
@@ -155,6 +157,7 @@ class GraspController:
             self.update(state='completed', message='机械臂已复位到抓取后的返回姿态，夹爪开合保持不变。')
         except Exception as error:
             if self.actuated:
+                with self.lock:self.held_object=None
                 try:
                     self.robot.stop()
                 except Exception as stop_error:
@@ -263,6 +266,7 @@ class GraspController:
                     if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
                         raise ValueError('夹爪异常或正在运动')
                     report['write_attempted'] = True
+                    self.held_object = None
                     robot.move_gripper(1000)
                     report['write_acknowledged'] = True
                     self.status.update(plan=None)
@@ -505,6 +509,7 @@ class GraspController:
             base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
             plan = plan_grasp(arm['pose'], base_object, profile, config)
             plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
+                        model_sha256=observation.get('model_sha256'),
                         camera_calibration=handeye.get('runtime_camera_binding'),
                         object_name=observation.get('object_name'),
                         current_arm=arm, gripper_base=base, gripper_state=gripper_state,
@@ -558,6 +563,7 @@ class GraspController:
             raise ValueError('夹爪力参数越界')
         self.check_cancel()
         self.actuated = True
+        with self.lock:self.held_object=None
         # User verified register 1220 + position following on the installed firmware.
         # Numeric register readback is unavailable; reject failed write acknowledgements.
         report['active_stage'] = '设置张开前力度'
@@ -612,6 +618,7 @@ class GraspController:
             stable = stable + 1 if result in ('force_contact', 'force_stop') else 0
             if stable >= 3:
                 self.update(gripper_contact=state)
+                self.capture_attachment(plan, report)
                 lifting = True
                 move_waypoint(next(w for w in plan['waypoints'] if w['name'] == 'lift'))
                 watchdog()
@@ -620,8 +627,10 @@ class GraspController:
                     report['active_stage'] = '抬升后返回记录姿态'
                     self.update(state='returning', message='抬升完成，保持夹持并返回记录的关节角度')
                     self.return_to_joints(plan['return_joint_raw'], config['arm_speed_percent'], report)
+                    self.finish_attachment(report)
                     self.update(state='completed', message='已完成夹持、抬升并返回记录姿态；夹爪保持闭合。')
                     return
+                self.finish_attachment(report)
                 self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，请观察物品是否保持夹持。")
                 return
             time.sleep(.1)
