@@ -51,25 +51,25 @@
   },
   "return_after_lift": {
     "joint_deg": [
-      -64.559,
-      -98.61,
-      82.804,
-      79.318,
-      39.45,
-      92.311,
-      202.406
+      -81.772,
+      -112.239,
+      77.689,
+      57.503,
+      43.099,
+      105.776,
+      214.58
     ],
     "captured_pose_raw": [
-      235011,
-      124361,
-      56204,
-      2141,
-      -409,
-      404
+      258504,
+      87523,
+      40266,
+      1894,
+      -457,
+      298
     ],
     "source": {
-      "path": "work/grasp/return_pose_capture_1789888917210361951.json",
-      "sha256": "07fb95af44a10b4f9ef168c10d2c67cd452570f3f1990cd352d7b2515ddd5f51"
+      "path": "work/grasp/return_pose_capture_1789894446571849886.json",
+      "sha256": "63f0264a4dde46ae0a3d2ea54317d40fe666a079bf63773217d2aba26b808627"
     },
     "note": "User-positioned seven-joint target shared by manual arm reset and return after lift; captured read-only without robot motion."
   }
