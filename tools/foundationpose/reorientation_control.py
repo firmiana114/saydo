@@ -66,8 +66,7 @@ class ReorientationMixin:
         geometry['pivot_object_m'] = (np.asarray(held['object_T_tcp'])[:3,3].tolist()
                                       if geometry['holding'] else None)
         geometry['preview_mode'] = 'adaptive_or_fixed_orientation'
-        settings = reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
-        geometry['max_shift_m'] = settings['adaptive_max_shift_m']
+        geometry['minimum_final_clearance_m'] = .10
         return geometry
 
     def start_reorient(self, value, preview=False):
@@ -80,13 +79,14 @@ class ReorientationMixin:
                 raise ValueError('本次服务尚无成功抓取记录，请先抓取物品后再调整姿态')
             if value.get('hold_id') != held['hold_id'] or value.get('object_id') != held['object_id'] or value.get('model_sha256') != held['model_sha256']:
                 raise ValueError('预览模型或夹持记录已变化，请重新加载物品模型')
-            settings = reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
-            position_mode,max_shift_m = checked_position_request(value.get('position_mode','fixed'),value.get('max_shift_m'),settings)
+            if 'max_shift_m' in value:
+                raise ValueError('自适应位置已取消位移上限，请刷新页面后重试')
+            position_mode=checked_position_request(value.get('position_mode','fixed'))
             self.cancelled.clear();self.actuated=False;self.robot=None
             self.status.update(state='reorient_planning',operation='reorient',busy=True,error=None,plan=None,
                                reorientation_plan=None,target_object_id=held['object_id'],
-                               message='正在检查目标朝向，优先尝试原地旋转…')
-            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview,position_mode,max_shift_m),daemon=True)
+                               message='正在检查目标姿态与最终离桌高度…' if position_mode=='adaptive' else '正在检查固定位置下的目标姿态…')
+            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview,position_mode),daemon=True)
             self.thread.start()
         return {'accepted':True,'mode':'preview' if preview or self.mode=='preview' else 'execute'}
 
@@ -120,10 +120,10 @@ class ReorientationMixin:
             raise ValueError('夹持反馈已变化或未保持夹持，停止姿态调整')
         return state
 
-    def run_reorient(self, held, rotation, preview=False, position_mode='fixed', max_shift_m=None):
+    def run_reorient(self, held, rotation, preview=False, position_mode='fixed'):
         mode='preview' if preview else self.mode
         report={'started_at':time.time(),'operation':'reorient','mode':mode,'held_object':held,
-                'requested_rotation':rotation,'position_mode':position_mode,'max_shift_m':max_shift_m,'robot_motion_sent':False,'active_stage':'姿态调整前检查'}
+                'requested_rotation':rotation,'position_mode':position_mode,'robot_motion_sent':False,'active_stage':'姿态调整前检查'}
         directory=self.root/'work/grasp/reorient_jobs';robot_lock=None
         try:
             directory.mkdir(parents=True,exist_ok=True)
@@ -143,9 +143,9 @@ class ReorientationMixin:
                 raise ValueError('物品模型已变化，不能沿用抓取关系调整姿态')
             checker=(self.root/config['ik_checker']).resolve()
             if not checker.is_file():raise ValueError('缺少姿态调整航点可达性检查程序')
-            report['active_stage']='检查姿态路径及允许的位置范围'
+            report['active_stage']='检查姿态路径及最终离桌高度'
             plan=plan_reorientation(held,mesh['vertices'],rotation,arm,config,settings,
-                lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel,position_mode,max_shift_m,report.setdefault('search_attempts',[]))
+                lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel,position_mode,report.setdefault('search_attempts',[]))
             plan.update(object_id=held['object_id'],object_name=held['object_name'],hold_id=held['hold_id'],
                         can_execute=mode=='execute',flange_T_grip_tcp=tool['flange_T_grip_tcp'])
             report['plan']=plan
@@ -220,6 +220,8 @@ class ReorientationMixin:
                                  tolerance,np.deg2rad(settings['orientation_tolerance_deg']))
             reached=controller_pose(actual['pose'])
             start=end
+        if plan.get('position_mode')=='adaptive' and reached[2,3]<=plan['table_z_m']+plan['minimum_final_clearance_m']:
+            raise ValueError('实际末端最终高度未高于桌面 10 厘米，停止本次任务')
         actual_object = reached @ np.linalg.inv(transform(held['object_T_tcp']))
         updated = copy.deepcopy(held)
         updated['current_object_rotation'] = actual_object[:3,:3].tolist()

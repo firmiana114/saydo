@@ -122,12 +122,12 @@ class ReorientationPanel{
     this.key=null;this.pending=false;this.loading=false;this.generation=0;this.held=null;this.disabled=true;
     this.info=document.querySelector('#reorientation-info');this.feedback=document.querySelector('#reorientation-feedback');
     this.preview=document.querySelector('#reorient-preview');this.execute=document.querySelector('#reorient');this.restore=document.querySelector('#reorientation-restore');
-    this.positionMode=document.querySelector('#reorientation-position-mode');this.maxShift=document.querySelector('#reorientation-max-shift');
+    this.positionMode=document.querySelector('#reorientation-position-mode');
     this.inputs=['x','y','z'].map(axis=>document.querySelector('#reorientation-'+axis));
     try{this.viewer=new ReorientationViewer(document.querySelector('#reorientation-view'),document.querySelector('#reorientation-overlay'));}catch(e){this.info.textContent=e.message;return;}
     for(const input of this.inputs)input.oninput=()=>{if(this.disabled)return;if(!this.anglesValid()){this.preview.disabled=true;this.execute.disabled=true;this.feedback.textContent='请填写三个有效角度，每项在 −180 到 180 度之间。';return;}this.viewer.rotation=ReorientationMath.euler(...this.inputs.map(x=>Number(x.value)));this.changed();};
     this.restore.onclick=()=>{this.viewer.rotation=this.viewer.model.initial_rotation.map(row=>row.slice());this.syncAngles();this.changed();};
-    this.positionMode.onchange=this.maxShift.oninput=()=>{this.changed();};
+    this.positionMode.onchange=()=>{this.changed();};
     this.dragMode=document.querySelector('#reorientation-drag-mode');
     this.axes=document.querySelector('#reorientation-axes');this.axes.onchange=()=>{this.viewer.showAxes=this.axes.checked;this.viewer.draw();};
     this.viewReset=document.querySelector('#reorientation-view-reset');this.viewReset.onclick=()=>{this.viewer.zoom=1;this.viewer.draw();};
@@ -144,12 +144,11 @@ class ReorientationPanel{
   }
   syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});}
   anglesValid(){return this.inputs.every(x=>x.value!==''&&x.checkValidity());}
-  positionValid(){return this.positionMode.value==='fixed'||(this.maxShift.value!==''&&this.maxShift.checkValidity());}
-  changed(){this.poseDirty=true;this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent=this.positionValid()?'目标已调整；预览可查看位移方向和距离，执行时重新检查。':'请输入允许范围内的最大位移。';if(!this.positionValid()){this.preview.disabled=true;this.execute.disabled=true;}}
+  changed(){this.poseDirty=true;this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent='目标已调整；预览可查看位移和终点离桌高度，执行时重新检查。';}
   async load(id,key){
     this.key=key;this.loading=true;const generation=++this.generation;this.info.textContent='正在加载物品模型…';
     try{const response=await fetch('/api/reorient/model?object_id='+encodeURIComponent(id)),model=await response.json();if(!response.ok)throw Error(model.error);if(generation!==this.generation)return;
-      this.viewer.setModel(model);const limit=(model.max_shift_m??.10)*100;this.maxShift.max=String(limit);this.maxShift.value=String(Math.min(Number(this.maxShift.value)||limit,limit));this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为旋转中心 TCP；预览方案会显示允许的移位。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
+      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为旋转中心 TCP；预览方案会显示允许的移位。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
       this.feedback.textContent=model.holding?'已关联本次抓取，可以预览或调整姿态。':'可先旋转查看；成功抓取后加载该次抓取朝向，才能执行姿态调整。';
     }catch(e){if(generation===this.generation){this.viewer.model=null;this.info.textContent='模型加载失败：'+e.message;}}
     finally{if(generation===this.generation)this.loading=false;}
@@ -161,22 +160,22 @@ class ReorientationPanel{
     if(id&&key!==this.key)this.load(id,key);
     this.disabled=!!g.busy||otherPending||this.pending||this.loading||!this.viewer.model;
     if(this.disabled)this.cancelDrag();this.dragMode.disabled=this.disabled;this.viewReset.disabled=this.disabled;this.viewer.canvas.setAttribute('aria-disabled',String(this.disabled));
-    this.positionMode.disabled=this.disabled;this.maxShift.disabled=this.disabled||this.positionMode.value==='fixed';
+    this.positionMode.disabled=this.disabled;
     this.inputs.forEach(x=>x.disabled=this.disabled);this.restore.disabled=this.disabled;
-    const ready=!this.disabled&&this.anglesValid()&&this.positionValid()&&this.held&&this.viewer.model?.object_id===this.held.object_id&&this.viewer.model?.model_sha256===this.held.model_sha256;
+    const ready=!this.disabled&&this.anglesValid()&&this.held&&this.viewer.model?.object_id===this.held.object_id&&this.viewer.model?.model_sha256===this.held.model_sha256;
     this.preview.disabled=!ready;this.execute.disabled=!ready||!g.motion_enabled;
     if(g.operation==='reorient'&&g.busy)this.feedback.textContent=g.message;
     if(g.operation==='reorient'&&!g.busy&&!this.poseDirty&&g.reorientation_plan&&this.planShown!==g.reorientation_plan.hold_id+g.reorientation_plan.base_T_object_target.flat().join(',')){
       const p=g.reorientation_plan;this.planShown=p.hold_id+p.base_T_object_target.flat().join(',');
       this.viewer.translation=p.offset_m||[0,0,0];this.viewer.draw();
       const offset=(p.offset_m||[0,0,0]).map(v=>(v>=0?'+':'')+(v*100).toFixed(1)).join(' / ');
-      this.feedback.textContent=g.message+'\n移位 ΔX / ΔY / ΔZ：'+offset+' 厘米（基座方向）\n最终末端 X / Y / Z：'+p.target_tcp_position_m.map(v=>(v*100).toFixed(1)).join(' / ')+' 厘米。';
+      this.feedback.textContent=g.message+'\n移位 ΔX / ΔY / ΔZ：'+offset+' 厘米（基座方向）\n最终末端 X / Y / Z：'+p.target_tcp_position_m.map(v=>(v*100).toFixed(1)).join(' / ')+' 厘米。'+(p.position_mode==='adaptive'?'\n终点末端离桌高度：'+((p.target_tcp_position_m[2]-p.table_z_m)*100).toFixed(1)+' 厘米。':'');
     }else if(g.operation==='reorient'&&!g.busy&&!this.poseDirty&&g.error)this.feedback.textContent=g.error;
   }
   async request(preview){
-    if(this.pending||this.disabled||!this.held||!this.anglesValid()||!this.positionValid())return;
+    if(this.pending||this.disabled||!this.held||!this.anglesValid())return;
     this.pending=true;this.preview.disabled=true;this.execute.disabled=true;
-    try{await post(preview?'/api/reorient/preview':'/api/reorient',{object_id:this.held.object_id,hold_id:this.held.hold_id,model_sha256:this.viewer.model.model_sha256,rotation:this.viewer.rotation,position_mode:this.positionMode.value,max_shift_m:this.positionMode.value==='adaptive'?Number(this.maxShift.value)/100:undefined});this.poseDirty=false;this.feedback.textContent='正在优先检查原地旋转，并按所选位置模式规划…';this.planShown=null;}
+    try{await post(preview?'/api/reorient/preview':'/api/reorient',{object_id:this.held.object_id,hold_id:this.held.hold_id,model_sha256:this.viewer.model.model_sha256,rotation:this.viewer.rotation,position_mode:this.positionMode.value});this.poseDirty=false;this.feedback.textContent='正在按所选位置模式检查目标姿态与离桌条件…';this.planShown=null;}
     catch(e){this.feedback.textContent=e.message;}
     finally{this.pending=false;}
   }

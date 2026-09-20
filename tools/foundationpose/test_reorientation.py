@@ -87,6 +87,7 @@ class ReorientationTests(unittest.TestCase):
             with patch('reorientation_control.threading.Thread') as thread:
                 with self.assertRaisesRegex(ValueError,'尚无'):service.start_reorient(request)
                 service.held_object=held
+                with self.assertRaisesRegex(ValueError,'刷新页面'):service.start_reorient({**request,'max_shift_m':.1})
                 for key in ['object_id','model_sha256','hold_id']:
                     with self.assertRaisesRegex(ValueError,'变化'):service.start_reorient({**request,key:'old'})
                 service.status['busy']=True
@@ -115,7 +116,7 @@ class ReorientationTests(unittest.TestCase):
                 model=service.reorientation_model('sample')
             self.assertEqual(model['pivot_object_m'],[.02,0,.04])
             self.assertEqual(model['initial_rotation'],held['current_object_rotation'])
-            self.assertEqual(model['preview_mode'],'adaptive_or_fixed_orientation');self.assertEqual(model['max_shift_m'],.10)
+            self.assertEqual(model['preview_mode'],'adaptive_or_fixed_orientation');self.assertEqual(model['minimum_final_clearance_m'],.10);self.assertNotIn('max_shift_m',model)
             self.assertNotIn('release_clearance_m',model);self.assertNotIn('target_xy_m',model)
 
     def test_only_cartesian_rotation_no_gripper_writes_and_hold_retained(self):
