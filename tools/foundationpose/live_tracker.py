@@ -259,7 +259,7 @@ class Tracker:
             s = self.state
             if s['state'] != 'tracking' or not s.get('quality', {}).get('good') or s.get('camera_T_object') is None:
                 raise ValueError('当前没有可靠跟踪位姿')
-            if time.time() - s['pose_frame_at'] > .3:
+            if time.time() - s['pose_frame_at'] > .5:
                 raise ValueError('视觉位姿过期，不能用于抓取')
             rows = [r for r in self.pose_history if r['generation'] == self.generation and r['time'] >= s['pose_frame_at'] - .8]
             if len(rows) < 8 or rows[-1]['time'] - rows[0]['time'] < .5:

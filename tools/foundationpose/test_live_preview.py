@@ -127,6 +127,17 @@ class LivePreviewTests(unittest.TestCase):
         t.state.update(state='tracking',quality={'good':True},camera_T_object=pose.tolist(),pose_frame_at=now-.1,object_id='bottle')
         for i in range(8):t.pose_history.append({'pose':pose.tolist(),'time':now-.8+i*.1,'generation':t.generation})
         self.assertEqual(t.grasp_observation()['object_id'],'bottle')
+        with patch.object(live_tracker.time, 'time', return_value=now):
+            for age in (.4, .5, .501):
+                t.state['pose_frame_at']=now-age
+                t.pose_history.clear()
+                for i in range(8):t.pose_history.append({'pose':pose.tolist(),'time':now-age-.7+i*.1,'generation':t.generation})
+                if age <= .5:
+                    self.assertEqual(t.grasp_observation()['object_id'],'bottle')
+                else:
+                    with self.assertRaisesRegex(ValueError,'过期'):t.grasp_observation()
+        t.pose_history.clear()
+        for i in range(8):t.pose_history.append({'pose':pose.tolist(),'time':now-.8+i*.1,'generation':t.generation})
         t.state['pose_frame_at']=now-1
         with self.assertRaisesRegex(ValueError,'过期'):t.grasp_observation()
         t.state['pose_frame_at']=now-.1
