@@ -15,3 +15,17 @@ console.log('7 viewer math checks passed: identity, screen direction, constraine
 
 const pivot=[.02,-.03,.04];for(const r of [M.identity(),M.euler(30,90,135)]){const o=M.objectOrigin(r,pivot),v=M.apply(r,pivot);assert(v.every((x,k)=>Math.abs(x+o[k])<1e-12),'held TCP must remain at the fixed preview center');}
 console.log('Fixed-pivot preview checks passed.');
+
+// A tilted object's selected local axis must remain fixed in world space.
+const tilted=M.euler(32,47,81),near=(a,b)=>a.every((v,i)=>Math.abs(v-b[i])<1e-10);
+for(const mode of ['x','y','z']){
+  const axis=[0,0,0];axis['xyz'.indexOf(mode)]=1;
+  const delta=M.drag([100,100],[170,100],800,400,basis,mode);
+  const rotated=M.rotate(tilted,delta,mode);rigid(rotated);
+  assert(near(M.apply(rotated,axis),M.apply(tilted,axis)),'local '+mode+' axis must keep its world direction');
+  assert(!near(M.apply(M.multiply(delta,tilted),axis),M.apply(tilted,axis)),'test must distinguish local from base axes');
+}
+const keyboard=M.rotate(M.euler(0,0,90),M.axisAngle([1,0,0],5*Math.PI/180),'x');
+assert(near(M.angles(keyboard),[5,0,90]),'local X keyboard step after Z=90 degrees');
+assert(M.rotate(tilted,right,'free').every((row,i)=>near(row,M.multiply(right,tilted)[i])),'free drag remains screen-relative');
+console.log('Local-axis drag/keyboard and unchanged free-rotation checks passed.');

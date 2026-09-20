@@ -12,6 +12,7 @@ const ReorientationMath={
   angles(r){const y=Math.asin(Math.max(-1,Math.min(1,-r[2][0]))),regular=Math.abs(Math.cos(y))>1e-6;
     return [(regular?Math.atan2(r[2][1],r[2][2]):0),y,(regular?Math.atan2(r[1][0],r[0][0]):Math.atan2(-r[0][1],r[1][1]))].map(v=>v*180/Math.PI);},
   column(r){return new Float32Array([r[0][0],r[1][0],r[2][0],r[0][1],r[1][1],r[2][1],r[0][2],r[1][2],r[2][2]]);},
+  rotate(rotation,delta,mode='free'){return mode==='free'?this.multiply(delta,rotation):this.multiply(rotation,delta);},
   objectOrigin(rotation,pivot){return this.apply(rotation,pivot).map(v=>-v);},
   axisAngle(axis,angle){const [x,y,z]=this.unit(axis),c=Math.cos(angle),s=Math.sin(angle),t=1-c;
     return [[t*x*x+c,t*x*y-s*z,t*x*z+s*y],[t*x*y+s*z,t*y*y+c,t*y*z-s*x],[t*x*z-s*y,t*y*z+s*x,t*z*z+c]];},
@@ -132,11 +133,11 @@ class ReorientationPanel{
     const point=e=>{const r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
     canvas.onpointerdown=e=>{if(this.disabled||!this.viewer.model||e.button!==0||anchor)return;e.preventDefault();canvas.focus();anchor={id:e.pointerId,point:point(e),rotation:this.viewer.rotation.map(row=>row.slice()),mode:this.dragMode.value,fine:e.shiftKey};canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');};
     const release=()=>{anchor=null;canvas.classList.remove('dragging');};this.cancelDrag=release;
-    canvas.onpointermove=e=>{if(!anchor||e.pointerId!==anchor.id)return;if(this.disabled){release();return;}const delta=ReorientationMath.drag(anchor.point,point(e),canvas.clientWidth,canvas.clientHeight,this.viewer.basis,anchor.mode,anchor.fine);this.viewer.rotation=ReorientationMath.multiply(delta,anchor.rotation);this.syncAngles();this.changed();};
+    canvas.onpointermove=e=>{if(!anchor||e.pointerId!==anchor.id)return;if(this.disabled){release();return;}const delta=ReorientationMath.drag(anchor.point,point(e),canvas.clientWidth,canvas.clientHeight,this.viewer.basis,anchor.mode,anchor.fine);this.viewer.rotation=ReorientationMath.rotate(anchor.rotation,delta,anchor.mode);this.syncAngles();this.changed();};
     canvas.onpointerup=canvas.onpointercancel=e=>{if(anchor?.id===e.pointerId)release();};canvas.onlostpointercapture=release;
     canvas.addEventListener('wheel',e=>{if(this.disabled)return;e.preventDefault();this.viewer.zoom=Math.max(.6,Math.min(2.8,this.viewer.zoom*Math.exp(-e.deltaY*.001)));this.viewer.draw();},{passive:false});
     canvas.ondblclick=()=>{if(!this.disabled){this.viewer.zoom=1;this.viewer.draw();}};
-    canvas.onkeydown=e=>{if(this.disabled||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const sign=['ArrowLeft','ArrowDown'].includes(e.key)?-1:1,mode=this.dragMode.value,axis=mode==='free'?(e.key==='ArrowUp'||e.key==='ArrowDown'?this.viewer.basis[0]:this.viewer.basis[1]):[0,1,2].map(i=>i==='xyz'.indexOf(mode)?1:0);this.viewer.rotation=ReorientationMath.multiply(ReorientationMath.axisAngle(axis,sign*(e.shiftKey?1:5)*Math.PI/180),this.viewer.rotation);this.syncAngles();this.changed();};
+    canvas.onkeydown=e=>{if(this.disabled||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const sign=['ArrowLeft','ArrowDown'].includes(e.key)?-1:1,mode=this.dragMode.value,axis=mode==='free'?(e.key==='ArrowUp'||e.key==='ArrowDown'?this.viewer.basis[0]:this.viewer.basis[1]):[0,1,2].map(i=>i==='xyz'.indexOf(mode)?1:0);this.viewer.rotation=ReorientationMath.rotate(this.viewer.rotation,ReorientationMath.axisAngle(axis,sign*(e.shiftKey?1:5)*Math.PI/180),mode);this.syncAngles();this.changed();};
     this.preview.onclick=()=>this.request(true);this.execute.onclick=()=>this.request(false);
   }
   syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});}

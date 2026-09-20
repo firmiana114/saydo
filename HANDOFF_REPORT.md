@@ -51,7 +51,7 @@
 - 原有放置实现已移除：旧 `/api/place`、`/api/place/preview`、`/api/placement/model` 返回 404；删除固定落点、抬高、下降、释放、退出逻辑及 `config/grasp/placement.json`。历史日志保留。新入口为 `/api/reorient/model`、`/api/reorient/preview`、`/api/reorient`，文件为 `reorientation_control.py`、`reorientation_geometry.py`、`reorientation_visual.py`、`reorientation_viewer.js`。
 - 配置 `config/grasp/reorientation.json`：速度 10%，规划超时 20 秒，旋转采样间隔不超过 5°，TCP 位置容差 2 毫米，目标朝向误差上限 2°。检查当前 TCP 工作区/离桌距离，旋转采样上的物品网格范围、桌面及离线逆解/自身碰撞结果。运行中复用运动 watchdog 周期读取末端位置与夹持反馈，超过偏移容差、夹持异常、取消或控制器失败时停止；不宣称已验证完整连续路径、外部障碍或夹指碰撞。
 - 成功后继续保持夹持记录与 `object_T_tcp`，更新物品当前朝向及版本号，允许再次调整。异常且已动作时清除不再可信的夹持记录并发停止指令。新日志 `work/grasp/reorient_jobs/` 保存锁定 XYZ、目标物品变换、采样、实际到位反馈及观测到的最大 TCP 偏移。已有抓取成功后的夹持记录现在同时保存返回姿态对应的物品当前朝向。
-- 模型保留原始贴图、UV 和原点，最长边 1024 像素；预览围绕夹持关系中的固定 TCP 旋转，金色标记显示旋转中心，不再按模型最低点自动落桌。没有夹持记录时暂以模型原点查看并禁用执行。保留屏幕轨迹球、基座轴约束、Shift 精调、方向键、缩放、物品轴和基座轴及紧凑响应式布局。
+- 模型保留原始贴图、UV 和原点，最长边 1024 像素；预览围绕夹持关系中的固定 TCP 旋转，金色标记显示旋转中心，不再按模型最低点自动落桌。没有夹持记录时暂以模型原点查看并禁用执行。保留屏幕轨迹球、物品自身轴约束、Shift 精调、方向键、缩放、物品轴和基座轴及紧凑响应式布局。
 - 控制器依据：[第三代 JSON 运动指令文档](https://aa.realman-robotics.com/robot/json/motionConfig/) 的 MOVEL 支持目标位置不变而姿态变化；本次只验证代码、离线计算与模拟控制，不发送实机姿态调整动作。实际 TCP 位置精度及物品是否滑动仍需现场验证。
 - 服务需加载新 Python 模块并刷新前端；部署时保留用户当前 `trial.json` 修改、选中模型及启动参数，不能中断运动或丢失有效夹持记录。
 
