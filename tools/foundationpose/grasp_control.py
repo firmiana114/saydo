@@ -4,6 +4,9 @@ import copy
 import fcntl
 import hashlib
 import json
+import os
+import re
+import tempfile
 import threading
 import time
 import traceback
@@ -11,7 +14,7 @@ import traceback
 import numpy as np
 import yaml
 
-from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance
+from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance, return_joint_target
 from grasp_robot import RobotClient
 from camera_checks import camera_binding, check_camera_observation
 
@@ -32,7 +35,143 @@ class GraspController:
 
     def snapshot(self):
         with self.lock:
-            return {**self.status, 'force_config': self.force_config()}
+            config = json.loads(self.config_path.read_text())
+            try:
+                reset_available = return_joint_target(config) is not None
+            except (ValueError, TypeError, KeyError, AttributeError):
+                reset_available = False
+            return {**self.status, 'force_config': self.force_config(),
+                    'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
+                    'reset_available': reset_available}
+
+    def set_open_position(self, value):
+        if type(value) is not int or not 0 <= value <= 1000:
+            raise ValueError('抓取时夹爪打开位置必须为 0–1000 的整数原始值')
+        with self.lock:
+            if self.status['busy']:
+                raise ValueError('机械臂任务进行中，不能更改抓取张开位置')
+            directory = self.root / 'work/grasp'
+            directory.mkdir(parents=True, exist_ok=True)
+            report = {'started_at': time.time(), 'requested_open_position': value, 'saved': False, 'motion_sent': False}
+            temporary = None
+            try:
+                with (directory / 'robot.lock').open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    original = self.config_path.read_text()
+                    config = json.loads(original)
+                    report['previous_open_position'] = config['gripper']['open_position']
+                    config['gripper']['open_position'] = value
+                    updated, count = re.subn(r'("open_position"\s*:\s*)\d+', lambda m: m[1] + str(value), original)
+                    if count != 1 or json.loads(updated) != config:
+                        raise ValueError('配置中的 open_position 格式不明确，未保存')
+                    with tempfile.NamedTemporaryFile(mode='w', dir=self.config_path.parent, prefix='.grasp-', delete=False) as output:
+                        temporary = Path(output.name)
+                        os.fchmod(output.fileno(), self.config_path.stat().st_mode & 0o777)
+                        output.write(updated)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    if self.config_path.read_text() != original:
+                        raise ValueError('配置同时被其他程序修改，请重新保存')
+                    temporary.replace(self.config_path)
+                    report['saved'] = True
+                    self.status.update(plan=None)
+            except Exception as error:
+                report.update(error=str(error), error_type=type(error).__name__)
+                raise
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+                records = directory / 'open_position_commands';records.mkdir(exist_ok=True)
+                (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+            return {'value': value, 'saved': True, 'motion_sent': False,
+                    'message': '已保存到抓取配置，下一次抓取生效；本次不移动夹爪。'}
+
+    def start_reset(self):
+        with self.lock:
+            if self.status['busy']:
+                raise ValueError('已有机械臂任务正在处理')
+            if self.mode != 'execute':
+                raise ValueError('预览模式不发送机械臂复位指令')
+            config = json.loads(self.config_path.read_text())
+            target = return_joint_target(config)
+            if target is None:
+                raise ValueError('尚未配置抓取后的返回姿态，无法复位')
+            if type(config['arm_speed_percent']) is not int or not 1 <= config['arm_speed_percent'] <= 100:
+                raise ValueError('机械臂速度必须为 1–100 的整数百分比')
+            self.cancelled.clear()
+            self.actuated = False
+            self.robot = None
+            self.status.update(state='resetting', operation='reset', busy=True, error=None, plan=None,
+                               target_object_id=None, target_captured_at=None,
+                               message='正在检查机械臂，准备返回抓取后的记录姿态…')
+            self.thread = threading.Thread(target=self.run_reset, args=(config, target), daemon=True)
+            self.thread.start()
+            return {'accepted': True, 'message': '已开始机械臂复位，夹爪开合保持不变。'}
+
+    def return_to_joints(self, target, speed, report):
+        self.check_cancel()
+        self.robot.motion_stage = report['active_stage']
+        self.robot.move_joints(target, speed, self.cancelled, self.check_cancel)
+        self.check_cancel()
+        reached = self.arm_state()
+        report.setdefault('arrival_checks', []).append({'stage': report['active_stage'], 'target_joint': target, 'actual_arm_state': reached})
+        actual = np.asarray(reached['joint'], dtype=float)
+        if actual.shape != (7,) or not np.isfinite(actual).all() or np.max(np.abs(actual - target)) > 500:
+            raise ValueError('返回关节角度误差超过 0.5 度或反馈无效')
+
+    def run_reset(self, config, target):
+        directory = self.root / 'work/grasp'
+        report = {'started_at': time.time(), 'operation': 'reset', 'target_joint_raw': target,
+                  'speed_percent': config['arm_speed_percent'], 'robot_motion_sent': False,
+                  'active_stage': '复位前检查'}
+        robot_lock = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            robot_lock = (directory / 'robot.lock').open('a')
+            fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=True)
+            self.robot.motion_log = report.setdefault('motion_events', [])
+            self.check_cancel()
+            if self.robot.query('get_arm_software_info').get('Product_version') != 'RM75-BI':
+                raise ValueError('机械臂型号不匹配')
+            if self.robot.query('get_joint_en_state').get('en_state') != [1]*7 or self.robot.query('get_joint_err_flag').get('err_flag') != [0]*7:
+                raise ValueError('关节使能或错误状态异常')
+            tool = yaml.safe_load((self.root / config['tool_file']).read_text())
+            if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
+                raise ValueError('当前工具/负载与记录不一致')
+            grip_state = self.robot.query('get_rm_plus_state_info')['state_info']
+            if contact_result(grip_state, config['gripper']) == 'fault' or grip_state.get('speed') != [0]:
+                raise ValueError('夹爪异常或正在运动，不能复位')
+            first = np.asarray(self.arm_state()['joint'], dtype=float)
+            time.sleep(.15)
+            last = np.asarray(self.arm_state()['joint'], dtype=float)
+            if first.shape != (7,) or last.shape != (7,) or not np.isfinite([first, last]).all() or np.max(np.abs(last-first)) > 30:
+                raise ValueError('机械臂未停稳或关节反馈无效，不能复位')
+            self.check_cancel()
+            self.actuated = True
+            report.update(active_stage='机械臂复位', robot_motion_sent=True)
+            self.update(message='正在返回抓取后的记录姿态，夹爪开合保持不变…')
+            self.return_to_joints(target, config['arm_speed_percent'], report)
+            self.update(state='completed', message='机械臂已复位到抓取后的返回姿态，夹爪开合保持不变。')
+        except Exception as error:
+            if self.actuated:
+                try:
+                    self.robot.stop()
+                except Exception as stop_error:
+                    report['stop_error'] = str(stop_error)
+            detail = f"{report['active_stage']}：{error}"
+            report.update(error=detail, error_type=type(error).__name__, traceback=traceback.format_exc())
+            self.update(state='cancelled' if self.cancelled.is_set() else 'failed', message=detail, error=detail)
+        finally:
+            report['result'] = {**self.status, 'busy': False}
+            records = directory / 'reset_jobs'
+            try:
+                records.mkdir(parents=True, exist_ok=True)
+                (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
+            finally:
+                if robot_lock is not None:
+                    robot_lock.close()
+                self.update(busy=False)
 
     def force_config(self):
         grip = json.loads(self.config_path.read_text())['gripper']
@@ -245,7 +384,7 @@ class GraspController:
                 raise ValueError('已有抓取任务正在处理')
             self.cancelled.clear()
             self.actuated = False
-            self.status.update(state='checking', busy=True, message='已锁定当前物品，检查机械臂、夹爪与抓取路径…', error=None, plan=None,
+            self.status.update(state='checking', operation='grasp', busy=True, message='已锁定当前物品，检查机械臂、夹爪与抓取路径…', error=None, plan=None,
                                target_object_id=observation['object_id'], target_captured_at=observation['time'])
             self.thread = threading.Thread(target=self.run, args=(observation,), kwargs={'preview': preview}, daemon=True)
             self.thread.start()
@@ -263,7 +402,7 @@ class GraspController:
 
     def check_cancel(self):
         if self.cancelled.is_set():
-            raise ValueError('抓取已取消')
+            raise ValueError('机械臂任务已取消')
 
     def calibration(self, config):
         handeye = yaml.safe_load((self.root / config['handeye_file']).read_text())
@@ -480,13 +619,7 @@ class GraspController:
                     watchdog()
                     report['active_stage'] = '抬升后返回记录姿态'
                     self.update(state='returning', message='抬升完成，保持夹持并返回记录的关节角度')
-                    self.robot.motion_stage = report['active_stage']
-                    self.robot.move_joints(plan['return_joint_raw'], config['arm_speed_percent'], self.cancelled, watchdog)
-                    watchdog()
-                    reached = self.arm_state()
-                    report.setdefault('arrival_checks', []).append({'stage': report['active_stage'], 'target_joint': plan['return_joint_raw'], 'actual_arm_state': reached})
-                    if np.max(np.abs(np.asarray(reached['joint']) - plan['return_joint_raw'])) > 500:
-                        raise ValueError('返回关节角度误差超过 0.5 度')
+                    self.return_to_joints(plan['return_joint_raw'], config['arm_speed_percent'], report)
                     self.update(state='completed', message='已完成夹持、抬升并返回记录姿态；夹爪保持闭合。')
                     return
                 self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，请观察物品是否保持夹持。")

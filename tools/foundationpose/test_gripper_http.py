@@ -147,6 +147,21 @@ class GripperHTTPTests(unittest.TestCase):
                         self.assertEqual(response.status,200)
                         self.assertEqual(json.loads(response.read())['mode'],'preview')
                         start.assert_called_once_with(preview=True)
+                    self.assertIn('id="gripper-open-position"', page)
+                    self.assertIn('id="arm-reset"', page)
+                    before = len(requests)
+                    client.request('POST', '/api/gripper/open-position', '{"value":300}', {'Content-Type':'application/json'})
+                    response=client.getresponse()
+                    self.assertEqual(response.status,200)
+                    self.assertTrue(json.loads(response.read())['saved'])
+                    self.assertEqual(json.loads(cfg.read_text())['gripper']['open_position'],300)
+                    self.assertEqual(len(requests),before)
+                    with patch.object(trackers[0].grasp, 'start_reset', return_value={'accepted':True}) as reset:
+                        client.request('POST', '/api/arm/reset', '{}', {'Content-Type':'application/json'})
+                        response=client.getresponse()
+                        self.assertEqual(response.status,200)
+                        self.assertTrue(json.loads(response.read())['accepted'])
+                        reset.assert_called_once_with()
                     client.close()
                 finally:
                     for tracker in trackers:

@@ -211,6 +211,21 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 
 检查：`python -m unittest discover -s tools/foundationpose -p 'test_grasp.py' -v`。不以模拟执行测试代替实机验收。
 
+### 抓取张开位置与机械臂复位
+
+“抓取时夹爪打开位置”接受 0–1000 的整数原始值，1000 表示完全张开，不是毫米。
+按回车或离开输入框，通过 `POST /api/gripper/open-position` 携带 `{"value":300}` 保存
+`config/grasp/trial.json` 的 `gripper.open_position`；只替换该字段，保留其他配置与格式。
+保存不发送硬件命令，下一次抓取生效，重启后保留；独立“打开夹爪”仍固定完全张开。
+保存与抓取、复位共享设备锁，任务进行中拒绝修改，日志位于 `work/grasp/open_position_commands/`。
+
+“机械臂复位”调用 `POST /api/arm/reset`，读取 `return_after_lift.joint_deg`，
+按现有 `arm_speed_percent` 返回抓取结束后的七关节姿态，保持夹爪开合不变。
+复位不依赖物品跟踪或手眼标定；执行前检查机械臂型号、关节使能/错误、工具/负载、静止状态及夹爪状态。
+复用抓取末段的关节运动及到位检查，误差要求不超过 0.5 度；不新增离线路径或途中碰撞检查。
+预览模式、未配置返回姿态及已有任务时拒绝复位；“停止运动”可中止抓取或复位。
+任务结果沿用状态接口的 `grasp` 字段，`operation=reset` 区分复位；记录保存在 `work/grasp/reset_jobs/`。
+
 ### 网页力度配置
 
 力度输入为 1–100 的整数原始值，不是牛顿。执行模式下，按回车或离开输入框通过 `/api/gripper/force-config` 实际写入 1220，匹配的成功回复到达后才更新本次服务配置；下一次抓取使用同一力度。输入本身不发送位置动作，抓取期间或夹爪运动时拒绝更新，设备锁防止与其他抓取进程冲突。失败或超时显示“下发未确认”，不自动重试、不假报已生效。预览模式只改配置、不写硬件。服务重启后恢复文件配置但不自动下发；日志在 `work/grasp/force_commands/`。

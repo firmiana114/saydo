@@ -44,6 +44,18 @@ def object_in_base(base_tcp, flange_tcp, flange_camera, camera_object):
     return transform(base_tcp) @ np.linalg.inv(transform(flange_tcp)) @ transform(flange_camera) @ transform(camera_object)
 
 
+def return_joint_target(config):
+    if config.get('return_after_lift') is None:
+        return None
+    raw = config['return_after_lift'].get('joint_deg')
+    if not isinstance(raw, list) or len(raw) != 7 or any(type(v) not in (int, float) for v in raw):
+        raise ValueError('返回目标必须包含七个有限关节角度，单位度')
+    values = np.asarray(raw, dtype=float)
+    if not np.isfinite(values).all() or np.any(np.abs(values) > 360):
+        raise ValueError('返回目标必须包含七个有限关节角度，单位度')
+    return np.rint(values * 1000).astype(int).tolist()
+
+
 def plan_grasp(raw_tcp, base_object, object_profile, config):
     current = controller_pose(raw_tcp)
     point = np.asarray(object_profile['grasp_point_object_m'], dtype=float)
@@ -84,12 +96,7 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
         T = np.eye(4);T[:3, :3] = target_rotation;T[:3, 3] = xyz
         pose = np.rint(pose_values(T) * np.array([1e6]*3 + [1e3]*3)).astype(int).tolist()
         waypoints.append({'name': name, 'position_m': xyz.tolist(), 'controller_pose': pose})
-    return_target = None
-    if config.get('return_after_lift') is not None:
-        values = np.asarray(config['return_after_lift']['joint_deg'], dtype=float)
-        if values.shape != (7,) or not np.isfinite(values).all() or np.any(np.abs(values) > 360):
-            raise ValueError('返回目标必须包含七个有限关节角度，单位度')
-        return_target = np.rint(values * 1000).astype(int).tolist()
+    return_target = return_joint_target(config)
     return {'base_T_object': transform(base_object).tolist(), 'target_position_m': target.tolist(),
             'current_position_m': current[:3, 3].tolist(),
             'orientation_policy': policy, 'target_rotation': target_rotation.tolist(),

@@ -760,6 +760,10 @@ def main():
                     result = tracker.grasp.open_gripper()
                 elif self.path == '/api/gripper/force-config':
                     result = tracker.grasp.set_force_config(value['value'])
+                elif self.path == '/api/gripper/open-position':
+                    result = tracker.grasp.set_open_position(value['value'])
+                elif self.path == '/api/arm/reset':
+                    result = tracker.grasp.start_reset()
                 elif self.path == '/api/grasp/stop':
                     tracker.grasp.abort()
                     result = {'cancelled': True}
