@@ -17,10 +17,10 @@ import yaml
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance, return_joint_target
 from grasp_robot import RobotClient
 from camera_checks import camera_binding, check_camera_observation
-from placement_control import PlacementMixin
+from reorientation_control import ReorientationMixin
 
 
-class GraspController(PlacementMixin):
+class GraspController(ReorientationMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()

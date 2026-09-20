@@ -1,4 +1,4 @@
-"""Appearance preserves mesh indexing and never enters placement motion geometry."""
+"""Appearance preserves mesh indexing and never enters reorientation motion geometry."""
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -12,7 +12,7 @@ import trimesh
 from trimesh.visual.material import SimpleMaterial, MultiMaterial
 from trimesh.visual.texture import TextureVisuals
 
-from placement_visual import mesh_appearance, model_appearance
+from reorientation_visual import mesh_appearance, model_appearance
 
 
 class AppearanceTests(unittest.TestCase):
@@ -50,7 +50,7 @@ class AppearanceTests(unittest.TestCase):
     def test_sidecar_update_invalidates_cache(self):
         with TemporaryDirectory() as directory:
             root=Path(directory);mesh=root/'model.obj';mesh.write_text('placeholder');texture=root/'texture.png';texture.write_bytes(b'a')
-            with patch('placement_visual.select_object',return_value={'mesh':str(mesh)}),patch('trimesh.load',return_value=self.mesh()) as load:
+            with patch('reorientation_visual.select_object',return_value={'mesh':str(mesh)}),patch('trimesh.load',return_value=self.mesh()) as load:
                 model_appearance(root,'item');model_appearance(root,'item');self.assertEqual(load.call_count,1)
                 texture.write_bytes(b'changed');model_appearance(root,'item');self.assertEqual(load.call_count,2)
 

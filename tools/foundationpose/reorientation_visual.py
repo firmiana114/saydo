@@ -10,7 +10,7 @@ from object_catalog import select_object
 
 
 def mesh_appearance(mesh):
-    """Keep UV/face indexing identical to the process=False placement mesh."""
+    """Keep UV/face indexing identical to the process=False reorientation mesh."""
     visual = mesh.visual
     result = {'materials': [], 'status': 'plain'}
     uv = getattr(visual, 'uv', None)

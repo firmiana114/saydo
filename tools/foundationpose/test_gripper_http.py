@@ -162,25 +162,33 @@ class GripperHTTPTests(unittest.TestCase):
                         self.assertEqual(response.status,200)
                         self.assertTrue(json.loads(response.read())['accepted'])
                         reset.assert_called_once_with()
-                    self.assertIn('id="placement-view"', page)
-                    client.request('GET', '/placement_viewer.js')
+                    self.assertIn('id="reorientation-view"', page)
+                    client.request('GET', '/reorientation_viewer.js')
                     response=client.getresponse()
                     self.assertEqual(response.status,200)
-                    self.assertIn('class PlacementViewer',response.read().decode())
-                    with patch.object(trackers[0].grasp, 'placement_model', return_value={'object_id':'sample'}) as model:
-                        client.request('GET', '/api/placement/model?object_id=sample')
+                    self.assertIn('class ReorientationViewer',response.read().decode())
+                    with patch.object(trackers[0].grasp, 'reorientation_model', return_value={'object_id':'sample'}) as model:
+                        client.request('GET', '/api/reorient/model?object_id=sample')
                         response=client.getresponse()
                         self.assertEqual(response.status,200)
                         self.assertEqual(json.loads(response.read())['object_id'],'sample')
                         model.assert_called_once_with('sample')
-                    with patch.object(trackers[0].grasp, 'start_place', return_value={'accepted':True}) as place:
-                        for path in ['/api/place/preview','/api/place']:
+                    with patch.object(trackers[0].grasp, 'start_reorient', return_value={'accepted':True}) as place:
+                        for path in ['/api/reorient/preview','/api/reorient']:
                             client.request('POST',path,'{"rotation":[]}',{'Content-Type':'application/json'})
                             response=client.getresponse()
                             self.assertEqual(response.status,200)
                             self.assertTrue(json.loads(response.read())['accepted'])
                         self.assertEqual(place.call_args_list[0].kwargs,{'preview':True})
                         self.assertEqual(place.call_args_list[1].args,({'rotation':[]},))
+                    for path in ['/api/place', '/api/place/preview']:
+                        client.request('POST',path,'{}',{'Content-Type':'application/json'})
+                        response=client.getresponse();self.assertEqual(response.status,404);response.read()
+                    for path in ['/api/placement/model','/placement_viewer.js']:
+                        client.request('GET',path)
+                        response=client.getresponse();self.assertEqual(response.status,404);response.read()
+                    self.assertIn('将物品摆至指定姿态',page)
+                    self.assertNotIn('按指定姿态放置物品',page)
                     client.close()
                 finally:
                     for tracker in trackers:

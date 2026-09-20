@@ -1,4 +1,4 @@
-"""Placement shares the grasp task/robot locks and never infers an old held object."""
+"""Fixed-TCP object orientation shares task locks and preserves successful holds."""
 import copy
 import fcntl
 import json
@@ -12,17 +12,17 @@ import yaml
 
 from grasp_geometry import controller_pose, transform, rotation_error, contact_result
 from grasp_robot import RobotClient
-from placement_visual import model_appearance
-from placement_geometry import model_geometry, checked_rotation, placement_settings, plan_placement, endpoint_reachability
+from reorientation_visual import model_appearance
+from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability
 
 
-class PlacementMixin:
+class ReorientationMixin:
     def held_snapshot(self):
         if self.held_object is None:
             return None
         held = self.held_object
         return {k: copy.deepcopy(held[k]) for k in ['hold_id','object_id','object_name','model_sha256',
-                                                   'base_T_object_at_grasp']}
+                'base_T_object_at_grasp','object_T_tcp','current_object_rotation','orientation_version'] if k in held}
 
     def capture_attachment(self, plan, report):
         if not plan.get('object_id') or not plan.get('model_sha256'):
@@ -38,10 +38,18 @@ class PlacementMixin:
         report['held_object'] = held
 
     def finish_attachment(self, report):
+        held = copy.deepcopy(report.get('held_object'))
+        if held is not None:
+            checks = report.get('arrival_checks', [])
+            arm = checks[-1].get('actual_arm_state') if checks else None
+            if arm is None:
+                arm = self.arm_state()
+            current = controller_pose(arm['pose']) @ np.linalg.inv(transform(held['object_T_tcp']))
+            held.update(current_object_rotation=current[:3,:3].tolist(), orientation_version=0)
         with self.lock:
-            self.held_object = copy.deepcopy(report.get('held_object'))
+            self.held_object = held
 
-    def placement_model(self, object_id=None):
+    def reorientation_model(self, object_id=None):
         with self.lock:
             held = copy.deepcopy(self.held_object)
         if not object_id:
@@ -51,100 +59,98 @@ class PlacementMixin:
             geometry['appearance'] = model_appearance(self.tracker.models_root, object_id)
         except (ValueError, OSError, TypeError) as error:
             geometry['appearance'] = {'status': 'unavailable', 'error': str(error)}
-        geometry['initial_rotation'] = (np.asarray(held['base_T_object_at_grasp'])[:3,:3].tolist()
+        geometry['initial_rotation'] = (copy.deepcopy(held.get('current_object_rotation', np.asarray(held['base_T_object_at_grasp'])[:3,:3].tolist()))
                                         if held and held['object_id']==object_id else np.eye(3).tolist())
         geometry['holding'] = bool(held and held['object_id']==object_id)
-        settings = placement_settings(json.loads((self.root/'config/grasp/placement.json').read_text()))
-        geometry['release_clearance_m'] = settings['release_clearance_m']
-        geometry['target_xy_m'] = settings['target_xy_m']
+        geometry['pivot_object_m'] = (np.asarray(held['object_T_tcp'])[:3,3].tolist()
+                                      if geometry['holding'] else None)
+        geometry['preview_mode'] = 'fixed_tcp_orientation'
         return geometry
 
-    def start_place(self, value, preview=False):
+    def start_reorient(self, value, preview=False):
         rotation = checked_rotation(value.get('rotation'))
         with self.lock:
             if self.status['busy']:
                 raise ValueError('已有机械臂任务正在处理')
             held = copy.deepcopy(self.held_object)
             if held is None:
-                raise ValueError('本次服务尚无成功抓取记录，请先抓取物品后再放置')
+                raise ValueError('本次服务尚无成功抓取记录，请先抓取物品后再调整姿态')
             if value.get('hold_id') != held['hold_id'] or value.get('object_id') != held['object_id'] or value.get('model_sha256') != held['model_sha256']:
-                raise ValueError('预览模型或夹持记录已变化，请重新加载放置模型')
+                raise ValueError('预览模型或夹持记录已变化，请重新加载物品模型')
             self.cancelled.clear();self.actuated=False;self.robot=None
-            self.status.update(state='place_planning',operation='place',busy=True,error=None,plan=None,
-                               placement_plan=None,target_object_id=held['object_id'],
-                               message='正在按指定朝向计算桌面落点并检查可达性…')
-            self.thread = threading.Thread(target=self.run_place,args=(held,rotation.tolist(),preview),daemon=True)
+            self.status.update(state='reorient_planning',operation='reorient',busy=True,error=None,plan=None,
+                               reorientation_plan=None,target_object_id=held['object_id'],
+                               message='正在锁定当前末端位置，检查原地旋转路径…')
+            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview),daemon=True)
             self.thread.start()
         return {'accepted':True,'mode':'preview' if preview or self.mode=='preview' else 'execute'}
 
-    def placement_hardware(self, held, config):
+    def reorientation_hardware(self, held, config):
         if self.robot.query('get_arm_software_info').get('Product_version') != 'RM75-BI':
             raise ValueError('机械臂型号不匹配')
         if self.robot.query('get_joint_en_state').get('en_state') != [1]*7 or self.robot.query('get_joint_err_flag').get('err_flag') != [0]*7:
             raise ValueError('关节使能或错误状态异常')
         tool = yaml.safe_load((self.root/config['tool_file']).read_text())
         if self.robot.query('get_current_tool_frame') != held['tool_response'] or tool['controller_readback']['tool_response_raw'] != held['tool_response']:
-            raise ValueError('工具/负载已变化，不能沿用抓取关系放置')
+            raise ValueError('工具/负载已变化，不能沿用抓取关系调整姿态')
         work = self.robot.query('get_current_work_frame')
         if work.get('frame_name') != 'Base' or work.get('pose') != [0]*6:
-            raise ValueError('放置要求零偏移 Base 工作坐标系')
+            raise ValueError('姿态调整要求零偏移 Base 工作坐标系')
         if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
             raise ValueError('夹爪通信模式不匹配')
         base = self.robot.query('get_rm_plus_base_info')['base_info'];grip=config['gripper']
         if (base.get('manu'),base.get('id'),base.get('dof'),base.get('type')) != (grip['vendor'],grip['device_id'],1,1):
             raise ValueError('夹爪身份不匹配')
-        self.check_place_contact(held,config)
+        self.check_reorient_contact(held,config)
         first=self.arm_state();time.sleep(.15);last=self.arm_state()
         a,b=np.asarray(first['joint'],dtype=float),np.asarray(last['joint'],dtype=float)
         if a.shape!=(7,) or b.shape!=(7,) or not np.isfinite([a,b]).all() or np.max(np.abs(a-b))>30:
-            raise ValueError('机械臂未停稳，不能规划放置')
+            raise ValueError('机械臂未停稳，不能规划姿态调整')
         return last,tool
 
-    def check_place_contact(self, held, config):
+    def check_reorient_contact(self, held, config):
         state=self.robot.query('get_rm_plus_state_info')['state_info']
         if contact_result(state,config['gripper']) not in ('force_contact','force_stop') or abs(state['pos'][0]-held['contact_position'])>20:
             with self.lock:self.held_object=None
-            raise ValueError('夹持反馈已变化或未保持夹持，停止放置')
+            raise ValueError('夹持反馈已变化或未保持夹持，停止姿态调整')
         return state
 
-    def run_place(self, held, rotation, preview=False):
+    def run_reorient(self, held, rotation, preview=False):
         mode='preview' if preview else self.mode
-        report={'started_at':time.time(),'operation':'place','mode':mode,'held_object':held,
-                'requested_rotation':rotation,'robot_motion_sent':False,'release_attempted':False,'active_stage':'放置前检查'}
-        directory=self.root/'work/grasp/place_jobs';robot_lock=None
+        report={'started_at':time.time(),'operation':'reorient','mode':mode,'held_object':held,
+                'requested_rotation':rotation,'robot_motion_sent':False,'active_stage':'姿态调整前检查'}
+        directory=self.root/'work/grasp/reorient_jobs';robot_lock=None
         try:
             directory.mkdir(parents=True,exist_ok=True)
             robot_lock=(directory.parent/'robot.lock').open('a')
             fcntl.flock(robot_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             config=json.loads(self.config_path.read_text())
-            settings=placement_settings(json.loads((self.root/'config/grasp/placement.json').read_text()))
-            if settings['release_position'] <= held['contact_position']+20:
-                raise ValueError('放置张开位置必须大于当前夹持位置至少 20 个原始单位')
+            settings=reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
             report['settings']=settings
             self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=mode=='execute')
             self.robot.motion_log=report.setdefault('motion_events',[])
             self.check_cancel()
-            arm,tool=self.placement_hardware(held,config)
+            arm,tool=self.reorientation_hardware(held,config)
             mesh=model_geometry(self.tracker.models_root,held['object_id'])
             if mesh['model_sha256']!=held['model_sha256']:
-                raise ValueError('物品模型已变化，不能沿用抓取关系放置')
+                raise ValueError('物品模型已变化，不能沿用抓取关系调整姿态')
             checker=(self.root/config['ik_checker']).resolve()
-            if not checker.is_file():raise ValueError('缺少放置航点可达性检查程序')
-            report['active_stage']='检查固定放置点'
-            plan=plan_placement(held,mesh['vertices'],rotation,arm,config,settings,
+            if not checker.is_file():raise ValueError('缺少姿态调整航点可达性检查程序')
+            report['active_stage']='检查原地姿态路径'
+            plan=plan_reorientation(held,mesh['vertices'],rotation,arm,config,settings,
                 lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel)
             plan.update(object_id=held['object_id'],object_name=held['object_name'],hold_id=held['hold_id'],
-                        release_position=settings['release_position'],can_execute=mode=='execute')
+                        can_execute=mode=='execute')
             report['plan']=plan
-            self.update(placement_plan=plan)
+            self.update(reorientation_plan=plan)
             self.check_cancel()
             if mode!='execute':
-                self.update(state='place_preview',message=f"固定放置方案已生成：基座 X＝{plan['target_xy_m'][0]*100:g} 厘米，Y＝{plan['target_xy_m'][1]*100:g} 厘米；未发送运动。")
+                self.update(state='reorient_preview',message='原地姿态方案已生成：末端 XYZ 固定，夹爪保持夹持；未发送运动。')
                 return
             if np.max(np.abs(np.asarray(self.arm_state()['joint'])-arm['joint']))>30:
-                raise ValueError('机械臂在放置规划后发生移动')
-            self.check_place_contact(held,config)
-            self.execute_place(plan,held,config,settings,report)
+                raise ValueError('机械臂在姿态调整规划后发生移动')
+            self.check_reorient_contact(held,config)
+            self.execute_reorient(plan,held,config,settings,report)
         except Exception as error:
             if self.actuated:
                 with self.lock:self.held_object=None
@@ -162,35 +168,38 @@ class PlacementMixin:
                 if robot_lock is not None:robot_lock.close()
                 self.update(busy=False)
 
-    def execute_place(self, plan, held, config, settings, report):
-        names={'raise':'抬高已夹物品','above':'调整朝向并移动到落点上方','place':'按指定朝向下降到桌面','retreat':'松开后沿夹爪后方退出'}
-        for waypoint in plan['waypoints']:
+    def execute_reorient(self, plan, held, config, settings, report):
+        target = plan['waypoints'][0]
+        fixed = np.asarray(plan['fixed_tcp_position_m'])
+        tolerance = settings['position_tolerance_m']
+        def watchdog():
             self.check_cancel()
-            if waypoint['name']!='retreat':self.check_place_contact(held,config)
-            report['active_stage']=names[waypoint['name']]
-            self.update(state='placing',message=report['active_stage'])
-            self.actuated=True;report['robot_motion_sent']=True
-            self.robot.motion_stage=report['active_stage']
-            move=self.robot.move_joint_pose if waypoint['method']=='joint_pose' else self.robot.move_linear
-            move(waypoint['controller_pose'],settings['arm_speed_percent'],self.cancelled,self.check_cancel)
-            self.check_cancel();actual=self.arm_state()
-            report.setdefault('arrival_checks',[]).append({'stage':report['active_stage'],'target_pose':waypoint['controller_pose'],'actual_arm_state':actual})
-            expected=controller_pose(waypoint['controller_pose']);reached=controller_pose(actual['pose'])
-            if np.linalg.norm(expected[:3,3]-reached[:3,3])>.002 or rotation_error(expected[:3,:3],reached[:3,:3])>np.deg2rad(2):
-                raise ValueError('放置航点实际位置或朝向未到位')
-            if waypoint['name']=='place':
-                self.check_place_contact(held,config);self.check_cancel()
-                report['active_stage']='张开夹爪释放物品'
-                self.update(state='releasing',message='物品已到桌面放置位置，正在张开夹爪…')
-                report['release_attempted']=True
-                with self.lock:self.held_object=None
-                self.robot.move_gripper(settings['release_position'])
-                deadline=time.monotonic()+settings['release_timeout_s']
-                while time.monotonic()<deadline:
-                    self.check_cancel();state=self.robot.query('get_rm_plus_state_info')['state_info']
-                    if contact_result(state,config['gripper'])=='fault':raise ValueError('释放物品时夹爪异常')
-                    if state.get('speed')==[0] and abs(state['pos'][0]-settings['release_position'])<=3:
-                        report['release_confirmed']=True;break
-                    time.sleep(.1)
-                else:raise TimeoutError('夹爪张开未到位，未执行退出动作')
-        self.update(state='completed',message='已按指定朝向执行放置、松开并退出；请观察物品是否稳定放置。')
+            actual = self.arm_state()
+            reached = controller_pose(actual['pose'])
+            drift = float(np.linalg.norm(reached[:3,3]-fixed))
+            report['max_observed_tcp_drift_m'] = max(report.get('max_observed_tcp_drift_m', 0.), drift)
+            if drift > tolerance:
+                raise ValueError(f'末端位置偏移 {drift*1000:.2f} 毫米，超过允许值 {tolerance*1000:g} 毫米')
+            self.check_reorient_contact(held,config)
+            return reached
+        report['active_stage'] = '保持末端位置并调整物品姿态'
+        self.update(state='reorienting',message='正在原地旋转末端，夹爪保持夹持…')
+        watchdog()
+        self.actuated = True
+        report['robot_motion_sent'] = True
+        self.robot.motion_stage = report['active_stage']
+        # MOVEL supports changing orientation with an unchanged TCP position.
+        # Never fall back to joint-space motion, translation, or opening the gripper.
+        self.robot.move_linear(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
+        reached = watchdog()
+        expected = controller_pose(target['controller_pose'])
+        report['arrival_checks'] = [{'target_pose':target['controller_pose'], 'actual_tcp':reached.tolist()}]
+        if rotation_error(expected[:3,:3],reached[:3,:3]) > np.deg2rad(settings['orientation_tolerance_deg']):
+            raise ValueError('末端目标朝向未到位')
+        actual_object = reached @ np.linalg.inv(transform(held['object_T_tcp']))
+        updated = copy.deepcopy(held)
+        updated['current_object_rotation'] = actual_object[:3,:3].tolist()
+        updated['orientation_version'] = held.get('orientation_version',0)+1
+        with self.lock:
+            self.held_object = updated
+        self.update(state='completed',message='已将物品摆至指定姿态，末端位置保持不变，夹爪继续夹持。')
