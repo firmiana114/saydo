@@ -12,6 +12,7 @@ import yaml
 
 from grasp_geometry import controller_pose, transform, rotation_error, contact_result
 from grasp_robot import RobotClient
+from placement_visual import model_appearance
 from placement_geometry import model_geometry, checked_rotation, placement_settings, plan_placement, endpoint_reachability
 
 
@@ -46,6 +47,10 @@ class PlacementMixin:
         if not object_id:
             object_id = held['object_id'] if held else self.tracker.state.get('object_id')
         geometry = model_geometry(self.tracker.models_root, object_id)
+        try:
+            geometry['appearance'] = model_appearance(self.tracker.models_root, object_id)
+        except (ValueError, OSError, TypeError) as error:
+            geometry['appearance'] = {'status': 'unavailable', 'error': str(error)}
         geometry['initial_rotation'] = (np.asarray(held['base_T_object_at_grasp'])[:3,:3].tolist()
                                         if held and held['object_id']==object_id else np.eye(3).tolist())
         geometry['holding'] = bool(held and held['object_id']==object_id)
