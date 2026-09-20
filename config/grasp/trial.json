@@ -50,12 +50,27 @@
     "note": "Any currently tracked model; freeze the selected grasp pose at start, use taught object-relative position and orientation, lift vertically after grasp."
   },
   "return_after_lift": {
-    "joint_deg": [-43.681, -71.382, 0.763, 132.967, -2.416, 67.927, 120.559],
-    "captured_pose_raw": [141263, -152950, 203388, 2315, -356, 440],
+    "joint_deg": [
+      -44.442,
+      -22.09,
+      -3.53,
+      64.507,
+      0.105,
+      96.387,
+      118.163
+    ],
+    "captured_pose_raw": [
+      176872,
+      -198398,
+      380843,
+      2494,
+      -338,
+      353
+    ],
     "source": {
-      "path": "work/grasp/return_pose_capture_1789712701618801073.json",
-      "sha256": "bbf5b5c48a13f3968b623802beb617c25a91b1be7fdcb1c8e7f2a19b58925f8c"
+      "path": "work/grasp/return_pose_capture_1789888263614886462.json",
+      "sha256": "4373d516b0a9138a13009898cd3e17060f141000f477b69a38dbed327071e476"
     },
-    "note": "User-positioned seven-joint target; return after lift while holding the object."
+    "note": "User-positioned seven-joint target shared by manual arm reset and return after lift; captured read-only without robot motion."
   }
 }
