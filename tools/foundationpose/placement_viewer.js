@@ -106,7 +106,7 @@ class PlacementPanel{
     if(g.operation==='place'&&g.busy)this.feedback.textContent=g.message;
     if(g.operation==='place'&&!g.busy&&g.placement_plan&&this.planShown!==g.placement_plan.hold_id+g.placement_plan.base_T_object_target.flat().join(',')){
       const p=g.placement_plan;this.planShown=p.hold_id+p.base_T_object_target.flat().join(',');
-      this.feedback.textContent=g.message+'\n落点相对原位置的基座 X / Y 偏移：'+p.offset_m.map(v=>(v*100).toFixed(1)).join(' / ')+' 厘米。搜索只沿抓取点与基座的连线，每 '+(p.search_step_m*100).toFixed(1)+' 厘米检查一次，最大偏移 '+(p.search_radius_m*100).toFixed(1)+' 厘米。';
+      this.feedback.textContent=g.message+'\n物品原点的固定落点：基座 X＝'+(p.target_xy_m[0]*100).toFixed(1)+' 厘米，Y＝'+(p.target_xy_m[1]*100).toFixed(1)+' 厘米。';
     }else if(g.operation==='place'&&!g.busy&&g.error)this.feedback.textContent=g.error;
   }
   async request(preview){

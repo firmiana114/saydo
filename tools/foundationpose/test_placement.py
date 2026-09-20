@@ -11,7 +11,7 @@ import numpy as np
 
 from grasp_control import GraspController
 from grasp_geometry import controller_pose
-from placement_geometry import checked_rotation, placement_settings, nearby_offsets, placement_candidate, choose_placement, endpoint_reachability
+from placement_geometry import checked_rotation, placement_settings, placement_waypoints, plan_placement, endpoint_reachability
 import test_grasp
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -27,7 +27,7 @@ def fixture():
     attachment=np.eye(4);attachment[:3,3]=[.02,0,.04];attachment[:3,:3]=np.diag([1,-1,-1])
     held={'hold_id':'hold1','object_id':'sample','object_name':'测试物品','model_sha256':'mesh1',
           'base_T_object_at_grasp':original.tolist(),'object_T_tcp':attachment.tolist(),
-          'grasp_position_base_m':[.32,.2,.07],'tool_response':{},'contact_position':500}
+          'tool_response':{},'contact_position':500}
     vertices=np.array([[x,y,z] for x in [-.02,.08] for y in [-.02,.02] for z in [-.03,.05]])
     arm={'pose':[300000,200000,400000,3142,0,0],'joint':[0]*7,'err':[0]}
     return config,settings,held,vertices,arm
@@ -38,26 +38,27 @@ class PlacementTests(unittest.TestCase):
         for rotation in ([1,0,0],np.zeros((3,3)),np.diag([1,1,-1]),np.full((3,3),np.nan)):
             with self.subTest(rotation=rotation),self.assertRaises(ValueError):checked_rotation(rotation)
         _,settings,_,_,_=fixture()
-        for key,value in [('search_radius_m',1),('search_step_m',0),('arm_speed_percent',True),('release_clearance_m',float('nan'))]:
+        for key,value in [('target_xy_m',[.3]),('target_xy_m',[.3,float('nan')]),('target_xy_m',[True,-.3]),('arm_speed_percent',True),('release_clearance_m',float('nan'))]:
             with self.assertRaises(ValueError):placement_settings({**settings,key:value})
 
-    def test_search_is_only_radial_nearest_first_ties_towards_base(self):
-        point=np.array([.3,.4,.2]);offsets=nearby_offsets(point,.03,.01)
-        np.testing.assert_allclose(point,[.3,.4,.2])
-        np.testing.assert_allclose(offsets[:3],[[0,0],[-.006,-.008],[.006,.008]])
-        self.assertEqual(len(offsets),7)
-        self.assertEqual(nearby_offsets([0,0,.2],.1,.01),[[0,0]])
-        self.assertEqual(sorted(np.linalg.norm(offsets,axis=1)),list(np.linalg.norm(offsets,axis=1)))
-        for x,y in offsets:self.assertAlmostEqual(x*.4-y*.3,0)
+    def test_fixed_location_does_not_depend_on_original_grasp_position(self):
+        config,settings,held,vertices,arm=fixture()
+        for original_xy in [[.1,.2],[-.5,.4],[.8,-.1]]:
+            original=np.array(held['base_T_object_at_grasp']);original[:2,3]=original_xy
+            held['base_T_object_at_grasp']=original.tolist()
+            plan=placement_waypoints(held,vertices,np.eye(3),arm['pose'],config,settings)
+            np.testing.assert_allclose(np.array(plan['base_T_object_target'])[:2,3],[.3,-.3])
+            self.assertEqual(plan['target_xy_m'],[.3,-.3])
+            self.assertNotIn('offset_m',plan)
 
     def test_rotated_mesh_bottom_not_origin_sets_height_and_attachment(self):
         config,settings,held,vertices,arm=fixture()
         # Rotate around vertical; attachment includes translation AND rotation.
         rotation=np.array([[0,-1,0],[1,0,0],[0,0,1]])
-        plan=placement_candidate(held,vertices,rotation,arm['pose'],config,settings,[.01,0])
+        plan=placement_waypoints(held,vertices,rotation,arm['pose'],config,settings)
         target=np.array(plan['base_T_object_target'])
         np.testing.assert_allclose(target[:3,:3],rotation)
-        np.testing.assert_allclose(target[:2,3],[.31,.2])
+        np.testing.assert_allclose(target[:2,3],[.3,-.3])
         world=vertices@target[:3,:3].T+target[:3,3]
         self.assertAlmostEqual(world[:,2].min(),settings['release_clearance_m'])
         expected=target@held['object_T_tcp']
@@ -66,34 +67,35 @@ class PlacementTests(unittest.TestCase):
         np.testing.assert_allclose(actual[:3,:3],expected[:3,:3],atol=.001)
         self.assertGreater(plan['waypoints'][-1]['position_m'][2],plan['waypoints'][2]['position_m'][2])
 
-    def test_fallback_preserves_rotation_and_stops_at_nearest_valid_sample(self):
-        config,settings,held,vertices,arm=fixture();calls=[]
-        def reachable(waypoints,timeout):calls.append(waypoints);return len(calls)==4,{}
-        plan=choose_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
-        self.assertEqual(len(calls),4)
-        self.assertAlmostEqual(plan['offset_distance_m'],.02)
-        np.testing.assert_allclose(plan['offset_m'],nearby_offsets(held['grasp_position_base_m'],.1,.01)[3])
-        np.testing.assert_allclose(np.array(plan['base_T_object_target'])[:3,:3],np.eye(3))
+    def test_fixed_location_preserves_requested_rotation(self):
+        config,settings,held,vertices,arm=fixture();reachable=Mock(return_value=(True,{'checked':4}))
+        rotation=np.array([[0,-1,0],[1,0,0],[0,0,1]])
+        plan=plan_placement(held,vertices,rotation,arm,config,settings,reachable,lambda:None)
+        reachable.assert_called_once()
+        self.assertEqual(plan['reachability_check'],{'checked':4})
+        np.testing.assert_allclose(np.array(plan['base_T_object_target'])[:3,:3],rotation)
+        np.testing.assert_allclose(plan['target_xy_m'],[.3,-.3])
 
-    def test_original_position_preferred_and_exhaustion_or_cancel_never_changes_direction(self):
-        config,settings,held,vertices,arm=fixture();reachable=Mock(return_value=(True,{}))
-        plan=choose_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
-        self.assertEqual(plan['offset_m'],[0,0]);reachable.assert_called_once()
-        reachable.reset_mock();reachable.return_value=(False,{})
-        with self.assertRaisesRegex(ValueError,'未找到'):choose_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
-        self.assertEqual(reachable.call_count,21)
+    def test_unreachable_fixed_location_never_retries_or_sends_motion(self):
+        config,settings,held,vertices,arm=fixture();reachable=Mock(return_value=(False,{'reason':'no solution'}))
+        with self.assertRaisesRegex(ValueError,'固定放置点不可达'):
+            plan_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
+        reachable.assert_called_once()
         reachable.reset_mock()
         with self.assertRaisesRegex(RuntimeError,'cancel'):
-            choose_placement(held,vertices,np.eye(3),arm,config,settings,reachable,Mock(side_effect=RuntimeError('cancel')))
+            plan_placement(held,vertices,np.eye(3),arm,config,settings,reachable,Mock(side_effect=RuntimeError('cancel')))
         reachable.assert_not_called()
+        reachable.return_value=(True,{})
+        with self.assertRaisesRegex(RuntimeError,'cancel'):
+            plan_placement(held,vertices,np.eye(3),arm,config,settings,reachable,Mock(side_effect=[None,RuntimeError('cancel')]))
 
     def test_workspace_and_table_reject_before_checker(self):
         config,settings,held,vertices,arm=fixture();reachable=Mock(return_value=(True,{}))
         config['workspace_max_m'][2]=.3
-        with self.assertRaisesRegex(ValueError,'未找到'):choose_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
+        with self.assertRaisesRegex(ValueError,'工作区'):plan_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
         reachable.assert_not_called()
         config['workspace_reviewed']=False
-        with self.assertRaisesRegex(ValueError,'核对'):choose_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
+        with self.assertRaisesRegex(ValueError,'核对'):plan_placement(held,vertices,np.eye(3),arm,config,settings,reachable,lambda:None)
 
     def test_checker_requires_every_endpoint_no_collision_and_success(self):
         _,_,_,_,arm=fixture();tool={'flange_T_grip_tcp':np.eye(4).tolist()};points=[{'controller_pose':arm['pose']}]*2
@@ -133,7 +135,7 @@ class PlacementTests(unittest.TestCase):
             with self.subTest(failure=failure),tempfile.TemporaryDirectory() as d:
                 config,settings,held,vertices,arm=fixture();root=Path(d);cfg=root/'trial.json';cfg.write_text(json.dumps(config))
                 service=GraspController(root,None,cfg);service.held_object=held
-                plan=placement_candidate(held,vertices,np.eye(3),arm['pose'],config,settings,[0,0])
+                plan=placement_waypoints(held,vertices,np.eye(3),arm['pose'],config,settings)
                 robot=service.robot=Mock();events=[];released=[False]
                 contact={'sys_err':0,'sys_state':0,'dof_err':[0],'dof_state':[3],'pos':[500],'speed':[0],'force':[10]}
                 def query(command):

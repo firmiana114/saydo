@@ -12,7 +12,7 @@ import yaml
 
 from grasp_geometry import controller_pose, transform, rotation_error, contact_result
 from grasp_robot import RobotClient
-from placement_geometry import model_geometry, checked_rotation, placement_settings, choose_placement, endpoint_reachability
+from placement_geometry import model_geometry, checked_rotation, placement_settings, plan_placement, endpoint_reachability
 
 
 class PlacementMixin:
@@ -21,7 +21,7 @@ class PlacementMixin:
             return None
         held = self.held_object
         return {k: copy.deepcopy(held[k]) for k in ['hold_id','object_id','object_name','model_sha256',
-                                                   'base_T_object_at_grasp','grasp_position_base_m']}
+                                                   'base_T_object_at_grasp']}
 
     def capture_attachment(self, plan, report):
         if not plan.get('object_id') or not plan.get('model_sha256'):
@@ -31,7 +31,7 @@ class PlacementMixin:
         held = {'hold_id':uuid.uuid4().hex, 'object_id':plan['object_id'], 'object_name':plan.get('object_name'),
                 'model_sha256':plan['model_sha256'], 'base_T_object_at_grasp':plan['base_T_object'],
                 'object_T_tcp':(np.linalg.inv(transform(plan['base_T_object'])) @ base_tcp).tolist(),
-                'grasp_position_base_m':base_tcp[:3,3].tolist(), 'tool_response':plan['tool_response'],
+                'tool_response':plan['tool_response'],
                 'contact_position':self.status['gripper_contact']['pos'][0],
                 'recorded_at':time.time(), 'evidence':'frozen_visual_pose_and_gripper_feedback_not_slip_measurement'}
         report['held_object'] = held
@@ -51,8 +51,7 @@ class PlacementMixin:
         geometry['holding'] = bool(held and held['object_id']==object_id)
         settings = placement_settings(json.loads((self.root/'config/grasp/placement.json').read_text()))
         geometry['release_clearance_m'] = settings['release_clearance_m']
-        geometry['search_radius_m'] = settings['search_radius_m']
-        geometry['search_step_m'] = settings['search_step_m']
+        geometry['target_xy_m'] = settings['target_xy_m']
         return geometry
 
     def start_place(self, value, preview=False):
@@ -126,8 +125,8 @@ class PlacementMixin:
                 raise ValueError('物品模型已变化，不能沿用抓取关系放置')
             checker=(self.root/config['ik_checker']).resolve()
             if not checker.is_file():raise ValueError('缺少放置航点可达性检查程序')
-            report['active_stage']='搜索可达放置点'
-            plan=choose_placement(held,mesh['vertices'],rotation,arm,config,settings,
+            report['active_stage']='检查固定放置点'
+            plan=plan_placement(held,mesh['vertices'],rotation,arm,config,settings,
                 lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel)
             plan.update(object_id=held['object_id'],object_name=held['object_name'],hold_id=held['hold_id'],
                         release_position=settings['release_position'],can_execute=mode=='execute')
@@ -135,7 +134,7 @@ class PlacementMixin:
             self.update(placement_plan=plan)
             self.check_cancel()
             if mode!='execute':
-                self.update(state='place_preview',message=f"放置方案已生成，沿基座连线偏移 {plan['offset_distance_m']*100:g} 厘米；未发送运动。")
+                self.update(state='place_preview',message=f"固定放置方案已生成：基座 X＝{plan['target_xy_m'][0]*100:g} 厘米，Y＝{plan['target_xy_m'][1]*100:g} 厘米；未发送运动。")
                 return
             if np.max(np.abs(np.asarray(self.arm_state()['joint'])-arm['joint']))>30:
                 raise ValueError('机械臂在放置规划后发生移动')

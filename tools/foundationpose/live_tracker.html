@@ -28,7 +28,7 @@ dialog{background:#182632;color:#e7eef5;border:1px solid #416177;border-radius:1
 <div class="bar"><label>X 角度（度） <input id="placement-x" type="number" min="-180" max="180" step="0.1" value="0" disabled></label><label>Y 角度（度） <input id="placement-y" type="number" min="-180" max="180" step="0.1" value="0" disabled></label><label>Z 角度（度） <input id="placement-z" type="number" min="-180" max="180" step="0.1" value="0" disabled></label></div>
 <div class="bar"><button id="placement-restore" disabled>恢复初始朝向</button><button id="place-preview" disabled>预览放置方案</button><button id="place" disabled>按指定姿态放置物品</button></div>
 <p id="placement-feedback" role="status">先成功抓取物品，再指定放置朝向。</p>
-<p class="note">默认放回抓取前的位置；无法到达时，保持朝向，只沿“原抓取点—机械臂基座”连线的桌面投影寻找最近落点，等距时优先靠近基座。预览不发送运动。执行时抬高、调整朝向、下降，模型最低处距桌面 2 毫米时松开，再退出。检查包含动作端点的可达性，不包含完整路径、桌上障碍或夹指碰撞；物品松开后的稳定性需现场观察。</p>
+<p class="note">物品模型原点固定放在机械臂基座 X＝30 厘米、Y＝−30 厘米处，朝向采用预览中指定的朝向；固定位置不可达时直接报错。预览不发送运动。执行时抬高、调整朝向、下降，模型最低处距桌面 2 毫米时松开，再退出。检查包含动作端点的可达性，不包含完整路径、桌上障碍或夹指碰撞；物品松开后的稳定性需现场观察。</p>
 </section>
 <div id="message"></div><img id="stream" src="/stream.mjpg" alt="实时跟踪画面"><canvas id="view" width="640" height="360" style="display:none"></canvas>
 <div id="status">正在连接…</div><div id="detail"></div><pre id="diagnostics" style="white-space:pre-wrap;color:#b9cad9"></pre>

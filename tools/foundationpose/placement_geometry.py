@@ -1,9 +1,8 @@
-"""Object-frame placement geometry and bounded endpoint reachability search."""
+"""Object-frame placement at a fixed table location and endpoint reachability checks."""
 import hashlib
 from functools import lru_cache
 from pathlib import Path
 import subprocess
-import time
 
 import numpy as np
 
@@ -41,8 +40,7 @@ def checked_rotation(value):
 
 def placement_settings(value):
     for key, low, high in [('approach_height_m', .01, .30), ('release_clearance_m', 0, .01),
-                          ('retreat_distance_m', .01, .30), ('search_radius_m', 0, .20),
-                          ('search_step_m', .005, .05), ('release_timeout_s', 1, 30),
+                          ('retreat_distance_m', .01, .30), ('release_timeout_s', 1, 30),
                           ('planning_timeout_s', 1, 60)]:
         n = value.get(key)
         if type(n) not in (int, float) or not np.isfinite(n) or not low <= n <= high:
@@ -50,19 +48,10 @@ def placement_settings(value):
     for key, low, high in [('arm_speed_percent',1,100),('release_position',0,1000)]:
         if type(value.get(key)) is not int or not low <= value[key] <= high:
             raise ValueError(f'放置配置 {key} 无效')
+    xy = value.get('target_xy_m')
+    if not isinstance(xy, list) or len(xy) != 2 or any(type(n) not in (int, float) or not np.isfinite(n) for n in xy):
+        raise ValueError('放置配置 target_xy_m 必须包含两个有限数值，单位米')
     return value
-
-
-def nearby_offsets(grasp_position, radius, step):
-    direction = np.asarray(grasp_position, dtype=float)[:2].copy()
-    offsets = [[0., 0.]]
-    length = np.linalg.norm(direction)
-    if length < 1e-6:
-        return offsets  # The base-to-grasp line has no horizontal direction.
-    direction /= length
-    for i in range(1, int(np.floor(radius / step))+1):
-        offsets.extend([(-direction*i*step).tolist(), (direction*i*step).tolist()])
-    return offsets
 
 
 def pose_waypoint(name, matrix, method):
@@ -71,13 +60,12 @@ def pose_waypoint(name, matrix, method):
         'controller_pose': np.rint(pose_values(matrix)*np.array([1e6]*3+[1e3]*3)).astype(int).tolist()}
 
 
-def placement_candidate(held, vertices, rotation, current_raw, config, settings, offset):
-    original = transform(held['base_T_object_at_grasp'])
+def placement_waypoints(held, vertices, rotation, current_raw, config, settings):
     attachment = transform(held['object_T_tcp'])
     current = controller_pose(current_raw)
     points = np.asarray(vertices, dtype=float)
     target = np.eye(4);target[:3, :3] = rotation
-    target[:2, 3] = original[:2, 3] + offset
+    target[:2, 3] = settings['target_xy_m']
     target[2, 3] = config['table_z_m'] + settings['release_clearance_m'] - np.min((points @ rotation.T)[:, 2])
     place_tcp = target @ attachment
     # A sphere around the held TCP bounds object orientation changes at the travel height.
@@ -104,8 +92,7 @@ def placement_candidate(held, vertices, rotation, current_raw, config, settings,
     if np.linalg.norm(place_tcp[:3,3]-current[:3,3]) > config['max_target_distance_m']:
         raise ValueError('放置目标距离超出配置范围')
     return {'base_T_object_target': target.tolist(), 'object_T_tcp': attachment.tolist(),
-            'original_xy_m': original[:2,3].tolist(), 'selected_xy_m': target[:2,3].tolist(),
-            'offset_m': list(offset), 'offset_distance_m': float(np.linalg.norm(offset)),
+            'target_xy_m': target[:2,3].tolist(),
             'waypoints': [pose_waypoint(*row) for row in matrices],
             'release_clearance_m': settings['release_clearance_m']}
 
@@ -124,7 +111,7 @@ def endpoint_reachability(executable, tool, arm, waypoints, timeout):
     return valid, {'returncode':result.returncode, 'stdout':result.stdout[-2048:], 'stderr':result.stderr[-512:]}
 
 
-def choose_placement(held, vertices, rotation, arm, config, settings, reachable, cancelled):
+def plan_placement(held, vertices, rotation, arm, config, settings, reachable, cancelled):
     settings = placement_settings(settings)
     rotation = checked_rotation(rotation)
     if not config.get('workspace_reviewed'):
@@ -132,21 +119,12 @@ def choose_placement(held, vertices, rotation, arm, config, settings, reachable,
     low, high = np.asarray(config.get('workspace_min_m'),dtype=float), np.asarray(config.get('workspace_max_m'),dtype=float)
     if low.shape!=(3,) or high.shape!=(3,) or not np.isfinite(np.r_[low,high,config.get('table_z_m')]).all() or np.any(low>=high):
         raise ValueError('放置工作区配置无效')
-    started = time.monotonic();attempts=[]
-    for offset in nearby_offsets(held['grasp_position_base_m'],settings['search_radius_m'],settings['search_step_m']):
-        cancelled()
-        remaining = settings['planning_timeout_s']-(time.monotonic()-started)
-        if remaining<=0:
-            raise TimeoutError('放置落点搜索超时，未发送运动')
-        try:
-            candidate = placement_candidate(held,vertices,rotation,arm['pose'],config,settings,offset)
-        except ValueError as error:
-            attempts.append({'offset_m':offset,'reason':str(error)});continue
-        valid, detail = reachable(candidate['waypoints'], min(remaining, 3.))
-        attempts.append({'offset_m':offset,'reachable':valid,'detail':detail})
-        if valid:
-            candidate.update(search_attempts=attempts, search_step_m=settings['search_step_m'],
-                             search_radius_m=settings['search_radius_m'],
-                             validation='waypoints_only_not_full_path_or_environment_collision')
-            return candidate
-    raise ValueError(f"原位置及周围 {settings['search_radius_m']*100:g} 厘米内未找到可达放置点；最后原因：{attempts[-1] if attempts else '无候选'}")
+    cancelled()
+    plan = placement_waypoints(held,vertices,rotation,arm['pose'],config,settings)
+    valid, detail = reachable(plan['waypoints'], settings['planning_timeout_s'])
+    cancelled()
+    if not valid:
+        raise ValueError(f"固定放置点不可达或动作端点检查失败，未发送运动：{detail}")
+    plan.update(reachability_check=detail,
+                validation='waypoints_only_not_full_path_or_environment_collision')
+    return plan
