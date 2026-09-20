@@ -107,7 +107,7 @@ class ReorientationViewer{
         label('物品 '+names[i],Math.max(8,Math.min(width-70,end[0]+9)),Math.max(24,Math.min(height-24,end[1]-10-i*3)),colors[i]);}
       add('circle',{cx:origin[0],cy:origin[1],r:5,fill:'#fff',stroke:'#071017','stroke-width':2});label('物品原点',origin[0]+10,origin[1]+23,'#b8c6d0',12);
     }
-    const pivot=project(this.translation);if(Math.hypot(...this.translation)>1e-6){const from=project([0,0,0]);arrow(from,pivot,'#ffe19b',true);add('circle',{cx:from[0],cy:from[1],r:5,fill:'none',stroke:'#b8c6d0'});label('起点',from[0]-25,from[1]-12,'#b8c6d0',12);}add('circle',{cx:pivot[0],cy:pivot[1],r:8,fill:'none',stroke:'#ffe19b','stroke-width':2,'stroke-dasharray':'3 2'});add('line',{x1:pivot[0]+8,y1:pivot[1]+8,x2:pivot[0]+48,y2:pivot[1]+45,stroke:'#ffe19b','stroke-width':1,'stroke-dasharray':'3 3'});label(this.model.holding?(Math.hypot(...this.translation)>1e-6?'目标 TCP':'旋转中心 TCP'):'预览中心（未抓取）',pivot[0]+50,pivot[1]+51,'#ffe19b',12);
+    const pivot=project(this.translation);if(Math.hypot(...this.translation)>1e-6){const from=project([0,0,0]);arrow(from,pivot,'#ffe19b',true);add('circle',{cx:from[0],cy:from[1],r:5,fill:'none',stroke:'#b8c6d0'});label('起点',from[0]-25,from[1]-12,'#b8c6d0',12);}add('circle',{cx:pivot[0],cy:pivot[1],r:8,fill:'none',stroke:'#ffe19b','stroke-width':2,'stroke-dasharray':'3 2'});add('line',{x1:pivot[0]+8,y1:pivot[1]+8,x2:pivot[0]+48,y2:pivot[1]+45,stroke:'#ffe19b','stroke-width':1,'stroke-dasharray':'3 3'});label(this.model.holding?(Math.hypot(...this.translation)>1e-6?'目标 TCP':'目标 TCP'):'预览中心（未抓取）',pivot[0]+50,pivot[1]+51,'#ffe19b',12);
     const small=width<450,cardW=small?112:146,cardH=small?98:115,anchor=[small?62:80,height-(small?54:65)],length=small?30:42;
     add('rect',{x:12,y:height-cardH-12,width:cardW,height:cardH,rx:9,fill:'#101c28',stroke:'#385267'});
     label('固定基座坐标',22,height-cardH+6,'#cedce6',small?10:12);
@@ -148,7 +148,7 @@ class ReorientationPanel{
   async load(id,key){
     this.key=key;this.loading=true;const generation=++this.generation;this.info.textContent='正在加载物品模型…';
     try{const response=await fetch('/api/reorient/model?object_id='+encodeURIComponent(id)),model=await response.json();if(!response.ok)throw Error(model.error);if(generation!==this.generation)return;
-      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为旋转中心 TCP；预览方案会显示允许的移位。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
+      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为目标 TCP；预览仅显示目标位姿和端点位移。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
       this.feedback.textContent=model.holding?'已关联本次抓取，可以预览或调整姿态。':'可先旋转查看；成功抓取后加载该次抓取朝向，才能执行姿态调整。';
     }catch(e){if(generation===this.generation){this.viewer.model=null;this.info.textContent='模型加载失败：'+e.message;}}
     finally{if(generation===this.generation)this.loading=false;}

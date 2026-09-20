@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation
 from test_reorientation import fixture
 from grasp_control import GraspController
 from reorientation_geometry import (reorientation_settings, checked_position_request, position_offsets,
-    plan_reorientation, adaptive_candidate, segment_distance, endpoint_reachability)
+    plan_reorientation, adaptive_candidate, endpoint_reachability)
 
 class AdaptiveReorientationTests(unittest.TestCase):
     def test_settings_and_request_mode(self):
@@ -20,7 +20,7 @@ class AdaptiveReorientationTests(unittest.TestCase):
         self.assertEqual(checked_position_request('adaptive'),'adaptive');self.assertNotIn('adaptive_max_shift_m',settings)
         for mode in ['other',None,True]:
             with self.assertRaises(ValueError):checked_position_request(mode)
-        for k,v in [('search_step_m',0),('max_joint_step_deg',True)]:
+        for k,v in [('search_step_m',0),('orientation_tolerance_deg',True)]:
             with self.assertRaises(ValueError):reorientation_settings({**settings,k:v})
 
     def test_candidates_expand_beyond_old_radius_and_allow_downward(self):
@@ -53,16 +53,17 @@ class AdaptiveReorientationTests(unittest.TestCase):
         p=plan_reorientation(h,v,rotation,a,c,s,check,lambda:None,'adaptive')
         self.assertGreater(p['offset_distance_m'],.20)
         np.testing.assert_allclose(np.asarray(p['base_T_object_target'])[:3,:3],rotation,atol=1e-12)
-        self.assertEqual(p['path_samples'][0]['controller_pose'][:3],a['pose'][:3])
+        self.assertEqual(p['validation_points'],p['waypoints']);self.assertTrue(all(w['method']=='joint_pose' for w in p['waypoints']))
 
     def test_fixed_mode_still_uses_existing_workspace(self):
         c,s,h,v,a=fixture();c['workspace_reviewed']=False
         with self.assertRaisesRegex(ValueError,'工作区'):plan_reorientation(h,v,np.eye(3),a,c,s,Mock(),lambda:None,'fixed')
 
-    def test_discontinuous_solution_rejected_then_search_continues(self):
-        c,s,h,v,a=fixture();check=Mock(side_effect=[(True,{'max_joint_step_deg':45}),(True,{'max_joint_step_deg':3})])
+    def test_large_joint_endpoint_change_is_not_a_cartesian_sample_jump(self):
+        c,s,h,v,a=fixture();check=Mock(return_value=(True,{'max_joint_step_deg':45}))
         p=plan_reorientation(h,v,np.eye(3),a,c,s,check,lambda:None,'adaptive')
-        self.assertGreater(p['offset_distance_m'],0);self.assertIn('关节变化',p['search_attempts'][0]['reason'])
+        check.assert_called_once();self.assertEqual(p['offset_distance_m'],0)
+        self.assertFalse(p['intermediate_path_checked'])
 
     def test_cancel_and_time_budget(self):
         c,s,h,v,a=fixture();check=Mock(return_value=(False,{}))
@@ -102,18 +103,12 @@ class AdaptiveReorientationTests(unittest.TestCase):
             def move(pose,*args):
                 count[0]+=1;a['pose']=pose.copy()
                 if count[0]==2:a['pose'][2]=99500  # Within 2 mm of target, but fails the independent >10 cm rule.
-            service.robot.move_linear.side_effect=move
-            with self.assertRaisesRegex(ValueError,'实际末端最终高度'):service.execute_reorient(plan,h,c,s,{})
+            service.robot.move_joint_pose.side_effect=move
+            with self.assertRaisesRegex(ValueError,'实际末端最终高度'):service.execute_reorient(plan,h,c,s,{},v)
             service.robot.move_gripper.assert_not_called()
 
-    def test_segment_corridor_rejects_lateral_and_endpoint_overshoot(self):
-        self.assertEqual(segment_distance([.05,0,0],[0,0,0],[.1,0,0]),0)
-        self.assertAlmostEqual(segment_distance([.05,.01,0],[0,0,0],[.1,0,0]),.01)
-        self.assertAlmostEqual(segment_distance([.12,0,0],[0,0,0],[.1,0,0]),.02)
-        self.assertAlmostEqual(segment_distance([0,.01,0],[0,0,0],[0,0,0]),.01)
-
     def test_execution_translates_then_rotates_without_gripper_write(self):
-        for fault in [None,'deviation','early_arrival','cancel','contact']:
+        for fault in [None,'collision','early_arrival','cancel','contact']:
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
                 c,s,h,v,a=fixture();s=reorientation_settings(s);root=Path(d);cfg=root/'trial.json';cfg.write_text(json.dumps(c))
                 service=GraspController(root,None,cfg);service.held_object=h;robot=service.robot=Mock()
@@ -123,20 +118,22 @@ class AdaptiveReorientationTests(unittest.TestCase):
                     calls.append(pose)
                     if len(calls)==1:
                         a['pose'][:3]=np.rint((np.array(a['pose'][:3])+pose[:3])/2).astype(int).tolist()
-                        if fault=='deviation':a['pose'][0]+=10000
+                        # A joint-space detour and transient rotation are allowed, unlike a movel line.
+                        a['pose'][0]+=50000;a['pose'][5]+=300
+                        if fault=='collision':a['pose'][2]=-200000
                         if fault=='cancel':service.cancelled.set()
                         if fault=='contact':service.check_reorient_contact.side_effect=ValueError('contact')
                         watchdog()
                         if fault=='early_arrival':return
                     a['pose']=pose.copy()
-                robot.move_linear.side_effect=move;report={}
+                robot.move_joint_pose.side_effect=move;report={}
                 if fault:
-                    with self.assertRaises(ValueError):service.execute_reorient(plan,h,c,s,report)
+                    with self.assertRaises(ValueError):service.execute_reorient(plan,h,c,s,report,v)
                     self.assertEqual(len(calls),1)
                 else:
-                    service.execute_reorient(plan,h,c,s,report)
+                    service.execute_reorient(plan,h,c,s,report,v)
                     self.assertEqual(len(calls),2);self.assertEqual(calls[0][:3],calls[1][:3]);self.assertEqual(service.status['state'],'completed')
                     self.assertEqual(service.held_object['hold_id'],h['hold_id']);self.assertEqual(len(report['arrival_checks']),2)
-                robot.move_gripper.assert_not_called();robot.set_register.assert_not_called();robot.move_joint_pose.assert_not_called()
+                robot.move_gripper.assert_not_called();robot.set_register.assert_not_called();robot.move_linear.assert_not_called()
 
 if __name__=='__main__':unittest.main()

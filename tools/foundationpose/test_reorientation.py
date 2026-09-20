@@ -33,7 +33,7 @@ class ReorientationTests(unittest.TestCase):
         for r in ([1,0,0],np.zeros((3,3)),np.diag([1,1,-1]),np.full((3,3),np.nan)):
             with self.assertRaises(ValueError):checked_rotation(r)
         _,settings,_,_,_=fixture()
-        for key,value in [('arm_speed_percent',True),('position_tolerance_m',float('nan')),('rotation_step_deg',90),('planning_timeout_s',0)]:
+        for key,value in [('arm_speed_percent',True),('position_tolerance_m',float('nan')),('planning_timeout_s',0)]:
             with self.assertRaises(ValueError):reorientation_settings({**settings,key:value})
 
     def test_every_sample_and_target_keep_exact_raw_xyz(self):
@@ -41,7 +41,7 @@ class ReorientationTests(unittest.TestCase):
         for degrees in [[0,0,0],[25,65,120],[0,180,0]]:
             rotation=Rotation.from_euler('xyz',degrees,degrees=True).as_matrix()
             plan=reorientation_waypoints(held,vertices,rotation,arm['pose'],config,settings)
-            for w in plan['waypoints']+plan['rotation_samples']:self.assertEqual(w['controller_pose'][:3],arm['pose'][:3])
+            for w in plan['waypoints']:self.assertEqual(w['controller_pose'][:3],arm['pose'][:3])
             self.assertEqual(len(plan['waypoints']),1)
             object_pose=np.array(plan['base_T_object_target'])
             np.testing.assert_allclose(object_pose[:3,:3],rotation,atol=1e-12)
@@ -50,17 +50,19 @@ class ReorientationTests(unittest.TestCase):
             self.assertEqual(plan['gripper_action'],'keep_holding')
             self.assertNotIn('target_xy_m',plan)
 
-    def test_intermediate_rotation_collision_is_rejected(self):
+    def test_controller_joint_path_is_not_falsely_checked_as_cartesian_rotation(self):
         config,settings,held,_,arm=fixture();held['object_T_tcp']=np.eye(4).tolist();arm['pose']=[300000,200000,80000,0,0,0]
         vertices=np.array([[0,0,0],[.12,0,0],[0,.01,0]])
-        target=Rotation.from_euler('y',180,degrees=True).as_matrix();checker=Mock()
-        with self.assertRaisesRegex(ValueError,'采样'):plan_reorientation(held,vertices,target,arm,config,settings,checker,lambda:None)
-        checker.assert_not_called()
+        target=Rotation.from_euler('y',180,degrees=True).as_matrix();checker=Mock(return_value=(True,{}))
+        plan=plan_reorientation(held,vertices,target,arm,config,settings,checker,lambda:None)
+        self.assertFalse(plan['intermediate_path_checked'])
+        self.assertEqual(len(checker.call_args.args[0]),1)
+        self.assertEqual(plan['waypoints'][0]['method'],'joint_pose')
 
     def test_reachability_and_cancellation(self):
         config,settings,held,vertices,arm=fixture();checker=Mock(return_value=(True,{'ok':True}))
         plan=plan_reorientation(held,vertices,np.eye(3),arm,config,settings,checker,lambda:None)
-        self.assertEqual(checker.call_args.args[0],plan['rotation_samples'])
+        self.assertEqual(checker.call_args.args[0],plan['validation_points'])
         checker.return_value=(False,{})
         with self.assertRaisesRegex(ValueError,'不可达'):plan_reorientation(held,vertices,np.eye(3),arm,config,settings,checker,lambda:None)
         checker.reset_mock()
@@ -135,17 +137,17 @@ class ReorientationTests(unittest.TestCase):
                     if failure=='cancel':service.cancelled.set()
                     if failure=='contact':service.check_reorient_contact.side_effect=ValueError('contact')
                     watchdog()
-                robot.move_linear.side_effect=move;report={}
+                robot.move_joint_pose.side_effect=move;report={}
                 if failure:
-                    with self.assertRaises((ValueError,RuntimeError)):service.execute_reorient(plan,held,config,settings,report)
+                    with self.assertRaises((ValueError,RuntimeError)):service.execute_reorient(plan,held,config,settings,report,vertices)
                 else:
-                    service.execute_reorient(plan,held,config,settings,report)
-                    robot.move_linear.assert_called_once()
+                    service.execute_reorient(plan,held,config,settings,report,vertices)
+                    robot.move_joint_pose.assert_called_once()
                     self.assertEqual(service.held_object['hold_id'],held['hold_id'])
                     self.assertEqual(service.held_object['object_T_tcp'],held['object_T_tcp'])
                     self.assertEqual(service.held_object['orientation_version'],1)
                     self.assertEqual(service.status['state'],'completed')
-                robot.move_gripper.assert_not_called();robot.set_register.assert_not_called();robot.move_joint_pose.assert_not_called();robot.move_joints.assert_not_called()
+                robot.move_gripper.assert_not_called();robot.set_register.assert_not_called();robot.move_linear.assert_not_called();robot.move_joints.assert_not_called()
 
     def test_preview_never_moves_and_motion_failure_stops(self):
         for mode in ['preview','execute']:

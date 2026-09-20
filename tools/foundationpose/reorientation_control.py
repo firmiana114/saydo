@@ -14,7 +14,7 @@ from grasp_geometry import controller_pose, transform, rotation_error, contact_r
 from grasp_robot import RobotClient
 from motion_validation import wait_for_pose
 from reorientation_visual import model_appearance
-from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request, segment_distance
+from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request
 
 
 class ReorientationMixin:
@@ -67,6 +67,7 @@ class ReorientationMixin:
                                       if geometry['holding'] else None)
         geometry['preview_mode'] = 'adaptive_or_fixed_orientation'
         geometry['minimum_final_clearance_m'] = .10
+        geometry['motion_command'] = 'movej_p'
         return geometry
 
     def start_reorient(self, value, preview=False):
@@ -85,7 +86,7 @@ class ReorientationMixin:
             self.cancelled.clear();self.actuated=False;self.robot=None
             self.status.update(state='reorient_planning',operation='reorient',busy=True,error=None,plan=None,
                                reorientation_plan=None,target_object_id=held['object_id'],
-                               message='正在检查目标姿态与最终离桌高度…' if position_mode=='adaptive' else '正在检查固定位置下的目标姿态…')
+                               message='正在检查目标姿态与最终离桌高度…' if position_mode=='adaptive' else '正在检查固定终点位置下的目标姿态…')
             self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview,position_mode),daemon=True)
             self.thread.start()
         return {'accepted':True,'mode':'preview' if preview or self.mode=='preview' else 'execute'}
@@ -157,7 +158,7 @@ class ReorientationMixin:
             if np.max(np.abs(np.asarray(self.arm_state()['joint'])-arm['joint']))>30:
                 raise ValueError('机械臂在姿态调整规划后发生移动')
             self.check_reorient_contact(held,config)
-            self.execute_reorient(plan,held,config,settings,report)
+            self.execute_reorient(plan,held,config,settings,report,mesh['vertices'])
         except Exception as error:
             if self.actuated:
                 with self.lock:self.held_object=None
@@ -175,30 +176,36 @@ class ReorientationMixin:
                 if robot_lock is not None:robot_lock.close()
                 self.update(busy=False)
 
-    def execute_reorient(self, plan, held, config, settings, report):
+    def execute_reorient(self, plan, held, config, settings, report, vertices):
         start = np.asarray(plan.get('start_tcp_position_m',plan.get('fixed_tcp_position_m')))
         # Keep tests and archived fixed-position plans usable without any translation fallback.
         if start.shape != (3,):
             raise ValueError('姿态计划缺少有效的起始位置')
         tolerance = settings['position_tolerance_m']
-        initial_rotation = controller_pose(plan['current_arm']['pose'])[:3,:3]
+        points=np.asarray(vertices,dtype=float)
+        if points.ndim!=2 or points.shape[1]!=3 or not len(points) or not np.isfinite(points).all():
+            raise ValueError('缺少有效的物品模型，不能监测运动中桌面碰撞')
+        attachment_inv=np.linalg.inv(transform(held['object_T_tcp']))
+        report['motion_validation_scope']='movej_p_endpoints_and_live_feedback_not_full_path'
         reached = None
         for target in plan['waypoints']:
             end = np.asarray(target['position_m'])
             translating = target['name']=='translate'
-            def watchdog():
+            def read_motion_state():
                 self.check_cancel()
                 actual = self.arm_state()
                 pose = controller_pose(actual['pose'])
-                deviation = segment_distance(pose[:3,3],start,end)
-                report['max_observed_path_deviation_m'] = max(report.get('max_observed_path_deviation_m',0.),deviation)
-                if deviation>tolerance:
-                    raise ValueError(f'末端偏离规划路径 {deviation*1000:.2f} 毫米，超过允许值 {tolerance*1000:g} 毫米')
-                if translating and rotation_error(initial_rotation,pose[:3,:3])>np.deg2rad(settings['orientation_tolerance_deg']):
-                    raise ValueError('移位阶段的末端朝向发生异常变化')
+                # A controller-planned joint move may curve in Cartesian space and change orientation in transit.
+                obj=pose@attachment_inv
+                bottom=float((points@obj[:3,:3].T+obj[:3,3])[:,2].min())
+                report['minimum_observed_object_z_m']=min(report.get('minimum_observed_object_z_m',bottom),bottom)
+                if bottom<config['table_z_m']-1e-6:
+                    raise ValueError('运动反馈中的物品模型低于配置桌面，停止运动')
                 self.check_reorient_contact(held,config)
-                return pose
-            report['active_stage'] = '保持夹持移至可旋转位置' if translating else '在选定位置调整物品姿态'
+                return actual
+            def watchdog():
+                return controller_pose(read_motion_state()['pose'])
+            report['active_stage'] = '关节运动至选定位置' if translating else '关节运动至指定物品姿态'
             self.update(state='reorienting',message=report['active_stage']+'…')
             # Reject a stale plan before its first command, not just a point anywhere along its path.
             reached=watchdog()
@@ -208,12 +215,9 @@ class ReorientationMixin:
             self.actuated = True
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            self.robot.move_linear(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
+            self.robot.move_joint_pose(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
             def arrival_state():
-                self.check_cancel()
-                actual=self.arm_state()
-                self.check_reorient_contact(held,config)
-                return actual
+                return read_motion_state()
             check={'stage':report['active_stage']}
             report.setdefault('arrival_checks',[]).append(check)
             actual=wait_for_pose(arrival_state,target['controller_pose'],self.check_cancel,check,
