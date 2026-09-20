@@ -33,6 +33,7 @@ class OperatorControlsTests(unittest.TestCase):
         arm = {'joint':[0]*7, 'pose':[0,0,200000,0,0,0], 'err':[0]}
         def query(command):
             values = {'get_arm_software_info':{'Product_version':'RM75-BI'},
+                      'get_rm_plus_mode':{'mode':0 if failure == 'communication' else 115200},
                       'get_joint_en_state':{'en_state':[1]*7}, 'get_joint_err_flag':{'err_flag':[0]*7},
                       'get_current_tool_frame':self.tool, 'get_current_arm_state':{'arm_state':arm},
                       'get_rm_plus_state_info':{'state_info':{'sys_err':0,'sys_state':0,'dof_err':[0],
@@ -92,6 +93,19 @@ class OperatorControlsTests(unittest.TestCase):
         self.assertEqual(report['arrival_checks'][0]['target_joint'], return_joint_target(self.config))
         self.assertFalse(report['result']['busy'])
 
+    def test_reset_rereads_communication_after_recovery(self):
+        for failure, expected in [('communication', 'failed'), (None, 'completed')]:
+            robot = self.robot(failure)
+            with patch('grasp_control.RobotClient', return_value=robot), patch('grasp_control.time.sleep'):
+                self.service.start_reset();self.service.thread.join(3)
+            self.assertEqual(self.service.status['state'], expected)
+            if failure:
+                self.assertIn('当前模式 0', self.service.status['error'])
+                robot.move_joints.assert_not_called()
+            else:
+                self.assertIsNone(self.service.status['error'])
+                robot.move_joints.assert_called_once()
+
     def test_reset_requires_execution_mode_target_and_exclusive_task(self):
         with patch('grasp_control.threading.Thread') as thread:
             self.service.mode = 'preview'
@@ -111,7 +125,7 @@ class OperatorControlsTests(unittest.TestCase):
             self.assertEqual(thread.call_count, 1)
 
     def test_reset_errors_cancel_and_device_lock(self):
-        for failure in ('arrival','timeout','cancel','disabled'):
+        for failure in ('arrival','timeout','cancel','disabled','communication'):
             with self.subTest(failure=failure):
                 self.service = GraspController(self.root, None, self.path)
                 robot = self.robot(failure)
@@ -119,7 +133,7 @@ class OperatorControlsTests(unittest.TestCase):
                     self.service.start_reset();self.service.thread.join(3)
                 self.assertEqual(self.service.status['state'], 'cancelled' if failure=='cancel' else 'failed')
                 self.assertFalse(self.service.status['busy'])
-                if failure == 'disabled':
+                if failure in ('disabled','communication'):
                     robot.move_joints.assert_not_called();robot.stop.assert_not_called()
                 else:
                     robot.stop.assert_called()

@@ -18,7 +18,14 @@ class RobotClient:
     def query(self, command, **values):
         if command not in READS:
             raise ValueError('只读接口拒绝写入命令')
-        return self._request({'command': command, **values})
+        reply = self._request({'command': command, **values})
+        required = {'get_rm_plus_state_info': 'state_info', 'get_rm_plus_base_info': 'base_info'}
+        if command in required:
+            field = required[command]
+            if not isinstance(reply, dict) or reply.get('get_state') is False or not isinstance(reply.get(field), dict):
+                raise RuntimeError(f'夹爪 RM Plus 查询 {command} 未返回有效 {field}；'
+                                   '请检查末端通信模式、供电和连接')
+        return reply
 
     def _request(self, payload):
         command = payload['command']

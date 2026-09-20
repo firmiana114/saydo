@@ -141,7 +141,13 @@ class GraspController(PlacementMixin):
             tool = yaml.safe_load((self.root / config['tool_file']).read_text())
             if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
                 raise ValueError('当前工具/负载与记录不一致')
+            mode = self.robot.query('get_rm_plus_mode').get('mode')
+            report['rm_plus_mode'] = mode
+            if mode != 115200:
+                raise ValueError(f'夹爪 RM Plus 通信未就绪（当前模式 {mode}，要求 115200）；'
+                                 '机械臂关节已通过使能检查，请恢复夹爪通信后重试')
             grip_state = self.robot.query('get_rm_plus_state_info')['state_info']
+            report['initial_gripper_state'] = copy.deepcopy(grip_state)
             if contact_result(grip_state, config['gripper']) == 'fault' or grip_state.get('speed') != [0]:
                 raise ValueError('夹爪异常或正在运动，不能复位')
             first = np.asarray(self.arm_state()['joint'], dtype=float)
