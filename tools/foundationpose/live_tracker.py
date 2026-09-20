@@ -261,9 +261,9 @@ class Tracker:
                 raise ValueError('当前没有可靠跟踪位姿')
             if time.time() - s['pose_frame_at'] > .5:
                 raise ValueError('视觉位姿过期，不能用于抓取')
-            rows = [r for r in self.pose_history if r['generation'] == self.generation and r['time'] >= s['pose_frame_at'] - .8]
-            if len(rows) < 8 or rows[-1]['time'] - rows[0]['time'] < .5:
-                raise ValueError('请保持物品和机械臂静止，等待至少半秒稳定跟踪')
+            rows = [r for r in self.pose_history if r['generation'] == self.generation and r['time'] >= s['pose_frame_at'] - 1.0]
+            if len(rows) < 5 or rows[-1]['time'] - rows[0]['time'] < .5:
+                raise ValueError('请保持物品和机械臂静止，等待最近 1 秒内至少 5 个有效位姿，且覆盖至少半秒')
             points = np.array([r['pose'] for r in rows])[:, :3, 3]
             if np.max(np.linalg.norm(points - points[-1], axis=1)) > .005:
                 raise ValueError('目标位姿仍在变化，请先保持静止')

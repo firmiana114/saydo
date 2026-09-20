@@ -122,6 +122,22 @@ class LivePreviewTests(unittest.TestCase):
         self.assertEqual(t.pending_object[1]['detector_class'], 'cup')
         self.assertIsNone(t.catch_up(0, {}, np.eye(4), lambda *args: None))
 
+    def test_grasp_snapshot_accepts_five_poses_in_one_second(self):
+        t=self.tracker;pose=np.eye(4);pose[2,3]=.4
+        t.state.update(state='tracking',quality={'good':True},camera_T_object=pose.tolist(),pose_frame_at=100.,object_id='cup')
+        with patch.object(live_tracker.time, 'time', return_value=100.1):
+            for times, accepted in [([99.,99.25,99.5,99.75,100.],True),
+                                    ([99.25,99.5,99.75,100.],False),
+                                    ([98.999,99.25,99.5,99.75,100.],False),
+                                    ([99.6,99.7,99.8,99.9,100.],False)]:
+                t.pose_history.clear()
+                for stamp in times:t.pose_history.append({'pose':pose.tolist(),'time':stamp,'generation':t.generation})
+                with self.subTest(times=times):
+                    if accepted:
+                        self.assertEqual(t.grasp_observation()['object_id'],'cup')
+                    else:
+                        with self.assertRaisesRegex(ValueError,'至少 5 个有效位姿'):t.grasp_observation()
+
     def test_grasp_snapshot_rejects_old_or_unstable_target(self):
         t=self.tracker;now=time.time();pose=np.eye(4);pose[2,3]=.4
         t.state.update(state='tracking',quality={'good':True},camera_T_object=pose.tolist(),pose_frame_at=now-.1,object_id='bottle')
