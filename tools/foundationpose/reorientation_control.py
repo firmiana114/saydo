@@ -12,6 +12,7 @@ import yaml
 
 from grasp_geometry import controller_pose, transform, rotation_error, contact_result
 from grasp_robot import RobotClient
+from motion_validation import wait_for_pose
 from reorientation_visual import model_appearance
 from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request, segment_distance
 
@@ -146,7 +147,7 @@ class ReorientationMixin:
             plan=plan_reorientation(held,mesh['vertices'],rotation,arm,config,settings,
                 lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel,position_mode,max_shift_m,report.setdefault('search_attempts',[]))
             plan.update(object_id=held['object_id'],object_name=held['object_name'],hold_id=held['hold_id'],
-                        can_execute=mode=='execute')
+                        can_execute=mode=='execute',flange_T_grip_tcp=tool['flange_T_grip_tcp'])
             report['plan']=plan
             self.update(reorientation_plan=plan)
             self.check_cancel()
@@ -203,17 +204,21 @@ class ReorientationMixin:
             reached=watchdog()
             if np.linalg.norm(reached[:3,3]-start)>tolerance:
                 raise ValueError('末端已离开本段规划起点')
+            self.verify_motion_targets(plan,config,report,self.arm_state(),[target])
             self.actuated = True
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
             self.robot.move_linear(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
-            reached = watchdog()
-            expected = controller_pose(target['controller_pose'])
-            report.setdefault('arrival_checks',[]).append({'stage':report['active_stage'],'target_pose':target['controller_pose'],'actual_tcp':reached.tolist()})
-            if np.linalg.norm(expected[:3,3]-reached[:3,3])>tolerance:
-                raise ValueError('末端目标位置未到位')
-            if rotation_error(expected[:3,:3],reached[:3,:3])>np.deg2rad(settings['orientation_tolerance_deg']):
-                raise ValueError('末端目标朝向未到位')
+            def arrival_state():
+                self.check_cancel()
+                actual=self.arm_state()
+                self.check_reorient_contact(held,config)
+                return actual
+            check={'stage':report['active_stage']}
+            report.setdefault('arrival_checks',[]).append(check)
+            actual=wait_for_pose(arrival_state,target['controller_pose'],self.check_cancel,check,
+                                 tolerance,np.deg2rad(settings['orientation_tolerance_deg']))
+            reached=controller_pose(actual['pose'])
             start=end
         actual_object = reached @ np.linalg.inv(transform(held['object_T_tcp']))
         updated = copy.deepcopy(held)

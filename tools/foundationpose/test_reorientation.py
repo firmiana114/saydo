@@ -75,7 +75,7 @@ class ReorientationTests(unittest.TestCase):
 
     def test_checker_requires_all_samples_successful(self):
         _,_,_,_,arm=fixture();tool={'flange_T_grip_tcp':np.eye(4).tolist()};points=[{'controller_pose':arm['pose']}]*2
-        for output,code,valid in [('IK 0 0 0 0 0 0 0 0 0\n'*2,0,True),('IK 0 0 0 0 0 0 0 0 0\n',0,False),('IK 0 1 0 0 0 0 0 0 0\n'*2,0,False),('IK 0 0 nan 0 0 0 0 0 0\n'*2,0,False),('',1,False)]:
+        for output,code,valid in [('IK 0 0 0 0 0 0 0 0 0\n'*2,0,False),('IK 0 0 0 0 0 0 0 0 0\n',0,False),('IK 0 1 0 0 0 0 0 0 0\n'*2,0,False),('IK 0 0 nan 0 0 0 0 0 0\n'*2,0,False),('',1,False)]:
             with patch('reorientation_geometry.subprocess.run',return_value=SimpleNamespace(returncode=code,stdout=output,stderr='')):
                 self.assertEqual(endpoint_reachability('offline',tool,arm,points,1)[0],valid)
 
@@ -124,7 +124,7 @@ class ReorientationTests(unittest.TestCase):
                 config,settings,held,vertices,arm=fixture();root=Path(d);cfg=root/'trial.json';cfg.write_text(json.dumps(config))
                 service=GraspController(root,None,cfg);service.held_object=held
                 plan=reorientation_waypoints(held,vertices,np.eye(3),arm['pose'],config,settings)
-                robot=service.robot=Mock();service.check_reorient_contact=Mock()
+                robot=service.robot=Mock();service.check_reorient_contact=Mock();service.verify_motion_targets=Mock()
                 service.arm_state=Mock(side_effect=lambda:copy.deepcopy(arm))
                 def move(pose,speed,cancelled,watchdog):
                     if failure=='motion':raise RuntimeError('motion')
@@ -153,7 +153,7 @@ class ReorientationTests(unittest.TestCase):
                 config.update(robot_ip='simulation',robot_port=1,ik_checker='checker')
                 cfg=root/'trial.json';cfg.write_text(json.dumps(config));(root/'config/grasp/reorientation.json').write_text(json.dumps(settings));(root/'checker').touch()
                 service=GraspController(root,SimpleNamespace(models_root=root),cfg);service.held_object=held
-                service.reorientation_hardware=Mock(return_value=(arm,{}));robot=Mock();service.arm_state=Mock(return_value=arm);service.check_reorient_contact=Mock()
+                service.reorientation_hardware=Mock(return_value=(arm,{'flange_T_grip_tcp':np.eye(4).tolist()}));robot=Mock();service.arm_state=Mock(return_value=arm);service.check_reorient_contact=Mock()
                 def fail(*args):service.actuated=True;raise RuntimeError('simulated rejection')
                 service.execute_reorient=Mock(side_effect=fail)
                 with patch('reorientation_control.RobotClient',return_value=robot) as client,patch('reorientation_control.model_geometry',return_value={'model_sha256':'mesh1','vertices':vertices}),patch('reorientation_control.endpoint_reachability',return_value=(True,{})):

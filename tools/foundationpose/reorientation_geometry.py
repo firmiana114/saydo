@@ -10,6 +10,7 @@ import numpy as np
 
 from grasp_geometry import transform, controller_pose, pose_values, minimum_table_clearance
 from object_catalog import select_object
+from motion_validation import check_waypoints as endpoint_reachability
 
 
 @lru_cache(maxsize=8)
@@ -96,25 +97,6 @@ def reorientation_waypoints(held, vertices, rotation, current_raw, config, setti
             'current_arm': {'pose': list(current_raw)}, 'rotation_angle_deg': float(np.rad2deg(angle)),
             'waypoints': [target], 'rotation_samples': samples,
             'tcp_position_fixed': True, 'gripper_action': 'keep_holding'}
-
-
-def endpoint_reachability(executable, tool, arm, waypoints, timeout):
-    tool_values = pose_values(tool['flange_T_grip_tcp'])
-    joints = np.asarray(arm['joint'], dtype=float) / 1000
-    values = [*tool_values, *joints, len(waypoints)]
-    for waypoint in waypoints:
-        values.extend(pose_values(controller_pose(waypoint['controller_pose'])))
-    result = subprocess.run([str(executable)], input=' '.join(str(x) for x in values)+'\n',
-                            text=True, capture_output=True, timeout=timeout)
-    rows = [line.split() for line in result.stdout.splitlines() if line.startswith('IK ')]
-    valid = result.returncode == 0 and len(rows) == len(waypoints) and all(
-        len(row) == 10 and row[1:3] == ['0','0'] and np.isfinite([float(x) for x in row[3:]]).all() for row in rows)
-    detail = {'returncode':result.returncode, 'stdout':result.stdout[-2048:], 'stderr':result.stderr[-512:]}
-    if valid:
-        solutions = np.asarray([[float(x) for x in row[3:]] for row in rows])
-        differences = np.abs(np.diff(np.vstack([joints, solutions]), axis=0))
-        detail.update(max_joint_step_deg=float(differences.max()), joint_travel_deg=float(differences.sum()))
-    return valid, detail
 
 
 def checked_position_request(mode, radius, settings):
@@ -212,7 +194,7 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
         if time.monotonic()>deadline:raise TimeoutError('姿态位置搜索超时，未发送运动')
         jump=detail.get('max_joint_step_deg',0.)
         attempt.update(reachable=bool(valid),max_joint_step_deg=jump,
-                       reason=None if valid else str(detail)[-700:])
+                       reason=None if valid else detail.get('reason',str(detail)[-700:]))
         if valid and jump>settings['max_joint_step_deg']:
             attempt['reason']=f"相邻采样关节变化 {jump:.2f}° 超过 {settings['max_joint_step_deg']:g}°"
             continue

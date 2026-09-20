@@ -86,7 +86,7 @@ class AdaptiveReorientationTests(unittest.TestCase):
                 c,s,h,v,a=fixture();s=reorientation_settings(s);root=Path(d);cfg=root/'trial.json';cfg.write_text(json.dumps(c))
                 service=GraspController(root,None,cfg);service.held_object=h;robot=service.robot=Mock()
                 plan=adaptive_candidate(h,v,np.eye(3),a,c,s,np.array([0,-.05,0]))
-                calls=[];service.arm_state=Mock(side_effect=lambda:copy.deepcopy(a));service.check_reorient_contact=Mock()
+                calls=[];service.verify_motion_targets=Mock();service.arm_state=Mock(side_effect=lambda:copy.deepcopy(a));service.check_reorient_contact=Mock()
                 def move(pose,speed,cancelled,watchdog):
                     calls.append(pose)
                     if len(calls)==1:

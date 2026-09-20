@@ -215,14 +215,18 @@ class GraspTests(unittest.TestCase):
                 fake=Mock()
                 fake.query.side_effect=lambda command:copy.deepcopy(replies[command])
                 fake.register.side_effect=AssertionError('numeric readback must not be required')
-                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch('subprocess.run',side_effect=AssertionError('must not sample or solve the movel path offline')), patch.object(service,'execute') as execute:
+                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'verify_motion_targets') as verify, patch.object(service,'execute') as execute:
                     service.run(observation, preview=preview)
                     self.assertEqual(client.call_args.kwargs['writes'], mode == 'execute' and not preview)
                     self.assertEqual(execute.call_count, int(mode == 'execute' and not preview))
                     self.assertEqual(service.status['plan']['can_execute'], mode == 'execute' and not preview)
                     self.assertEqual(service.status['plan']['force_limit_raw'], 17)
                     self.assertFalse(service.status['plan']['motion_validation']['offline_path_checked'])
-                    self.assertNotIn('ik_check', service.status['plan'])
+                    self.assertTrue(service.status['plan']['motion_validation']['ik_fk_checked']);verify.assert_called_once()
+                    execute.reset_mock();verify.side_effect=ValueError('预抓点正解位置误差 200 毫米')
+                    service.run(observation,preview=preview)
+                    execute.assert_not_called();self.assertEqual(service.status['state'],'failed')
+                    fake.set_register.assert_not_called();fake.move_gripper.assert_not_called()
 
     def force_robot(self):
         robot = Mock()
@@ -350,11 +354,12 @@ class GraspTests(unittest.TestCase):
                     watchdog();self.calls.append(('move',pose));arm['pose']=list(pose)
                 def move_linear(self,pose,speed,cancelled,watchdog):
                     watchdog();self.calls.append(('move',pose));arm['pose']=list(pose)
-            robot=FakeRobot();service.robot=robot;report={}
+            robot=FakeRobot();service.robot=robot;service.verify_motion_targets=Mock();report={}
             service.execute(plan,config,report)
             self.assertEqual(service.status['state'],'completed')
             moves=[x for x in robot.calls if x[0]=='move']
             self.assertEqual(len(moves),3)
+            self.assertEqual(service.verify_motion_targets.call_count,3)
             self.assertEqual(moves[-1][1],plan['waypoints'][-1]['controller_pose'])
             self.assertEqual(robot.calls[:2],[('register',1220,10),('position',1000)])
             self.assertEqual(robot.calls[-3:-1],[('register',1220,10),('position',0)])

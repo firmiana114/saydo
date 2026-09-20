@@ -55,7 +55,7 @@ class ReturnGraspTests(unittest.TestCase):
                     calls.append(('return',target))
                     if failure!='arrival':arm['joint']=target
                 robot.move_joints.side_effect=joints;service.robot=robot
-                with patch('subprocess.run',side_effect=AssertionError('no offline intermediate checks')):
+                with patch.object(service,'verify_motion_targets'):
                     if failure:
                         with self.assertRaises(ValueError):service.execute(plan,config,{})
                     else:

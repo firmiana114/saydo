@@ -8,8 +8,19 @@
 static bool read_pose(rm_pose_t& pose) {
   if (!(std::cin >> pose.position.x >> pose.position.y >> pose.position.z
                 >> pose.euler.rx >> pose.euler.ry >> pose.euler.rz)) return false;
+  if (!std::isfinite(pose.position.x) || !std::isfinite(pose.position.y) || !std::isfinite(pose.position.z)
+      || !std::isfinite(pose.euler.rx) || !std::isfinite(pose.euler.ry) || !std::isfinite(pose.euler.rz)) return false;
   pose.quaternion = rm_algo_euler2quaternion(pose.euler);
   return true;
+}
+
+static double orientation_error(const rm_pose_t& a, const rm_pose_t& b) {
+  auto qa = rm_algo_euler2quaternion(a.euler), qb = rm_algo_euler2quaternion(b.euler);
+  double dot = (double)qa.w*qb.w + (double)qa.x*qb.x + (double)qa.y*qb.y + (double)qa.z*qb.z;
+  double na = std::sqrt((double)qa.w*qa.w + (double)qa.x*qa.x + (double)qa.y*qa.y + (double)qa.z*qa.z);
+  double nb = std::sqrt((double)qb.w*qb.w + (double)qb.x*qb.x + (double)qb.y*qb.y + (double)qb.z*qb.z);
+  if (!(na > 0 && nb > 0)) return NAN;
+  return 2*std::acos(std::min(1.0,std::abs(dot/(na*nb))));
 }
 
 static int joint_path(float* start) {
@@ -41,10 +52,11 @@ int main(int argc, char** argv) {
   if (!read_pose(tool.pose)) return 2;
   rm_algo_set_toolframe(&tool);
   float joints[ARM_DOF]{};
-  for (int i = 0; i < 7; ++i) if (!(std::cin >> joints[i])) return 2;
+  for (int i = 0; i < 7; ++i) if (!(std::cin >> joints[i]) || !std::isfinite(joints[i])) return 2;
   if (argc == 2 && std::string(argv[1]) == "--joint-path-v2") return joint_path(joints);
   auto fk = rm_algo_forward_kinematics(nullptr, joints);
-  std::cout.precision(9);
+  std::cout.precision(12);
+  std::cout << "PROTOCOL IK_FK_V1\n";
   std::cout << "FK " << fk.position.x << ' ' << fk.position.y << ' ' << fk.position.z
             << ' ' << fk.euler.rx << ' ' << fk.euler.ry << ' ' << fk.euler.rz << '\n';
   int count = 0;
@@ -61,6 +73,18 @@ int main(int argc, char** argv) {
     for (int j = 0; j < 7; ++j) std::cout << ' ' << solution[j];
     std::cout << '\n';
     if (code != 0 || collision != 0) return 1;
+    for (int j = 0; j < 7; ++j) if (!std::isfinite(solution[j])) return 3;
+    auto achieved = rm_algo_forward_kinematics(nullptr, solution);
+    double dx = achieved.position.x-input.q_pose.position.x;
+    double dy = achieved.position.y-input.q_pose.position.y;
+    double dz = achieved.position.z-input.q_pose.position.z;
+    double distance = std::sqrt(dx*dx+dy*dy+dz*dz);
+    double angle = orientation_error(achieved,input.q_pose);
+    std::cout << "VERIFY " << i << ' ' << achieved.position.x << ' ' << achieved.position.y << ' ' << achieved.position.z
+              << ' ' << achieved.euler.rx << ' ' << achieved.euler.ry << ' ' << achieved.euler.rz << '\n';
+    std::cout << "RESIDUAL " << i << ' ' << distance << ' ' << angle << '\n';
+    // An IK success flag alone is insufficient near degenerate or unreachable targets.
+    if (!std::isfinite(distance) || !std::isfinite(angle) || distance > 0.002 || angle > 2*std::acos(-1.0)/180) return 3;
     for (int j = 0; j < 7; ++j) joints[j] = solution[j];
   }
   return 0;

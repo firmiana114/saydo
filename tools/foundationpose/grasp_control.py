@@ -16,6 +16,7 @@ import yaml
 
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance, return_joint_target
 from grasp_robot import RobotClient
+from motion_validation import check_waypoints, wait_for_pose
 from camera_checks import camera_binding, check_camera_observation
 from reorientation_control import ReorientationMixin
 
@@ -520,12 +521,18 @@ class GraspController(ReorientationMixin):
                         object_name=observation.get('object_name'),
                         current_arm=arm, gripper_base=base, gripper_state=gripper_state,
                         tool_response=tool['controller_readback']['tool_response_raw'], work_response=work,
+                        flange_T_grip_tcp=tool['flange_T_grip_tcp'],
                         force_limit_raw=grip['force_limit_raw'], force_units=grip['force_units'])
             blockers = workspace_blockers(plan, config)
             if not base.get('force'):
                 blockers.append('当前夹爪未声明支持力度控制')
-            plan['motion_validation'] = {'method':'controller_movej_p_movel_movej', 'offline_path_checked':False,
-                                         'message':'不做中间点采样或运动途中几何/夹持检查；预抓 movej_p、接近/抬升 movel、返回 movej 均由控制器规划并返回结果'}
+            report['plan'] = plan
+            if not blockers:
+                report['active_stage'] = '抓取航点正逆解检查'
+                self.verify_motion_targets(plan,config,report,arm,plan['waypoints'])
+            plan['motion_validation'] = {'method':'ik_fk_endpoints_then_controller_movej_p_movel_movej',
+                'offline_path_checked':False,'ik_fk_checked':not blockers,
+                'message':'抓取航点先做逆解及正解回验，每段发令前按实际关节重查；控制器完成后等待稳定到位。未检查完整中间轨迹或环境碰撞。'}
             plan['execution_blockers'] = blockers
             plan['can_execute'] = mode == 'execute' and not blockers
             report['grasp_profile'] = profile
@@ -554,6 +561,18 @@ class GraspController(ReorientationMixin):
             directory = self.root / 'work/grasp/jobs'
             directory.mkdir(parents=True, exist_ok=True)
             (directory / f'{time.time_ns()}.json').write_text(json.dumps(report, indent=2, ensure_ascii=False))
+
+    def verify_motion_targets(self, plan, config, report, arm, waypoints):
+        self.check_cancel()
+        executable = (self.root/config['ik_checker']).resolve()
+        if not executable.is_file():
+            raise ValueError('缺少支持正解回验的离线检查器，请重新构建 grasp_ik.cpp')
+        valid, detail = check_waypoints(executable,{'flange_T_grip_tcp':plan['flange_T_grip_tcp']},arm,waypoints)
+        report.setdefault('kinematics_checks',[]).append({'stage':report.get('active_stage'),
+            'waypoints':[w['name'] for w in waypoints], 'initial_arm':copy.deepcopy(arm), **detail})
+        self.check_cancel()
+        if not valid:
+            raise ValueError(detail['reason'])
 
     def execute(self, plan, config, report):
         grip = config['gripper']
@@ -595,17 +614,15 @@ class GraspController(ReorientationMixin):
             names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
             report['active_stage'] = names[waypoint['name']]
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
+            self.verify_motion_targets(plan,config,report,self.arm_state(),[waypoint])
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
             move = self.robot.move_joint_pose if waypoint['name'] == 'pregrasp' else self.robot.move_linear
             move(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
-            report.setdefault('arrival_checks', []).append({'stage': report['active_stage'], 'target_pose': waypoint['controller_pose']})
-            reached = self.arm_state()
-            report['arrival_checks'][-1]['actual_arm_state'] = reached
-            if np.linalg.norm((np.array(reached['pose'][:3]) - waypoint['controller_pose'][:3]) / 1e6) > .002:
-                raise ValueError('机械臂实际位置与目标不符')
-            if rotation_error(controller_pose(reached['pose'])[:3, :3], controller_pose(waypoint['controller_pose'])[:3, :3]) > np.deg2rad(2):
-                raise ValueError('机械臂实际朝向与目标相差超过 2 度')
+            check={'stage':report['active_stage']}
+            report.setdefault('arrival_checks',[]).append(check)
+            wait_for_pose(self.arm_state,waypoint['controller_pose'],self.check_cancel,check)
+
         for waypoint in plan['waypoints']:
             if waypoint['name'] != 'lift':
                 move_waypoint(waypoint)
