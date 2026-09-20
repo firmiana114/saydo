@@ -24,6 +24,7 @@ from live_checks import checked_box, pose_health, bottle_candidates, recovery_du
 from object_catalog import scan_objects, select_object, inferred_class
 from grasp_control import GraspController
 from live_events import EventLog
+from camera_checks import select_camera
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,8 +77,11 @@ class Tracker:
         pipe = rs.pipeline()
         started = False
         try:
+            devices = [{'serial': d.get_info(rs.camera_info.serial_number),
+                        'name': d.get_info(rs.camera_info.name)} for d in rs.context().query_devices()]
+            identity = select_camera(devices, self.args.serial)
             cfg = rs.config()
-            cfg.enable_device(self.args.serial)
+            cfg.enable_device(identity['serial'])
             cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 15)
             cfg.enable_stream(rs.stream.depth, 640, 360, rs.format.z16, 15)
             profile = pipe.start(cfg)
@@ -114,11 +118,20 @@ class Tracker:
                 if any(abs(v) > 1e-12 for v in intr.coeffs):
                     raise ValueError('Nonzero color distortion requires rectification')
                 K = np.array([[intr.fx / 2, 0, intr.ppx / 2], [0, intr.fy / 2, intr.ppy / 2], [0, 0, 1.]])
+                camera = {**identity, 'native_size': [intr.width, intr.height], 'image_size': [640, 360],
+                          'frame': 'color_optical_frame', 'K': K.tolist(),
+                          'distortion_coefficients': list(intr.coeffs)}
+                if sequence == 0:
+                    self.event('camera_connected', camera=camera)
+                    session_path = self.output / 'session.json'
+                    session = json.loads(session_path.read_text())
+                    session.update(camera_serial=identity['serial'], camera=camera)
+                    session_path.write_text(json.dumps(session, indent=2))
                 bgr = cv2.resize(np.asanyarray(color.get_data()), (640, 360), interpolation=cv2.INTER_AREA)
                 depth_m = cv2.resize(np.asanyarray(depth.get_data()).astype(np.float32) * scale, (640, 360), interpolation=cv2.INTER_NEAREST)
                 sequence += 1
                 last_camera_number = native_color.get_frame_number()
-                frame = {'bgr': bgr, 'depth': depth_m, 'K': K, 'sequence': sequence,
+                frame = {'bgr': bgr, 'depth': depth_m, 'K': K, 'camera': camera, 'sequence': sequence,
                          'camera_frame_number': int(native_color.get_frame_number()), 'time': captured_at,
                          'received_at': received_at, 'sensor_age_at_receive_s': received_at - captured_at,
                          'alignment_seconds': time.perf_counter() - align_started}
@@ -126,6 +139,7 @@ class Tracker:
                     self.latest = frame
                     self.history.append(frame)
                     self.state['sequence'] = sequence
+                    self.state['camera'] = camera
                     self.state['camera_frame_at'] = frame['time']
                     self.state['sensor_age_at_receive_s'] = frame['sensor_age_at_receive_s']
                     self.state['alignment_seconds'] = frame['alignment_seconds']
@@ -259,7 +273,7 @@ class Tracker:
                 raise ValueError('目标朝向不稳定，请等待稳定跟踪')
             return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
                     'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K'),
-                    'model_sha256': s.get('model_sha256')}
+                    'model_sha256': s.get('model_sha256'), 'camera': s.get('pose_camera')}
 
     def image(self):
         with self.lock:
@@ -563,7 +577,7 @@ class Tracker:
                                 continue
                             self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
-                                pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), error=None)
+                                pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), pose_camera=frame.get('camera'), error=None)
                             if command:
                                 self.state.update(initialization_seconds=initialization_seconds, catchup_frames=catchup_count,
                                                   catchup_seconds=catchup_seconds)
@@ -620,7 +634,7 @@ def main():
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
-    parser.add_argument('--serial', default='135122077750')
+    parser.add_argument('--serial', help='Select a camera by serial; default: the only connected D435I')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')

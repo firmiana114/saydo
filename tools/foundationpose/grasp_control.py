@@ -13,6 +13,7 @@ import yaml
 
 from grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result, rotation_error, minimum_table_clearance
 from grasp_robot import RobotClient
+from camera_checks import camera_binding, check_camera_observation
 
 
 class GraspController:
@@ -201,10 +202,8 @@ class GraspController:
                 work = self.robot.query('get_current_work_frame')
                 if work.get('frame_name') != 'Base' or work.get('pose') != [0]*6:
                     raise ValueError('当前工作坐标系必须是零偏移 Base')
-                expected = np.asarray(handeye['camera']['K'], dtype=float).copy();expected[:2] *= .5
-                observed = np.asarray(observation.get('K'), dtype=float)
-                if observed.shape != (3, 3) or not np.allclose(observed, expected, atol=.05):
-                    raise ValueError('实际视觉内参与手眼标定不匹配')
+                check_camera_observation(handeye, observation)
+                report['camera_calibration'] = handeye.get('runtime_camera_binding')
                 base_tcp = controller_pose(arm['pose'])
                 base_object = object_in_base(base_tcp, tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
                 relative = np.linalg.inv(base_object) @ base_tcp
@@ -274,8 +273,11 @@ class GraspController:
         for record, source in [(handeye, handeye['source']), (tool, tool['controller_readback'])]:
             if hashlib.sha256((self.root / source['path']).read_bytes()).hexdigest() != source['sha256']:
                 raise ValueError('标定原始记录哈希变化')
-        if self.tracker.args.serial != handeye['camera']['serial']:
-            raise ValueError('相机与手眼标定不匹配')
+        policy_path = self.root / 'config/calibration/camera_reuse.yaml'
+        policy = yaml.safe_load(policy_path.read_text()) if policy_path.exists() else {}
+        camera = copy.deepcopy(self.tracker.state.get('camera'))
+        handeye['runtime_camera_binding'] = camera_binding(handeye, camera, policy or {})
+        handeye['runtime_camera'] = camera
         return handeye, tool
 
     def arm_state(self):
@@ -358,15 +360,13 @@ class GraspController:
             if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
                 raise ValueError('夹爪身份不匹配')
             self.check_gripper_start(gripper_state, grip)
-            expected_K = np.array(handeye['camera']['K'], dtype=float)
-            expected_K[:2] *= .5  # The live adapter uses 640x360 from calibrated 1280x720 color.
-            observed_K = np.asarray(observation.get('K'), dtype=float)
-            if observed_K.shape != (3, 3) or not np.allclose(observed_K, expected_K, atol=.05):
-                raise ValueError('实际视觉内参与手眼标定使用的彩色流不匹配')
+            check_camera_observation(handeye, observation)
+            report['camera_calibration'] = handeye.get('runtime_camera_binding')
             profile = self.profile_for(config, observation, tool, handeye)
             base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
             plan = plan_grasp(arm['pose'], base_object, profile, config)
             plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
+                        camera_calibration=handeye.get('runtime_camera_binding'),
                         object_name=observation.get('object_name'),
                         current_arm=arm, gripper_base=base, gripper_state=gripper_state,
                         tool_response=tool['controller_readback']['tool_response_raw'], work_response=work,
