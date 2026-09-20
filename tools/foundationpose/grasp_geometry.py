@@ -96,12 +96,11 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
         T = np.eye(4);T[:3, :3] = target_rotation;T[:3, 3] = xyz
         pose = np.rint(pose_values(T) * np.array([1e6]*3 + [1e3]*3)).astype(int).tolist()
         waypoints.append({'name': name, 'position_m': xyz.tolist(), 'controller_pose': pose})
-    return_target = return_joint_target(config)
     return {'base_T_object': transform(base_object).tolist(), 'target_position_m': target.tolist(),
             'current_position_m': current[:3, 3].tolist(),
             'orientation_policy': policy, 'target_rotation': target_rotation.tolist(),
             'approach_direction_base': approach.tolist(), 'grasp_point_object_m': point.tolist(), 'waypoints': waypoints, 'target_distance_m': distance,
-            'lift_after_grasp': True, 'lift_height_m': lift_height, 'return_joint_raw': return_target}
+            'lift_after_grasp': True, 'lift_height_m': lift_height}
 
 
 def minimum_table_clearance(config):

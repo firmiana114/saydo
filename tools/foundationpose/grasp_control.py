@@ -98,7 +98,7 @@ class GraspController(ReorientationMixin):
             config = json.loads(self.config_path.read_text())
             target = return_joint_target(config)
             if target is None:
-                raise ValueError('尚未配置抓取后的返回姿态，无法复位')
+                raise ValueError('尚未配置机械臂复位目标，无法复位')
             if type(config['arm_speed_percent']) is not int or not 1 <= config['arm_speed_percent'] <= 100:
                 raise ValueError('机械臂速度必须为 1–100 的整数百分比')
             self.cancelled.clear()
@@ -106,7 +106,7 @@ class GraspController(ReorientationMixin):
             self.robot = None
             self.status.update(state='resetting', operation='reset', busy=True, error=None, plan=None,
                                target_object_id=None, target_captured_at=None,
-                               message='正在检查机械臂，准备返回抓取后的记录姿态…')
+                               message='正在检查机械臂，准备返回已记录的复位姿态…')
             self.thread = threading.Thread(target=self.run_reset, args=(config, target), daemon=True)
             self.thread.start()
             return {'accepted': True, 'message': '已开始机械臂复位，夹爪开合保持不变。'}
@@ -159,9 +159,9 @@ class GraspController(ReorientationMixin):
             self.check_cancel()
             self.actuated = True
             report.update(active_stage='机械臂复位', robot_motion_sent=True)
-            self.update(message='正在返回抓取后的记录姿态，夹爪开合保持不变…')
+            self.update(message='正在返回已记录的复位姿态，夹爪开合保持不变…')
             self.return_to_joints(target, config['arm_speed_percent'], report)
-            self.update(state='completed', message='机械臂已复位到抓取后的返回姿态，夹爪开合保持不变。')
+            self.update(state='completed', message='机械臂已到达记录的复位姿态，夹爪开合保持不变。')
         except Exception as error:
             if self.actuated:
                 with self.lock:self.held_object=None
@@ -645,16 +645,8 @@ class GraspController(ReorientationMixin):
                 lifting = True
                 move_waypoint(next(w for w in plan['waypoints'] if w['name'] == 'lift'))
                 watchdog()
-                if plan.get('return_joint_raw') is not None:
-                    watchdog()
-                    report['active_stage'] = '抬升后返回记录姿态'
-                    self.update(state='returning', message='抬升完成，保持夹持并返回记录的关节角度')
-                    self.return_to_joints(plan['return_joint_raw'], config['arm_speed_percent'], report)
-                    self.finish_attachment(report)
-                    self.update(state='completed', message='已完成夹持、抬升并返回记录姿态；夹爪保持闭合。')
-                    return
                 self.finish_attachment(report)
-                self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，请观察物品是否保持夹持。")
+                self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，停留在抬升位置并保持夹持。")
                 return
             time.sleep(.1)
         raise TimeoutError('未确认稳定接触，停止本次抓取')

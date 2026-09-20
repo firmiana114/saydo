@@ -1,4 +1,4 @@
-"""Post-lift joint return uses simulated hardware only."""
+"""Grasp must stop after lift; manual reset transport is retained."""
 import copy
 import json
 from pathlib import Path
@@ -10,13 +10,13 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from grasp_control import GraspController
-from grasp_geometry import plan_grasp
+from grasp_geometry import plan_grasp, return_joint_target
 from grasp_robot import RobotClient
 import test_grasp
 
 
 class ReturnGraspTests(unittest.TestCase):
-    def test_return_is_after_lift_and_requires_contact_and_arrival_without_intermediate_checks(self):
+    def test_grasp_stops_after_lift_even_with_a_legacy_return_target(self):
         for failure in (None, 'arrival', 'empty'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);config=test_grasp.GraspTests().config()
@@ -26,7 +26,9 @@ class ReturnGraspTests(unittest.TestCase):
                 arm={'joint':[0]*7,'pose':[0,0,200000,0,0,0],'err':[0]}
                 obj=np.eye(4);obj[:3,3]=[.1,0,.2]
                 plan=plan_grasp(arm['pose'],obj,config['grasp_profile'],config)
-                plan.update(current_arm=copy.deepcopy(arm),gripper_base={'force_up':[100]},tool_response={},work_response={})
+                self.assertNotIn('return_joint_raw',plan)
+                plan.update(current_arm=copy.deepcopy(arm),gripper_base={'force_up':[100]},tool_response={},work_response={},
+                            object_id='sample',model_sha256='fixture',return_joint_raw=[1000,2000,3000,4000,5000,6000,7000])
                 calls=[];closed=[False]
                 robot=Mock()
                 def query(command):
@@ -43,18 +45,13 @@ class ReturnGraspTests(unittest.TestCase):
                     before=robot.query.call_count
                     watchdog()
                     self.assertEqual(robot.query.call_count,before)
-                    calls.append(('linear',pose));arm['pose']=pose
+                    calls.append(('linear',pose));arm['pose']=pose.copy()
+                    if failure=='arrival' and pose==plan['waypoints'][-1]['controller_pose']:arm['pose'][2]+=15000
                 robot.move_linear.side_effect=linear
                 def joint_pose(pose,speed,cancelled,watchdog):
                     watchdog();calls.append(('joint_pose',pose));arm['pose']=pose
                 robot.move_joint_pose.side_effect=joint_pose
-                def joints(target,speed,cancelled,watchdog):
-                    before=robot.query.call_count
-                    watchdog()
-                    self.assertEqual(robot.query.call_count,before)
-                    calls.append(('return',target))
-                    if failure!='arrival':arm['joint']=target
-                robot.move_joints.side_effect=joints;service.robot=robot
+                robot.move_joints.side_effect=AssertionError('Automatic return after grasp is removed');service.robot=robot
                 with patch.object(service,'verify_motion_targets'):
                     if failure:
                         with self.assertRaises(ValueError):service.execute(plan,config,{})
@@ -63,9 +60,10 @@ class ReturnGraspTests(unittest.TestCase):
                         self.assertEqual(service.status['state'],'completed')
                         robot.move_joint_pose.assert_called_once_with(plan['waypoints'][0]['controller_pose'],config['arm_speed_percent'],service.cancelled,unittest.mock.ANY)
                         self.assertEqual(robot.move_linear.call_count,2)
-                        self.assertEqual(calls[-1],('return',[1000,2000,3000,4000,5000,6000,7000]))
-                        self.assertEqual(calls[-2],('linear',plan['waypoints'][-1]['controller_pose']))
-                    if failure == 'empty':robot.move_joints.assert_not_called()
+                        self.assertEqual(calls[-1],('linear',plan['waypoints'][-1]['controller_pose']))
+                        self.assertEqual(arm['pose'],plan['waypoints'][-1]['controller_pose'])
+                        self.assertEqual(service.held_object['object_id'],'sample')
+                    robot.move_joints.assert_not_called()
                 self.assertEqual([x for x in calls if x[0]=='gripper'],[('gripper',1000),('gripper',0)])
 
     def test_movej_transport_requires_matching_ack_and_completion(self):
@@ -87,11 +85,13 @@ class ReturnGraspTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'取消'):robot.move_joints([0]*7,10,cancel,lambda:None)
             connect.assert_not_called()
 
-    def test_invalid_return_config_rejected_before_motion(self):
+    def test_invalid_manual_reset_config_does_not_block_grasp_planning(self):
         config=test_grasp.GraspTests().config();obj=np.eye(4);obj[2,3]=.2
         for joints in ([0]*6,[0]*6+[float('nan')],[0]*6+[400]):
             config['return_after_lift']={'joint_deg':joints}
-            with self.assertRaises(ValueError):plan_grasp([0,0,200000,0,0,0],obj,config['grasp_profile'],config)
+            with self.assertRaises(ValueError):return_joint_target(config)
+            plan=plan_grasp([0,0,200000,0,0,0],obj,config['grasp_profile'],config)
+            self.assertNotIn('return_joint_raw',plan)
 
     def test_movel_controller_rejection_or_failed_completion_is_not_ignored(self):
         robot=RobotClient('test',writes=True)
