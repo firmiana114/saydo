@@ -1,6 +1,6 @@
 # 变换方向和状态见本目录 README.md；位置统一用米。
 schema_version: 1
-recorded_at: '2026-09-18T07:32:40.261291+00:00'
+recorded_at: '2026-09-21T07:57:13.257541+00:00'
 frame_convention: A_T_B maps coordinates in B into A
 frame_names_are: logical names; ROS TF link mapping is not configured
 units:
@@ -25,15 +25,15 @@ translation_m:
 rpy_rad:
 - 0.0
 - 0.0
-- 0.0
+- 2.611
 rpy_convention: Rz(yaw) @ Ry(pitch) @ Rx(roll)
 flange_T_grip_tcp:
-- - 1.0
+- - -0.8625073128574445
+  - -0.5060445981012249
   - 0.0
   - 0.0
-  - 0.0
-- - 0.0
-  - 1.0
+- - 0.5060445981012249
+  - -0.8625073128574445
   - 0.0
   - 0.0
 - - 0.0
@@ -56,7 +56,9 @@ geometry:
   reference_gripper_position_logical: null
   reference_opening_note: Geometry has not been validated at logical position 500
     or mapped to opening millimeters.
-  axes: parallel to flange axes; jaw-opening axis alignment is not verified
+  axes: User confirmed camera/gripper parallel installation; TCP yaw follows camera
+    yaw rounded to controller readback 2.611 rad; Z remains parallel to flange Z.
+    Jaw alignment is user-confirmed, not independently measured.
   correction:
     previous_translation_m:
     - 0.0
@@ -73,23 +75,37 @@ geometry:
     previous_controller_readback:
       path: work/calibration/controller_readback_20260918T032413242307Z.json
       sha256: db46ad24fb09a91efc06b88e78f31411e432f5129222e0b0b0679520ef65ba83
+  orientation_update:
+    source: user_teach_pendant_edit_and_controller_readback
+    recorded_at: '2026-09-21T07:57:13.257541+00:00'
+    previous_rpy_rad:
+    - 0.0
+    - 0.0
+    - 0.0
+    previous_config_path: work/calibration/tool_sync_20260921T075713257541Z/tool_before.yaml
+    camera_yaw_rad: 2.6113185866154427
+    applied_yaw_rad: 2.611
+    position_unchanged: true
 load:
-  mass_kg: 1.061
+  mass_kg: 0.9895853881835938
   center_of_mass_m:
-  - -0.017
-  - -0.014
-  - 0.086
+  - -0.012
+  - 0.009
+  - 0.12
   center_of_mass_reference_frame: null
   reference_frame_note: Controller CX/CY/CZ preserved without translation; physical
     reference frame not independently confirmed.
   method: controller_readback_after_user_tool_edit
   independently_weighed: false
   identification:
-    performed_on: '2026-09-15'
-    date_source: user report in current conversation
-    gripper_position_logical: 500
-    opening_source: explicit_user_report
-    tcp_geometry_calibrated_at_this_opening: false
+    current_identification_date: null
+    current_identification_method: not_confirmed
+    previous_record:
+      performed_on: '2026-09-15'
+      date_source: user report in current conversation
+      gripper_position_logical: 500
+      opening_source: explicit_user_report
+      tcp_geometry_calibrated_at_this_opening: false
 gripper:
   model: CTAG2F90D
   model_source: user-identified hardware
@@ -98,24 +114,24 @@ gripper:
   firmware: V1.154
   position_units: dimensionless_logical
 controller_readback:
-  path: work/calibration/controller_readback_20260918T073240261291Z.json
+  path: work/calibration/tool_sync_20260921T075713257541Z/controller_readback.json
   path_base: repository_root
-  sha256: 237ad9b746afbde46cad0ee373523cef5cab873e659158ba4393c5801dbbcbf6
-  read_at: '2026-09-18T07:32:40.261291+00:00'
+  sha256: bc974bb7ccdcd332310d75f4e6e717dca040db90faefd7d8b5a2cf02c7195df2
+  read_at: '2026-09-21T07:57:13.257541+00:00'
   tool_was_active: true
   tool_response_raw:
-    payload: 1061
+    payload: 989.5853881835938
     pose:
     - 0
     - 0
     - 190500
     - 0
     - 0
-    - 0
+    - 2611
     position:
-    - -17000
-    - -14000
-    - 86000
+    - -12000
+    - 9000
+    - 120000
     state: current_tool_frame
     tool_name: grip_tcp
   raw_units:
