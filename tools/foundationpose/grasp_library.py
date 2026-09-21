@@ -76,12 +76,29 @@ def effective_config(config, entry):
 
 
 class GraspLibrary:
-    def __init__(self, root):
+    def __init__(self, root, models_root=None):
         self.directory = Path(root)/'work/grasp'
+        self.models_root = Path(models_root) if models_root is not None else Path(root)/'work/object_models'
+        # Read-only compatibility sources. New writes always belong to one model.
         self.path = self.directory/'grasp_profiles.json'
         self.legacy = self.directory/'taught_profiles.json'
 
-    def read(self):
+    def object_directory(self, object_id):
+        if (not isinstance(object_id, str) or not object_id or object_id.startswith('.')
+                or '/' in object_id or '\\' in object_id or '\x00' in object_id):
+            raise ValueError('物品 ID 必须是模型目录名称')
+        directory = self.models_root/object_id
+        if directory.is_symlink() or not directory.resolve().is_relative_to(self.models_root.resolve()):
+            raise ValueError('物品数据路径必须位于模型目录内')
+        return directory
+
+    def object_path(self, object_id):
+        path = self.object_directory(object_id)/'grasp_profiles.json'
+        if path.is_symlink():
+            raise ValueError('夹法文件不能是符号链接')
+        return path
+
+    def legacy_data(self):
         if not self.path.exists():
             return {'schema_version': 2, 'objects': {}}
         data = json.loads(self.path.read_text())
@@ -89,17 +106,29 @@ class GraspLibrary:
             raise ValueError('夹法库版本或格式无效')
         return data
 
-    def object(self, object_id, data=None):
-        data = self.read() if data is None else data
+    def has_object(self, object_id):
+        return self.object_path(object_id).exists() or object_id in self.legacy_data()['objects']
+
+    @staticmethod
+    def checked_object(value):
+        if (not isinstance(value, dict) or value.get('selection_mode') not in ('auto', 'manual')
+                or not isinstance(value.get('grasps'), list) or len(value['grasps']) > MAX_GRASPS):
+            raise ValueError('物品夹法列表格式无效')
+        ids = [g['id'] for g in value['grasps']]
+        if len(set(ids)) != len(ids):
+            raise ValueError('夹法编号重复')
+        return copy.deepcopy(value)
+
+    def object(self, object_id):
+        path = self.object_path(object_id)
+        if path.exists():
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict) or data.get('schema_version') != 3 or data.get('object_id') != object_id:
+                raise ValueError('模型夹法文件版本或物品 ID 不匹配')
+            return self.checked_object(data['configuration'])
+        data = self.legacy_data()
         if object_id in data['objects']:
-            value = copy.deepcopy(data['objects'][object_id])
-            if (not isinstance(value, dict) or value.get('selection_mode') not in ('auto', 'manual')
-                    or not isinstance(value.get('grasps'), list) or len(value['grasps']) > MAX_GRASPS):
-                raise ValueError('物品夹法列表格式无效')
-            ids = [g['id'] for g in value['grasps']]
-            if len(set(ids)) != len(ids):
-                raise ValueError('夹法编号重复')
-            return value
+            return self.checked_object(data['objects'][object_id])
         records = json.loads(self.legacy.read_text()) if self.legacy.exists() else {}
         old = records.get(object_id)
         grasps = []
@@ -110,29 +139,25 @@ class GraspLibrary:
 
     def write_object(self, object_id, value, expected_revision):
         """Caller holds the shared task/device lock; also reject external edits."""
-        original = self.path.read_bytes() if self.path.exists() else None
-        data = self.read()
-        if revision(self.object(object_id, data)) != expected_revision:
+        path = self.object_path(object_id);directory = path.parent
+        original = path.read_bytes() if path.exists() else None
+        if revision(self.object(object_id)) != expected_revision:
             raise ValueError('夹法已被其他页面修改，请重新载入')
-        # Preserve all legacy objects on first write, without rewriting the source file.
-        if self.legacy.exists():
-            for key in json.loads(self.legacy.read_text()):
-                if key not in data['objects']:
-                    data['objects'][key] = self.object(key, data)
-        data['objects'][object_id] = copy.deepcopy(value)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        data = {'schema_version': 3, 'object_id': object_id, 'configuration': self.checked_object(value)}
+        directory.mkdir(parents=True, exist_ok=True)
         temporary = None
         try:
-            with tempfile.NamedTemporaryFile(mode='w', dir=self.directory, prefix='.grasps-', delete=False) as out:
+            with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.grasps-', delete=False) as out:
                 temporary = Path(out.name)
-                os.fchmod(out.fileno(), self.path.stat().st_mode & 0o777 if original is not None else 0o644)
+                os.fchmod(out.fileno(), path.stat().st_mode & 0o777 if original is not None else 0o644)
                 out.write(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False)+'\n');out.flush();os.fsync(out.fileno())
-            if (self.path.read_bytes() if self.path.exists() else None) != original:
+            if ((path.read_bytes() if path.exists() else None) != original
+                    or revision(self.object(object_id)) != expected_revision):
                 raise ValueError('夹法文件同时被其他程序修改，未保存')
             if original is not None:
-                backups = self.directory/'grasp_profile_backups';backups.mkdir(exist_ok=True)
+                backups = directory/'grasp_profile_backups';backups.mkdir(exist_ok=True)
                 (backups/f'{time.time_ns()}.json').write_bytes(original)
-            temporary.replace(self.path)
+            temporary.replace(path)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

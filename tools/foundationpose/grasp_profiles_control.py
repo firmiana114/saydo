@@ -17,6 +17,9 @@ from reorientation_visual import model_appearance
 
 
 class GraspProfilesMixin:
+    def grasp_library(self):
+        return GraspLibrary(self.root, getattr(self.tracker, 'models_root', None))
+
     def grasp_editor_model(self, object_id):
         geometry = model_geometry(self.tracker.models_root, object_id)
         low, high = point_limits(geometry['vertices'])
@@ -34,7 +37,7 @@ class GraspProfilesMixin:
         config = json.loads(self.config_path.read_text())
         tool = yaml.safe_load((self.root/config['tool_file']).read_text())['controller_readback']['tool_response_raw']
         handeye = yaml.safe_load((self.root/config['handeye_file']).read_text())['flange_T_color_optical_camera']
-        value = GraspLibrary(self.root).object(object_id)
+        value = self.grasp_library().object(object_id)
         entries = []
         for entry in value['grasps']:
             row = copy.deepcopy(entry)
@@ -59,7 +62,7 @@ class GraspProfilesMixin:
             with (directory/'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 geometry = model_geometry(self.tracker.models_root, object_id)
-                library = GraspLibrary(self.root);value = library.object(object_id);before = revision(value)
+                library = self.grasp_library();value = library.object(object_id);before = revision(value)
                 if request.get('revision') != before:
                     raise ValueError('夹法已变化，请重新载入后操作')
                 selected = next((g for g in value['grasps'] if g['id'] == request.get('id')), None)
@@ -122,7 +125,7 @@ class GraspProfilesMixin:
                     if not entry['enabled'] and value['selected_id']==entry['id']:
                         value.update(selection_mode='auto',selected_id=None)
                 library.write_object(object_id,value,before)
-                records = directory/'grasp_profile_commands';records.mkdir(exist_ok=True)
+                records = library.object_directory(object_id)/'grasp_profile_commands';records.mkdir(parents=True,exist_ok=True)
                 (records/f'{time.time_ns()}.json').write_text(json.dumps({'action':action,'object_id':object_id,
                     'id':selected['id'] if selected else None,'before_revision':before,'after_revision':revision(value),
                     'motion_sent':False},ensure_ascii=False,indent=2))
@@ -130,10 +133,10 @@ class GraspProfilesMixin:
             return {**self.grasp_profiles(object_id), 'saved_id':selected['id'] if selected else None, 'motion_sent':False}
 
     def select_grasp_candidate(self, config, observation, tool, handeye, base_object, arm, report):
-        library = GraspLibrary(self.root);value = library.object(observation['object_id'])
+        library = self.grasp_library();value = library.object(observation['object_id'])
         entries = value['grasps']
         # Config-only installations keep their existing single-profile behavior.
-        if not entries and observation['object_id'] not in library.read()['objects']:
+        if not entries and not library.has_object(observation['object_id']):
             entries = [{'id':'config','name':'配置夹法','enabled':True,'priority':0,'profile':copy.deepcopy(config['grasp_profile']),
                         'model_sha256':observation.get('model_sha256'),'tool_response':tool['controller_readback']['tool_response_raw']}]
         if value['selection_mode']=='manual':

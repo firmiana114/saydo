@@ -21,7 +21,7 @@ from camera_checks import camera_binding, check_camera_observation
 from reorientation_control import ReorientationMixin
 from placement_control import PlacementMixin
 from grasp_profiles_control import GraspProfilesMixin
-from grasp_library import GraspLibrary, binding_error, revision
+from grasp_library import binding_error, revision
 
 
 class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
@@ -322,7 +322,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         profile = copy.deepcopy(config['grasp_profile'])
         if profile['orientation'] != 'follow_object':
             return profile
-        value = GraspLibrary(self.root).object(observation['object_id'])
+        value = self.grasp_library().object(observation['object_id'])
         records = value['grasps']
         record = next((r for r in records if r['id']==value['selected_id']), records[0] if records else None)
         if record is not None:
@@ -375,7 +375,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 record = {'profile': profile, 'model_sha256': observation['model_sha256'],
                           'tool_response': tool['controller_readback']['tool_response_raw'],
                           'flange_T_camera': handeye['flange_T_color_optical_camera'], 'recorded_at': time.time()}
-                entry = GraspLibrary(self.root).append_taught(observation['object_id'], record)
+                entry = self.grasp_library().append_taught(observation['object_id'], record)
                 report['grasp_id'] = entry['id']
                 report['record'] = record
                 message = '已新增并选用当前物品的夹法，保存朝向' + ('及夹持位置' if use_current_point else '；夹持位置采用记录时的文件配置')
@@ -387,7 +387,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             raise ValueError('记录夹法失败：' + str(error)) from error
         finally:
             self.update(busy=False)
-            records = directory / 'teach_commands';records.mkdir(exist_ok=True)
+            records = self.grasp_library().object_directory(observation['object_id'])/'teach_commands';records.mkdir(parents=True,exist_ok=True)
             (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
 
     def start(self, preview=False):
@@ -543,7 +543,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             if not plan['can_execute']:
                 self.update(state='blocked' if blockers else 'preview', message='已生成方案；未发送运动。' + ('\n阻塞原因：\n' + '\n'.join(f'{i+1}. {reason}' for i, reason in enumerate(blockers)) if blockers else '当前为预览模式，航点基础检查已通过；各段轨迹均将在实际运动时由控制器规划。'))
                 return
-            library = GraspLibrary(self.root)
+            library = self.grasp_library()
             if revision(library.object(observation['object_id'])) != plan['grasp_library_revision']:
                 raise ValueError('夹法库在规划后变化，请重新预览')
             self.execute(plan, config, report)

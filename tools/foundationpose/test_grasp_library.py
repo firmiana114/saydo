@@ -29,7 +29,7 @@ class GraspLibraryTests(unittest.TestCase):
         (self.root/'handeye.yaml').write_text(yaml.safe_dump({'flange_T_color_optical_camera':np.eye(4).tolist()}))
         self.mesh={'object_id':'cup','object_name':'测试物品','model_sha256':'mesh','vertices':[[x,y,z] for x in [-.03,.03] for y in [-.03,.03] for z in [-.05,.05]],'faces':[[0,1,2]]}
         self.service=GraspController(self.root,SimpleNamespace(models_root=self.root),self.cfg)
-        self.library=GraspLibrary(self.root)
+        self.library=GraspLibrary(self.root,self.root)
         self.mock=patch('grasp_profiles_control.model_geometry',side_effect=lambda *args:copy.deepcopy(self.mesh));self.mock.start();self.addCleanup(self.mock.stop)
         self.profile={'grasp_point_object_m':[0,0,0],'object_R_tcp':np.eye(3).tolist()}
 
@@ -54,9 +54,9 @@ class GraspLibraryTests(unittest.TestCase):
         result=self.save('新夹法')
         self.assertEqual(len(result['grasps']),2)
         self.assertEqual(self.library.legacy.read_bytes(),original)
-        data=self.library.read();self.assertEqual(data['schema_version'],2)
-        self.assertEqual(data['objects']['other']['grasps'][0]['profile'],old['profile'])
-        self.assertEqual(data['objects']['cup']['grasps'][0]['profile'],old['profile'])
+        self.assertFalse(self.library.object_path('other').exists())
+        self.assertEqual(self.library.object('other')['grasps'][0]['profile'],old['profile'])
+        self.assertEqual(self.library.object('cup')['grasps'][0]['profile'],old['profile'])
 
     def test_save_duplicate_disable_delete_and_selection_never_connect(self):
         with patch('grasp_robot.socket.create_connection',side_effect=AssertionError('editor must never connect')):
@@ -73,10 +73,10 @@ class GraspLibraryTests(unittest.TestCase):
             self.assertEqual(len(result['grasps']),1)
             result=self.service.edit_grasp_profiles(self.request('delete',id=id2))
             self.assertEqual(result['grasps'],[])
-        self.assertTrue(list((self.library.directory/'grasp_profile_backups').glob('*.json')))
+        self.assertTrue(list((self.library.object_directory('cup')/'grasp_profile_backups').glob('*.json')))
 
     def test_stale_revision_bad_geometry_busy_and_disk_failure_preserve_data(self):
-        stale=self.request(grasp=self.entry());self.save();original=self.library.path.read_bytes()
+        stale=self.request(grasp=self.entry());self.save();original=self.library.object_path('cup').read_bytes()
         with self.assertRaisesRegex(ValueError,'变化'):self.service.edit_grasp_profiles(stale)
         for profile in [{'grasp_point_object_m':[1,2,3],'object_R_tcp':np.eye(3).tolist()},
                         {'grasp_point_object_m':[0,0,0],'object_R_tcp':np.diag([1,1,-1]).tolist()},
@@ -91,8 +91,8 @@ class GraspLibraryTests(unittest.TestCase):
             with self.assertRaises(BlockingIOError):self.save()
         with patch.object(Path,'replace',side_effect=OSError('disk failure')):
             with self.assertRaises(OSError):self.save()
-        self.assertEqual(self.library.path.read_bytes(),original)
-        self.assertFalse(list(self.library.directory.glob('.grasps-*')))
+        self.assertEqual(self.library.object_path('cup').read_bytes(),original)
+        self.assertFalse(list(self.library.object_directory('cup').glob('.grasps-*')))
 
     def test_nonorigin_center_beyond_old_twenty_cm_limit_and_overrides(self):
         self.mesh['vertices']=(np.asarray(self.mesh['vertices'])+[.4,0,0]).tolist()

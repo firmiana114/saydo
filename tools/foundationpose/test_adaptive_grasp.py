@@ -84,18 +84,18 @@ class AdaptiveGraspTests(unittest.TestCase):
                 changed_handeye=copy.deepcopy(handeye);changed_handeye['flange_T_color_optical_camera'][0][3]=.01
                 with self.assertRaisesRegex(ValueError,'手眼标定已变化'):
                     fresh.profile_for(config,observation,tool,changed_handeye)
-                saved=(root/'work/grasp/grasp_profiles.json').read_bytes()
+                saved=(root/'work/object_models/cup/grasp_profiles.json').read_bytes()
                 with patch.object(service,'check_cancel',side_effect=ValueError('抓取已取消')):
                     with self.assertRaisesRegex(ValueError,'取消'):service.teach()
-                self.assertEqual((root/'work/grasp/grasp_profiles.json').read_bytes(), saved)
+                self.assertEqual((root/'work/object_models/cup/grasp_profiles.json').read_bytes(), saved)
                 result=service.teach(False)
                 self.assertEqual(result['profile']['grasp_point_object_m'],[0,0,0])
-                library=json.loads((root/'work/grasp/grasp_profiles.json').read_text())
-                self.assertEqual(len(library['objects']['cup']['grasps']),2)
-                self.assertEqual(library['objects']['cup']['grasps'][0]['profile']['grasp_point_object_m'],[-.1,0,0])
+                library=json.loads((root/'work/object_models/cup/grasp_profiles.json').read_text())
+                self.assertEqual(len(library['configuration']['grasps']),2)
+                self.assertEqual(library['configuration']['grasps'][0]['profile']['grasp_point_object_m'],[-.1,0,0])
                 service.status['busy']=True
                 with self.assertRaisesRegex(ValueError,'已有抓取'):service.teach()
-            self.assertEqual(len(list((root/'work/grasp/teach_commands').glob('*.json'))),3)
+            self.assertEqual(len(list((root/'work/object_models/cup/teach_commands').glob('*.json'))),3)
 
 
 if __name__ == '__main__':
