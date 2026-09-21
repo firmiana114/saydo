@@ -2,6 +2,7 @@
 'use strict';
 const ReorientationMath={
   identity:()=>[[1,0,0],[0,1,0],[0,0,1]],
+  defaultView:()=>[[Math.SQRT1_2,Math.SQRT1_2,0],[-1/Math.sqrt(6),1/Math.sqrt(6),2/Math.sqrt(6)],[1/Math.sqrt(3),-1/Math.sqrt(3),1/Math.sqrt(3)]],
   multiply:(a,b)=>a.map(row=>b[0].map((_,j)=>row.reduce((s,v,k)=>s+v*b[k][j],0))),
   apply:(r,p)=>r.map(row=>row.reduce((s,v,k)=>s+v*p[k],0)),
   dot:(a,b)=>a.reduce((s,v,k)=>s+v*b[k],0),
@@ -13,6 +14,7 @@ const ReorientationMath={
     return [(regular?Math.atan2(r[2][1],r[2][2]):0),y,(regular?Math.atan2(r[1][0],r[0][0]):Math.atan2(-r[0][1],r[1][1]))].map(v=>v*180/Math.PI);},
   column(r){return new Float32Array([r[0][0],r[1][0],r[2][0],r[0][1],r[1][1],r[2][1],r[0][2],r[1][2],r[2][2]]);},
   rotate(rotation,delta,mode='free'){return mode==='free'?this.multiply(delta,rotation):this.multiply(rotation,delta);},
+  orbit(basis,start,end,width,height,fine=false){return this.multiply(basis,this.drag(start,end,width,height,basis,'free',fine));},
   objectOrigin(rotation,pivot,translation=[0,0,0]){return this.apply(rotation,pivot).map((v,k)=>translation[k]-v);},
   axisAngle(axis,angle){const [x,y,z]=this.unit(axis),c=Math.cos(angle),s=Math.sin(angle),t=1-c;
     return [[t*x*x+c,t*x*y-s*z,t*x*z+s*y],[t*x*y+s*z,t*y*y+c,t*y*z-s*x],[t*x*z-s*y,t*y*z+s*x,t*z*z+c]];},
@@ -29,9 +31,9 @@ const ReorientationMath={
   }
 };
 class ReorientationViewer{
-  constructor(canvas,overlay){
+  constructor(canvas,overlay,viewControl=null){
     this.canvas=canvas;this.overlay=overlay;this.translation=[0,0,0];this.rotation=ReorientationMath.identity();this.zoom=1;this.version=0;this.textures=[];this.showAxes=true;
-    this.basis=[[Math.SQRT1_2,Math.SQRT1_2,0],[-1/Math.sqrt(6),1/Math.sqrt(6),2/Math.sqrt(6)],[1/Math.sqrt(3),-1/Math.sqrt(3),1/Math.sqrt(3)]];
+    this.basis=ReorientationMath.defaultView();this.viewControl=viewControl;
     const gl=this.gl=canvas.getContext('webgl',{antialias:true});
     if(!gl)throw Error('浏览器未启用三维绘图，请开启硬件加速后刷新。');
     const shader=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;};
@@ -45,6 +47,8 @@ class ReorientationViewer{
     this.white=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,this.white);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([255,255,255,255]));gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
     new ResizeObserver(()=>this.draw()).observe(canvas);
   }
+  resetView(){this.basis=ReorientationMath.defaultView();this.zoom=1;this.draw();}
+  orbitView(basis,start,end,width,height,fine=false){this.basis=ReorientationMath.orbit(basis,start,end,width,height,fine);this.draw();}
   setModel(model){
     const gl=this.gl,version=++this.version;for(const texture of this.textures)if(texture)gl.deleteTexture(texture);this.textures=[];
     this.model=model;this.translation=[0,0,0];this.zoom=1;this.pivot=model.pivot_object_m||[0,0,0];this.radius=model.vertices.reduce((r,p)=>Math.max(r,Math.hypot(...p.map((v,k)=>v-this.pivot[k]))),.04);
@@ -109,10 +113,11 @@ class ReorientationViewer{
     }
     const pivot=project(this.translation);if(Math.hypot(...this.translation)>1e-6){const from=project([0,0,0]);arrow(from,pivot,'#ffe19b',true);add('circle',{cx:from[0],cy:from[1],r:5,fill:'none',stroke:'#b8c6d0'});label('起点',from[0]-25,from[1]-12,'#b8c6d0',12);}add('circle',{cx:pivot[0],cy:pivot[1],r:8,fill:'none',stroke:'#ffe19b','stroke-width':2,'stroke-dasharray':'3 2'});add('line',{x1:pivot[0]+8,y1:pivot[1]+8,x2:pivot[0]+48,y2:pivot[1]+45,stroke:'#ffe19b','stroke-width':1,'stroke-dasharray':'3 3'});label(this.model.holding?(Math.hypot(...this.translation)>1e-6?'目标 TCP':'目标 TCP'):'预览中心（未抓取）',pivot[0]+50,pivot[1]+51,'#ffe19b',12);
     const small=width<450,cardW=small?112:146,cardH=small?98:115,anchor=[small?62:80,height-(small?54:65)],length=small?30:42;
+    if(this.viewControl){this.viewControl.style.width=cardW+'px';this.viewControl.style.height=cardH+'px';}
     add('rect',{x:12,y:height-cardH-12,width:cardW,height:cardH,rx:9,fill:'#101c28',stroke:'#385267'});
     label('固定基座坐标',22,height-cardH+6,'#cedce6',small?10:12);
     for(let i=0;i<3;i++){const end=[anchor[0]+this.basis[0][i]*length,anchor[1]-this.basis[1][i]*length];arrow(anchor,end,colors[i]);label(names[i],end[0]+7,end[1]+4,colors[i],small?11:13);}
-    label('参考网格 5 cm',22,height-22,'#9aafbf',small?10:11);
+    label(small?'拖动旋转视角':'拖动视角 · 网格 5 cm',22,height-22,'#9aafbf',small?10:11);
     label(this.textureState,16,26,'#cadce8',12);label(`${Math.round(this.zoom*100)}%`,width-62,26,'#cadce8',12);
     this.overlay.replaceChildren(svg);
   }
@@ -124,22 +129,45 @@ class ReorientationPanel{
     this.preview=document.querySelector('#reorient-preview');this.execute=document.querySelector('#reorient');this.restore=document.querySelector('#reorientation-restore');
     this.positionMode=document.querySelector('#reorientation-position-mode');
     this.inputs=['x','y','z'].map(axis=>document.querySelector('#reorientation-'+axis));
-    try{this.viewer=new ReorientationViewer(document.querySelector('#reorientation-view'),document.querySelector('#reorientation-overlay'));}catch(e){this.info.textContent=e.message;return;}
+    this.cameraControl=document.querySelector('#reorientation-camera-control');
+    try{this.viewer=new ReorientationViewer(document.querySelector('#reorientation-view'),document.querySelector('#reorientation-overlay'),this.cameraControl);}catch(e){this.info.textContent=e.message;return;}
     for(const input of this.inputs)input.oninput=()=>{if(this.disabled)return;if(!this.anglesValid()){this.preview.disabled=true;this.execute.disabled=true;this.feedback.textContent='请填写三个有效角度，每项在 −180 到 180 度之间。';return;}this.viewer.rotation=ReorientationMath.euler(...this.inputs.map(x=>Number(x.value)));this.changed();};
     this.restore.onclick=()=>{this.viewer.rotation=this.viewer.model.initial_rotation.map(row=>row.slice());this.syncAngles();this.changed();};
     this.positionMode.onchange=()=>{this.changed();};
     this.dragMode=document.querySelector('#reorientation-drag-mode');
     this.axes=document.querySelector('#reorientation-axes');this.axes.onchange=()=>{this.viewer.showAxes=this.axes.checked;this.viewer.draw();};
-    this.viewReset=document.querySelector('#reorientation-view-reset');this.viewReset.onclick=()=>{this.viewer.zoom=1;this.viewer.draw();};
-    let anchor=null;const canvas=this.viewer.canvas;
+    this.viewReset=document.querySelector('#reorientation-view-reset');
+    let anchor=null,viewAnchor=null;const canvas=this.viewer.canvas;
     const point=e=>{const r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
-    canvas.onpointerdown=e=>{if(this.disabled||!this.viewer.model||e.button!==0||anchor)return;e.preventDefault();canvas.focus();anchor={id:e.pointerId,point:point(e),rotation:this.viewer.rotation.map(row=>row.slice()),mode:this.dragMode.value,fine:e.shiftKey};canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');};
+    canvas.onpointerdown=e=>{if(this.disabled||!this.viewer.model||e.button!==0||anchor||viewAnchor)return;e.preventDefault();canvas.focus();anchor={id:e.pointerId,point:point(e),rotation:this.viewer.rotation.map(row=>row.slice()),mode:this.dragMode.value,fine:e.shiftKey};canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');};
     const release=()=>{anchor=null;canvas.classList.remove('dragging');};this.cancelDrag=release;
     canvas.onpointermove=e=>{if(!anchor||e.pointerId!==anchor.id)return;if(this.disabled){release();return;}const delta=ReorientationMath.drag(anchor.point,point(e),canvas.clientWidth,canvas.clientHeight,this.viewer.basis,anchor.mode,anchor.fine);this.viewer.rotation=ReorientationMath.rotate(anchor.rotation,delta,anchor.mode);this.syncAngles();this.changed();};
     canvas.onpointerup=canvas.onpointercancel=e=>{if(anchor?.id===e.pointerId)release();};canvas.onlostpointercapture=release;
     canvas.addEventListener('wheel',e=>{if(this.disabled)return;e.preventDefault();this.viewer.zoom=Math.max(.6,Math.min(2.8,this.viewer.zoom*Math.exp(-e.deltaY*.001)));this.viewer.draw();},{passive:false});
     canvas.ondblclick=()=>{if(!this.disabled){this.viewer.zoom=1;this.viewer.draw();}};
     canvas.onkeydown=e=>{if(this.disabled||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const sign=['ArrowLeft','ArrowDown'].includes(e.key)?-1:1,mode=this.dragMode.value,axis=mode==='free'?(e.key==='ArrowUp'||e.key==='ArrowDown'?this.viewer.basis[0]:this.viewer.basis[1]):[0,1,2].map(i=>i==='xyz'.indexOf(mode)?1:0);this.viewer.rotation=ReorientationMath.rotate(this.viewer.rotation,ReorientationMath.axisAngle(axis,sign*(e.shiftKey?1:5)*Math.PI/180),mode);this.syncAngles();this.changed();};
+    const camera=this.cameraControl;
+    const viewPoint=e=>{const r=camera.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
+    const releaseView=()=>{const id=viewAnchor?.id;viewAnchor=null;camera.classList.remove('dragging');if(id!==undefined&&camera.hasPointerCapture(id))camera.releasePointerCapture(id);};
+    camera.onpointerdown=e=>{
+      if(!this.viewer.model||e.button!==0||viewAnchor||anchor)return;
+      e.preventDefault();e.stopPropagation();camera.focus();const r=camera.getBoundingClientRect();
+      viewAnchor={id:e.pointerId,point:viewPoint(e),basis:this.viewer.basis.map(row=>row.slice()),width:r.width,height:r.height,fine:e.shiftKey};
+      camera.setPointerCapture(e.pointerId);camera.classList.add('dragging');
+    };
+    camera.onpointermove=e=>{if(!viewAnchor||e.pointerId!==viewAnchor.id)return;e.preventDefault();this.viewer.orbitView(viewAnchor.basis,viewAnchor.point,viewPoint(e),viewAnchor.width,viewAnchor.height,viewAnchor.fine);};
+    camera.onpointerup=camera.onpointercancel=e=>{if(viewAnchor?.id===e.pointerId)releaseView();};camera.onlostpointercapture=releaseView;
+    const resetView=()=>{releaseView();this.viewer.resetView();};
+    camera.ondblclick=e=>{e.preventDefault();resetView();};this.viewReset.onclick=resetView;
+    camera.onkeydown=e=>{
+      if(!this.viewer.model)return;
+      if(e.key==='Home'){e.preventDefault();resetView();return;}
+      if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;
+      e.preventDefault();e.stopPropagation();releaseView();
+      const sign=['ArrowLeft','ArrowDown'].includes(e.key)?-1:1,axis=['ArrowUp','ArrowDown'].includes(e.key)?this.viewer.basis[0]:this.viewer.basis[1];
+      const delta=ReorientationMath.axisAngle(axis,sign*(e.shiftKey?1:5)*Math.PI/180);
+      this.viewer.basis=ReorientationMath.multiply(this.viewer.basis,delta);this.viewer.draw();
+    };
     this.preview.onclick=()=>this.request(true);this.execute.onclick=()=>this.request(false);
   }
   syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});}
@@ -148,7 +176,7 @@ class ReorientationPanel{
   async load(id,key){
     this.key=key;this.loading=true;const generation=++this.generation;this.info.textContent='正在加载物品模型…';
     try{const response=await fetch('/api/reorient/model?object_id='+encodeURIComponent(id)),model=await response.json();if(!response.ok)throw Error(model.error);if(generation!==this.generation)return;
-      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为目标 TCP；预览仅显示目标位姿和端点位移。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'左下角为固定基座坐标。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
+      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为目标 TCP；预览仅显示目标位姿和端点位移。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'拖动左下角基座坐标可旋转观察视角，不改变目标姿态。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
       this.feedback.textContent=model.holding?'已关联本次抓取，可以预览或调整姿态。':'可先旋转查看；成功抓取后加载该次抓取朝向，才能执行姿态调整。';
     }catch(e){if(generation===this.generation){this.viewer.model=null;this.info.textContent='模型加载失败：'+e.message;}}
     finally{if(generation===this.generation)this.loading=false;}
@@ -159,7 +187,7 @@ class ReorientationPanel{
     const id=this.held?.object_id||state.object_id,key=[id,this.held?.hold_id||'',this.held?.model_sha256||state.model_sha256,this.held?.orientation_version||0].join(':');
     if(id&&key!==this.key)this.load(id,key);
     this.disabled=!!g.busy||otherPending||this.pending||this.loading||!this.viewer.model;
-    if(this.disabled)this.cancelDrag();this.dragMode.disabled=this.disabled;this.viewReset.disabled=this.disabled;this.viewer.canvas.setAttribute('aria-disabled',String(this.disabled));
+    if(this.disabled)this.cancelDrag();this.dragMode.disabled=this.disabled;this.viewReset.disabled=!this.viewer.model;this.cameraControl.disabled=!this.viewer.model;this.viewer.canvas.setAttribute('aria-disabled',String(this.disabled));
     this.positionMode.disabled=this.disabled;
     this.inputs.forEach(x=>x.disabled=this.disabled);this.restore.disabled=this.disabled;
     const ready=!this.disabled&&this.anglesValid()&&this.held&&this.viewer.model?.object_id===this.held.object_id&&this.viewer.model?.model_sha256===this.held.model_sha256;

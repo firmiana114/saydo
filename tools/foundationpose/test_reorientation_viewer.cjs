@@ -32,3 +32,57 @@ console.log('Local-axis drag/keyboard and unchanged free-rotation checks passed.
 
 const adaptiveShift=[0,-.035355,.035355],adaptiveOrigin=M.objectOrigin(tilted,pivot,adaptiveShift);assert(near(M.apply(tilted,pivot).map((v,i)=>v+adaptiveOrigin[i]),adaptiveShift),'adaptive preview places the held TCP at the planned displacement');
 console.log('Adaptive translated-pivot preview check passed.');
+
+// Orbit changes the display basis, with the same screen direction as the drag.
+const orbit=M.orbit(basis,[73,57],[98,57],146,115);rigid(orbit);
+assert(M.dot(orbit[0],basis[2])>0,'rightward view drag must rotate the visible scene rightward');
+let orbitBasis=basis;for(let i=0;i<1000;i++)orbitBasis=M.orbit(orbitBasis,[73,57],[90,67],146,115);rigid(orbitBasis);
+console.log('Camera orbit direction and accumulated basis stability checks passed.');
+
+// Exercise actual panel event handlers with a lightweight viewer, retaining its
+// real orbit/reset methods. No browser GL or robot endpoint is used here.
+const elements=new Map(),posts=[];
+function element(id){
+  if(!elements.has(id))elements.set(id,{value:'0',disabled:false,style:{},textContent:'',checked:true,
+    classList:{add(){},remove(){}},focus(){},setAttribute(){},checkValidity(){return true;},addEventListener(){},
+    getBoundingClientRect(){return {left:0,top:0,width:id==='#reorientation-camera-control'?146:800,height:id==='#reorientation-camera-control'?115:400};},
+    clientWidth:800,clientHeight:400,setPointerCapture(id){this.pointer=id;},hasPointerCapture(id){return this.pointer===id;},releasePointerCapture(){this.pointer=null;}});
+  return elements.get(id);
+}
+const cameraContext=vm.createContext({document:{querySelector:element},post:async(path,payload)=>{posts.push({path,payload:JSON.parse(JSON.stringify(payload))});return {};},console});
+vm.runInContext(source+`
+const ActualViewer=ReorientationViewer;
+ReorientationViewer=function(canvas,overlay,control){
+ const viewer=Object.create(ActualViewer.prototype);
+ Object.assign(viewer,{canvas,overlay,viewControl:control,basis:ReorientationMath.defaultView(),rotation:ReorientationMath.euler(20,30,40),translation:[.02,.01,0],zoom:1.4,draw(){this.drawCount=(this.drawCount||0)+1;},model:{object_id:'cup',model_sha256:'sha',initial_rotation:ReorientationMath.euler(20,30,40)}});
+ return viewer;
+};
+const cameraPanel=new ReorientationPanel();cameraPanel.syncAngles();cameraPanel.poseDirty=true;
+cameraPanel.key='cup:hold:sha:0';
+const cameraStatus={object_id:'cup',grasp:{busy:false,motion_enabled:true,held_object:{object_id:'cup',hold_id:'hold',model_sha256:'sha',orientation_version:0}}};
+cameraPanel.update(cameraStatus,false);
+`,cameraContext);
+const read=expression=>JSON.parse(vm.runInContext('JSON.stringify('+expression+')',cameraContext));
+const beforeView=read('({rotation:cameraPanel.viewer.rotation,translation:cameraPanel.viewer.translation,angles:cameraPanel.inputs.map(x=>x.value),dirty:cameraPanel.poseDirty})');
+const camera=element('#reorientation-camera-control');
+const event=(x,y,extra={})=>({pointerId:1,clientX:x,clientY:y,button:0,shiftKey:false,preventDefault(){},stopPropagation(){},...extra});
+camera.onpointerdown(event(73,57));camera.onpointermove(event(98,67));camera.onpointerup(event(98,67));
+assert.notDeepEqual(read('cameraPanel.viewer.basis'),JSON.parse(JSON.stringify(M.defaultView())));
+assert.deepEqual(read('({rotation:cameraPanel.viewer.rotation,translation:cameraPanel.viewer.translation,angles:cameraPanel.inputs.map(x=>x.value),dirty:cameraPanel.poseDirty})'),beforeView);
+assert.equal(posts.length,0,'orbit must not send a control request');
+vm.runInContext('cameraStatus.grasp.busy=true;cameraPanel.update(cameraStatus,false)',cameraContext);
+assert(!camera.disabled,'view-only control remains usable during robot tasks');
+const beforeKey=read('cameraPanel.viewer.basis');camera.onkeydown(event(0,0,{key:'ArrowUp'}));
+assert.notDeepEqual(read('cameraPanel.viewer.basis'),beforeKey);
+camera.ondblclick(event(0,0));assert.deepEqual(read('cameraPanel.viewer.basis'),JSON.parse(JSON.stringify(M.defaultView())));assert.equal(read('cameraPanel.viewer.zoom'),1);
+assert.deepEqual(read('cameraPanel.viewer.rotation'),beforeView.rotation);
+camera.onpointerdown(event(73,57));camera.onpointermove(event(100,70));camera.onpointercancel(event(100,70));
+const afterCancel=read('cameraPanel.viewer.basis');camera.onpointermove(event(20,10));assert.deepEqual(read('cameraPanel.viewer.basis'),afterCancel);
+element('#reorientation-view-reset').onclick();assert.deepEqual(read('cameraPanel.viewer.basis'),JSON.parse(JSON.stringify(M.defaultView())));
+assert.deepEqual(read('cameraPanel.viewer.translation'),beforeView.translation);
+assert.equal(posts.length,0);
+vm.runInContext('cameraStatus.grasp.busy=false;cameraPanel.update(cameraStatus,false)',cameraContext);
+vm.runInContext('cameraPanel.request(true)',cameraContext).then(()=>{
+ assert.deepEqual(posts[0].payload.rotation,beforeView.rotation,'API target rotation must remain unchanged after view operations');
+ console.log('View widget interaction checks passed: drag, keyboard, reset, cancellation, busy viewing, unchanged pose/translation/angles and API rotation.');
+}).catch(error=>{console.error(error);process.exitCode=1;});
