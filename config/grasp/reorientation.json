@@ -1,5 +1,5 @@
 {
-  "arm_speed_percent": 10,
+  "arm_speed_percent": 40,
   "planning_timeout_s": 20,
   "rotation_step_deg": 5,
   "position_tolerance_m": 0.002,
