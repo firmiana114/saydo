@@ -16,6 +16,9 @@ assert(Math.abs(G.rotationDrag(M.identity(),2,a,b,[0,0,0])-Math.PI/2)<1e-9,'Z ri
 assert.equal(G.rotationDrag(M.identity(),0,a,b,[0,0,0]),null,'edge-on rotation ring requires another view');
 const near=(actual,expected)=>assert(actual.flat().every((v,i)=>Math.abs(v-expected.flat()[i])<1e-9));
 const tilted=M.euler(31,-24,67),center=[.04,-.03,.02];
+near(G.gripperUp(M.identity()),[0,-1,0]);
+near(G.gripperUp(tilted),M.apply(tilted,[0,-1,0]));
+near(G.gripperUp(G.rotate(tilted,2,Math.PI)),G.scale(G.gripperUp(tilted),-1));
 const quarters=[[[1,0,0],[0,0,-1],[0,1,0]],[[0,0,1],[0,1,0],[-1,0,0]],[[0,-1,0],[1,0,0],[0,0,1]]];
 for(let axis=0;axis<3;axis++){
  near(G.rotationFrame(tilted,'object'),M.identity());

@@ -16,6 +16,7 @@ const GraspEditorMath={
     return hit;
   },
   rotationFrame(rotation,frame='tcp'){return frame==='object'?ReorientationMath.identity():rotation;},
+  gripperUp(rotation){return rotation.map(row=>-row[1]);},
   rotate(rotation,axis,angle,frame='tcp'){const M=ReorientationMath,vector=[0,0,0];vector[axis]=1;const delta=M.axisAngle(vector,angle);
     return frame==='object'?M.multiply(delta,rotation):M.multiply(rotation,delta);},
   rotationDrag(rotation,axis,startRay,endRay,point,frame='tcp'){const M=ReorientationMath,n=this.rotationFrame(rotation,frame).map(row=>row[axis]),a=this.plane(startRay,point,n),b=this.plane(endRay,point,n);if(!a||!b)return null;
@@ -58,6 +59,10 @@ class GraspEditorViewer extends ReorientationViewer{
         else AxisDepthCue.segment(add,stroke.a,stroke.b,stroke.color,stroke.cue);
       }
       for(const item of labels)label(item.text,item.p,item.color);
+      const top=V.gripperUp(R),topCue=AxisDepthCue.describe(top,this.basis[2]),topEnd=project(V.add(V.add(point,offset),V.scale(top,length*1.3)));
+      AxisDepthCue.segment(add,origin,topEnd,'#d9abff',topCue);
+      const topLabel=label('夹爪上方 −Y '+topCue.symbol,[Math.max(8,Math.min(width-150,topEnd[0]+(topEnd[0]<origin[0]?-145:10))),Math.max(68,Math.min(height-20,topEnd[1]-12))],'#d9abff');
+      topLabel.setAttribute('data-gripper-up','tcp-negative-y');
       const pre=V.sub(point,V.scale(R.map(row=>row[2]),this.distance)),prePixel=project(V.add(pre,offset));arrow(prePixel,origin,'#ffd27c',true);
       add('circle',{cx:origin[0],cy:origin[1],r:5,fill:'#fff',stroke:'#071017','stroke-width':2});label('抓取中心',[origin[0]+9,origin[1]+19]);
       add('circle',{cx:prePixel[0],cy:prePixel[1],r:5,fill:'none',stroke:'#ffd27c','stroke-width':2});label('预抓点 → 工具 +Z',[prePixel[0]+8,prePixel[1]-8],'#ffd27c');
@@ -101,7 +106,7 @@ class GraspEditorPanel{
     finally{if(generation===this.generation)this.loading=false;}
   }
   populate(){
-    this.list.replaceChildren();for(const row of this.data.grasps){const option=document.createElement('option');option.value=row.id;option.textContent=(row.enabled?'':'[停用] ')+row.name+(row.binding_error?' [绑定失效]':'')+' · 优先级 '+row.priority+(row.tested_successfully?' · 实测成功过':' · 已保存');this.list.appendChild(option);}
+    this.list.replaceChildren();for(const row of this.data.grasps){const option=document.createElement('option');option.value=row.id;option.textContent=(row.enabled?'':'[停用] ')+row.name+(row.binding_error?' · 绑定失效':row.tested_successfully?' · 已实测':'');option.title=row.name+' · 优先级 '+row.priority+(row.tested_successfully?' · 实测成功过':' · 已保存');this.list.appendChild(option);}
     const selected=this.data.grasps.find(g=>g.id===this.data.selected_id);
     this.q('selection').textContent='抓取使用：'+(this.data.selection_mode==='auto'?'自动筛选已启用夹法':selected?.name||'未选择');
     this.q('info').textContent=this.data.object_name+' · 坐标与角度均相对于物品模型';

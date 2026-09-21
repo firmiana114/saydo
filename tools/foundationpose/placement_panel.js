@@ -61,7 +61,7 @@ class PlacementPanel {
     this.preview.disabled=locked||this.dirty||!this.held||!this.config?.configured;
     this.execute.disabled=this.preview.disabled||!g.motion_enabled;
     document.querySelector('#place-stop').disabled=!g.busy;
-    document.querySelector('#placement-info').textContent=(this.held?'当前夹持：'+(this.held.object_name||this.held.object_id)+'；以执行时的实际朝向为最终放置朝向。':'先成功抓取物品；需要改变朝向时，先执行上方的姿态调整。')+
+    document.querySelector('#placement-info').textContent=(this.held?'当前夹持：'+(this.held.object_name||this.held.object_id)+'；以执行时的实际朝向为最终放置朝向。':'先成功抓取物品；需要改变朝向时，请切换到“将物品摆至指定姿态”页。')+
       (this.config?.table_z_m!=null?' 桌面 Z：'+(this.config.table_z_m*1000).toFixed(2)+' 毫米（估算）。':'');
     if(g.operation==='place'&&!this.pending&&!this.dirty)this.feedback.textContent=g.message||'';
     else if(this.config?.error)this.feedback.textContent='配置错误：'+this.config.error;
