@@ -1,0 +1,14 @@
+{
+  "region_xy_m": null,
+  "release_gap_m": 0.003,
+  "edge_margin_m": 0.01,
+  "approach_height_m": 0.05,
+  "retreat_height_m": 0.05,
+  "transfer_speed_percent": 10,
+  "descent_speed_percent": 5,
+  "planning_timeout_s": 20,
+  "search_step_m": 0.025,
+  "linear_sample_step_m": 0.02,
+  "position_tolerance_m": 0.002,
+  "orientation_tolerance_deg": 2
+}

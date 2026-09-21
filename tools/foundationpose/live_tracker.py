@@ -686,6 +686,8 @@ def main():
                 self.reply(200, Path(__file__).with_name('live_tracker.html').read_bytes(), 'text/html; charset=utf-8')
             elif path == '/reorientation_viewer.js':
                 self.reply(200, Path(__file__).with_name('reorientation_viewer.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/placement_panel.js':
+                self.reply(200, Path(__file__).with_name('placement_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path == '/api/reorient/model':
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -777,6 +779,12 @@ def main():
                     result = tracker.grasp.start_reorient(value, preview=True)
                 elif self.path == '/api/reorient':
                     result = tracker.grasp.start_reorient(value)
+                elif self.path == '/api/place/config':
+                    result = tracker.grasp.save_placement_config(value)
+                elif self.path == '/api/place/preview':
+                    result = tracker.grasp.start_placement(value, preview=True)
+                elif self.path == '/api/place':
+                    result = tracker.grasp.start_placement(value)
                 elif self.path == '/api/grasp/stop':
                     tracker.grasp.abort()
                     result = {'cancelled': True}

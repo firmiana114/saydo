@@ -19,9 +19,10 @@ from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from camera_checks import camera_binding, check_camera_observation
 from reorientation_control import ReorientationMixin
+from placement_control import PlacementMixin
 
 
-class GraspController(ReorientationMixin):
+class GraspController(ReorientationMixin, PlacementMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()
@@ -45,7 +46,8 @@ class GraspController(ReorientationMixin):
                 reset_available = False
             return {**self.status, 'force_config': self.force_config(),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
-                    'reset_available': reset_available, 'held_object': self.held_snapshot()}
+                    'reset_available': reset_available, 'held_object': self.held_snapshot(),
+                    'placement_config': self.placement_configuration()}
 
     def set_open_position(self, value):
         if type(value) is not int or not 0 <= value <= 1000:

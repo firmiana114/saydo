@@ -181,9 +181,29 @@ class GripperHTTPTests(unittest.TestCase):
                             self.assertTrue(json.loads(response.read())['accepted'])
                         self.assertEqual(place.call_args_list[0].kwargs,{'preview':True})
                         self.assertEqual(place.call_args_list[1].args,({'rotation':[]},))
+                    client.request('GET', '/placement_panel.js')
+                    response=client.getresponse();self.assertEqual(response.status,200)
+                    self.assertIn('class PlacementPanel',response.read().decode())
+                    self.assertIn('将物品放置在桌面',page)
                     for path in ['/api/place', '/api/place/preview']:
                         client.request('POST',path,'{}',{'Content-Type':'application/json'})
-                        response=client.getresponse();self.assertEqual(response.status,404);response.read()
+                        response=client.getresponse();self.assertEqual(response.status,400)
+                        self.assertIn('夹持记录',json.loads(response.read())['error'])
+                    count = len(requests)
+                    config_status=trackers[0].grasp.placement_configuration()
+                    value={'revision':config_status['revision'],'region_xy_m':{'x_min':.2,'x_max':.5,'y_min':-.2,'y_max':.2},'release_gap_m':.003}
+                    client.request('POST','/api/place/config',json.dumps(value),{'Content-Type':'application/json'})
+                    response=client.getresponse();self.assertEqual(response.status,200)
+                    self.assertTrue(json.loads(response.read())['saved'])
+                    self.assertEqual(len(requests),count)
+                    client.request('POST','/api/place/config',json.dumps(value),{'Content-Type':'application/json','Origin':'http://wrong-host'})
+                    response=client.getresponse();self.assertEqual(response.status,403);response.read()
+                    with patch.object(trackers[0].grasp,'start_placement',return_value={'accepted':True}) as place:
+                        for path in ['/api/place/preview','/api/place']:
+                            client.request('POST',path,'{"hold_id":"sample"}',{'Content-Type':'application/json'})
+                            response=client.getresponse();self.assertEqual(response.status,200);response.read()
+                        self.assertEqual(place.call_args_list[0].kwargs,{'preview':True})
+                        self.assertEqual(place.call_args_list[1].args,({'hold_id':'sample'},))
                     for path in ['/api/placement/model','/placement_viewer.js']:
                         client.request('GET',path)
                         response=client.getresponse();self.assertEqual(response.status,404);response.read()

@@ -1,5 +1,24 @@
 # FoundationPose：环境、胶带重建与离线诊断
 
+## 桌面自适应放置
+
+成功抓取后，在页面“将物品放置在桌面”中输入 Base 坐标系下的 X/Y 矩形范围（毫米），保存设置，点击“预览放置方案”。需要改变物品朝向时，先执行“将物品摆至指定姿态”；放置保持开始时读取的实际朝向，不采用尚未执行的模型预览朝向。执行按钮会重新读取状态、规划并下发动作。
+
+- 配置：`config/grasp/placement.json`。区域默认 `null`，未设置时不允许放置；释放间隙默认 0.003 米，可在网页调整为 0–20 毫米。保存设置不连接机器人，不改变其他抓取参数。桌面高度共享 `trial.json` 的 `table_z_m`，当前为用户接受的 -0.02449 米估算值。
+- 几何：使用成功抓取保存的 `object_T_tcp` 及当前实际 TCP 朝向，计算所有模型顶点相对 TCP 的基座 Z 偏移。释放 TCP 高度为 `table_z_m + release_gap_m - min(offset_z)`。矩形约束物品整个水平投影，默认边缘余量 10 毫米；工具中心仍遵守已有抓取工作区和最小离桌距离，不把姿态调整的“TCP 必须高于桌面 10 厘米”规则套用到放置。
+- 动作：必要时提升 → 保持朝向水平转移 → 竖直下降 → 完全张开至原始位置 1000 → 竖直退出 5 厘米。使用 `movel`，上方转移高度至少比释放点高 5 厘米；转移速度默认 10%、下降/退出 5%。不会在放置过程中自动调整朝向、重新夹取或返回复位姿态。
+- 检查：共享抓取任务锁和设备锁，校验夹持记录、模型哈希、工具、Base、设备状态及配置版本。搜索最近可行位置，使用离线 SDK 对直线路径采样点做逆解、正解回验和自身碰撞检查；每段发送前以实际关节状态复查。反馈检查朝向、工具工作区、物品最低点和夹持状态，到位稳定后才释放。未确认完全张开时不会退出；异常或取消会停止，发生动作后的异常会清除夹持记录。
+- 边界：这是几何估算放置，3 毫米间隙可能产生短距离下落，没有桌面接触传感器确认。模型在夹爪中的滑动、松开后的稳定性、夹指形状/张开空间、完整环境碰撞和采样间的关节轨迹均未验证。请使用可稳定摆放的物品朝向，并确保桌面区域和夹爪退出空间可用。模型顶点的最低点会受模型缺损和突出噪点影响。
+
+接口：`POST /api/place/config` 保存范围和间隙；`POST /api/place/preview` 只读预览；`POST /api/place` 执行；`POST /api/grasp/stop` 共用停止。配置请求携带 `revision`，动作请求还携带 `hold_id`、`object_id`、`model_sha256`、`orientation_version`，拒绝陈旧请求。`GET /api/status` 的 `grasp.placement_config` 和 `grasp.placement_plan` 提供配置与方案。日志分别保存在 `work/grasp/placement_settings/` 和 `work/grasp/placement_jobs/`，区分松爪尝试、确认张开及未确认桌面接触。
+
+离线验证（不连接实机）：
+
+```bash
+SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q
+node tools/foundationpose/test_placement_panel.cjs
+```
+
 ## D435i 实时跟踪接入
 
 `live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 负责首帧像素分割，提示可来自手动框选或自动检测。受保护的试抓接口见本文“首轮视觉抓取接入”；默认点击抓取按钮并通过检查后执行。
