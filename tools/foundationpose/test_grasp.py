@@ -210,12 +210,12 @@ class GraspTests(unittest.TestCase):
                     'get_current_tool_frame':tool_raw,'get_current_work_frame':{'frame_name':'Base','pose':[0]*6},
                     'get_joint_en_state':{'en_state':[1]*7},'get_joint_err_flag':{'err_flag':[0]*7},
                     'get_rm_plus_mode':{'mode':115200},
-                    'get_rm_plus_base_info':{'base_info':{'manu':'ZX','id':1,'dof':1,'type':1,'force':True}},
+                    'get_rm_plus_base_info':{'base_info':{'manu':'ZX','id':1,'dof':1,'type':1,'force':True,'force_up':[100]}},
                     'get_rm_plus_state_info':{'state_info':{'sys_err':0,'sys_state':0,'dof_err':[0],'dof_state':[3],'speed':[0],'force':[0],'pos':[1000]}}}
                 fake=Mock()
                 fake.query.side_effect=lambda command:copy.deepcopy(replies[command])
                 fake.register.side_effect=AssertionError('numeric readback must not be required')
-                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'verify_motion_targets') as verify, patch.object(service,'execute') as execute:
+                with patch('grasp_control.RobotClient',return_value=fake) as client, patch.object(service,'calibration',return_value=(handeye,tool)), patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'verify_motion_targets',return_value={'joint_travel_deg':10}) as verify, patch.object(service,'execute') as execute:
                     service.run(observation, preview=preview)
                     self.assertEqual(client.call_args.kwargs['writes'], mode == 'execute' and not preview)
                     self.assertEqual(execute.call_count, int(mode == 'execute' and not preview))

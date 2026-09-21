@@ -59,7 +59,7 @@ def return_joint_target(config):
 def plan_grasp(raw_tcp, base_object, object_profile, config):
     current = controller_pose(raw_tcp)
     point = np.asarray(object_profile['grasp_point_object_m'], dtype=float)
-    if point.shape != (3,) or not np.isfinite(point).all() or np.linalg.norm(point) > .2:
+    if point.shape != (3,) or not np.isfinite(point).all():
         raise ValueError('物体抓取点配置无效')
     if config['action'] != 'grasp_and_lift':
         raise ValueError('仅支持夹持后竖直抬升')

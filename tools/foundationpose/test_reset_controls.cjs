@@ -10,7 +10,7 @@ function el(id){
 let state={state:'paused',grasp:{busy:false,motion_enabled:true,reset_available:true,zero_reset_available:true}};
 const calls=[];let resolvePost;
 const sandbox={document:{querySelector:el},setInterval(){},setTimeout(){},console,
-  ReorientationPanel:class{update(){}},PlacementPanel:class{update(){}},
+  ReorientationPanel:class{update(){}},PlacementPanel:class{update(){}},GraspEditorPanel:class{update(){}},
   fetch:async(path,options)=>{
     if(path==='/api/status')return {json:async()=>state};
     calls.push(path);

@@ -698,6 +698,16 @@ def main():
                     self.reply(200, tracker.grasp.reorientation_model(params.get('object_id',[None])[0]))
                 except (ValueError, TypeError, KeyError, OSError) as error:
                     self.reply(400, {'error':str(error)})
+            elif path == '/grasp_editor.js':
+                self.reply(200, Path(__file__).with_name('grasp_editor.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path in ('/api/grasp/profiles', '/api/grasp/editor-model'):
+                try:
+                    params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    object_id = params.get('object_id', [None])[0]
+                    result = tracker.grasp.grasp_profiles(object_id) if path.endswith('/profiles') else tracker.grasp.grasp_editor_model(object_id)
+                    self.reply(200, result)
+                except (ValueError, TypeError, KeyError, OSError) as error:
+                    self.reply(400, {'error':str(error)})
             elif path == '/api/status':
                 self.reply(200, tracker.snapshot())
             elif path == '/api/objects':
@@ -767,6 +777,8 @@ def main():
                 elif self.path == '/api/grasp/preview':
                     tracker.grasp.start(preview=True)
                     result = {'accepted': True, 'mode': 'preview'}
+                elif self.path == '/api/grasp/profiles':
+                    result = tracker.grasp.edit_grasp_profiles(value)
                 elif self.path == '/api/grasp/teach':
                     result = tracker.grasp.teach(value.get('use_current_point', False))
                 elif self.path == '/api/gripper/status':

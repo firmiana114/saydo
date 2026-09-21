@@ -194,6 +194,20 @@ class GripperHTTPTests(unittest.TestCase):
                             self.assertTrue(json.loads(response.read())['accepted'])
                         self.assertEqual(place.call_args_list[0].kwargs,{'preview':True})
                         self.assertEqual(place.call_args_list[1].args,({'rotation':[]},))
+                    client.request('GET', '/grasp_editor.js')
+                    response=client.getresponse();self.assertEqual(response.status,200)
+                    self.assertIn('class GraspEditorPanel',response.read().decode())
+                    self.assertIn('物品夹法库',page)
+                    for route,method in [('/api/grasp/profiles?object_id=sample','grasp_profiles'),('/api/grasp/editor-model?object_id=sample','grasp_editor_model')]:
+                        with patch.object(trackers[0].grasp,method,return_value={'object_id':'sample'}) as handler:
+                            client.request('GET',route);response=client.getresponse()
+                            self.assertEqual(response.status,200);self.assertEqual(json.loads(response.read())['object_id'],'sample')
+                            handler.assert_called_once_with('sample')
+                    with patch.object(trackers[0].grasp,'edit_grasp_profiles',return_value={'motion_sent':False}) as edit:
+                        client.request('POST','/api/grasp/profiles','{"action":"select"}',{'Content-Type':'application/json'})
+                        response=client.getresponse();self.assertEqual(response.status,200)
+                        self.assertFalse(json.loads(response.read())['motion_sent'])
+                        edit.assert_called_once_with({'action':'select'})
                     client.request('GET', '/placement_panel.js')
                     response=client.getresponse();self.assertEqual(response.status,200)
                     self.assertIn('class PlacementPanel',response.read().decode())
