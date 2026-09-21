@@ -60,6 +60,8 @@ class Tracker:
         self.state.update(model_sha256=hashlib.sha256(args.mesh.read_bytes()).hexdigest(), object_id=self.object_info['id'], object_name=self.object_info['name'],
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
         self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
+        if getattr(args, 'resume_reorientation_report', None):
+            self.grasp.restore_reorientation_report(args.resume_reorientation_report)
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
              'camera_serial': args.serial, 'native_color': [1280, 720, 15], 'native_depth': [640, 360, 15],
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
@@ -635,6 +637,8 @@ def main():
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
+    parser.add_argument('--resume-reorientation-report', type=Path,
+                        help='One-use read-only recovery of the latest failed reorientation; operator must confirm the same grasp was never released or moved')
     parser.add_argument('--serial', help='Select a camera by serial; default: the only connected D435I')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')

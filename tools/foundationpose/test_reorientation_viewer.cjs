@@ -84,5 +84,8 @@ assert.equal(posts.length,0);
 vm.runInContext('cameraStatus.grasp.busy=false;cameraPanel.update(cameraStatus,false)',cameraContext);
 vm.runInContext('cameraPanel.request(true)',cameraContext).then(()=>{
  assert.deepEqual(posts[0].payload.rotation,beforeView.rotation,'API target rotation must remain unchanged after view operations');
+ vm.runInContext("Object.assign(cameraStatus.grasp,{operation:'reorient',state:'failed',error:'motion failed',message:'夹持记录已保留，可重新选择目标姿态后再试。',reorientation_plan:null});cameraPanel.update(cameraStatus,false)",cameraContext);
+ assert(!element('#reorient-preview').disabled&&!element('#reorient').disabled,'a failed motion with a retained hold must permit a new target');
+ assert(element('#reorientation-feedback').textContent.includes('夹持记录已保留'));
  console.log('View widget interaction checks passed: drag, keyboard, reset, cancellation, busy viewing, unchanged pose/translation/angles and API rotation.');
 }).catch(error=>{console.error(error);process.exitCode=1;});

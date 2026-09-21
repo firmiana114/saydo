@@ -198,7 +198,7 @@ class ReorientationPanel{
       this.viewer.translation=p.offset_m||[0,0,0];this.viewer.draw();
       const offset=(p.offset_m||[0,0,0]).map(v=>(v>=0?'+':'')+(v*100).toFixed(1)).join(' / ');
       this.feedback.textContent=g.message+'\n移位 ΔX / ΔY / ΔZ：'+offset+' 厘米（基座方向）\n最终末端 X / Y / Z：'+p.target_tcp_position_m.map(v=>(v*100).toFixed(1)).join(' / ')+' 厘米。'+(p.position_mode==='adaptive'?'\n终点末端离桌高度：'+((p.target_tcp_position_m[2]-p.table_z_m)*100).toFixed(1)+' 厘米。':'');
-    }else if(g.operation==='reorient'&&!g.busy&&!this.poseDirty&&g.error)this.feedback.textContent=g.error;
+    }else if(g.operation==='reorient'&&!g.busy&&!this.poseDirty&&g.error)this.feedback.textContent=g.message||g.error;
   }
   async request(preview){
     if(this.pending||this.disabled||!this.held||!this.anglesValid())return;

@@ -121,6 +121,121 @@ class ReorientationMixin:
             raise ValueError('夹持反馈已变化或未保持夹持，停止姿态调整')
         return state
 
+    def retain_reorientation_hold(self, held, config, report):
+        """After a confirmed stop, refresh a still-valid hold using read-only feedback.
+
+        Controller motion errors do not by themselves invalidate the gripper's
+        attachment. They remain visible and the next execution still checks them.
+        Never resurrect a hold already invalidated by contact feedback.
+        """
+        record = report['hold_retention'] = {'retained': False, 'arm_samples': [], 'gripper_samples': []}
+        try:
+            with self.lock:
+                if self.held_object is None or self.held_object['hold_id'] != held['hold_id']:
+                    raise ValueError('夹持记录已失效或变化，不能自动恢复')
+            if report.get('stop_error'):
+                raise ValueError('停止未确认，不能保留可重试的夹持记录')
+            tool = yaml.safe_load((self.root/config['tool_file']).read_text())
+            if (self.robot.query('get_current_tool_frame') != held['tool_response']
+                    or tool['controller_readback']['tool_response_raw'] != held['tool_response']):
+                raise ValueError('工具/负载已变化')
+            work = self.robot.query('get_current_work_frame')
+            if work.get('frame_name') != 'Base' or work.get('pose') != [0]*6:
+                raise ValueError('当前不是零偏移 Base 坐标系')
+            if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
+                raise ValueError('夹爪通信未就绪')
+            base = self.robot.query('get_rm_plus_base_info')['base_info'];grip = config['gripper']
+            if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
+                raise ValueError('夹爪身份已变化')
+            mesh = model_geometry(self.tracker.models_root, held['object_id'])
+            if mesh['model_sha256'] != held['model_sha256']:
+                raise ValueError('物品模型已变化')
+            previous = None;stable = 0
+            for _ in range(6):
+                state = self.check_reorient_contact(held, config)
+                record['gripper_samples'].append(copy.deepcopy(state))
+                arm = self.robot.query('get_current_arm_state')['arm_state']
+                pose = controller_pose(arm['pose']);joints = np.asarray(arm['joint'], dtype=float)
+                if joints.shape != (7,) or not np.isfinite(joints).all():
+                    raise ValueError('关节反馈无效')
+                record['arm_samples'].append(copy.deepcopy(arm))
+                steady = previous is not None and (np.max(np.abs(joints-previous[0])) <= 30
+                    and np.linalg.norm(pose[:3,3]-previous[1][:3,3]) <= .0002
+                    and rotation_error(pose[:3,:3],previous[1][:3,:3]) <= np.deg2rad(.15))
+                stable = stable + 1 if steady else 1
+                if stable >= 3:
+                    break
+                previous = (joints, pose);time.sleep(.1)
+            else:
+                raise ValueError('停止后的位姿反馈未稳定')
+            current = pose @ np.linalg.inv(transform(held['object_T_tcp']))
+            updated = copy.deepcopy(held)
+            updated.update(current_object_rotation=current[:3,:3].tolist(),
+                           orientation_version=held.get('orientation_version',0)+1)
+            with self.lock:
+                if self.held_object is None or self.held_object['hold_id'] != held['hold_id']:
+                    raise ValueError('核对期间夹持记录已变化')
+                self.held_object = updated
+            record.update(retained=True, current_arm=arm, controller_errors=arm.get('err'),
+                          orientation_version=updated['orientation_version'])
+            return True
+        except Exception as error:
+            record.update(reason=str(error), error_type=type(error).__name__)
+            with self.lock:
+                if self.held_object is not None and self.held_object['hold_id'] == held['hold_id']:
+                    self.held_object = None
+            return False
+
+    def restore_reorientation_report(self, report_path):
+        """Explicit, one-use startup recovery after the operator confirms the same grasp.
+
+        Never automatically scan old jobs for a hold. This opt-in entry point is
+        only for a record lost by an older service version; all hardware is read-only.
+        """
+        recovery = {'started_at': time.time(), 'restored': False, 'robot_motion_sent': False}
+        directory = self.root/'work/grasp/reorientation_recovery'
+        try:
+            if self.status['busy'] or self.held_object is not None:
+                raise ValueError('已有任务或夹持记录，不能从历史记录恢复')
+            path = report_path.resolve()
+            jobs = (self.root/'work/grasp/reorient_jobs').resolve()
+            if path.parent != jobs or not path.stem.isdigit() or path.suffix != '.json':
+                raise ValueError('仅支持本项目姿态调整任务日志')
+            latest = max(jobs.glob('*.json'), key=lambda p:p.stat().st_mtime)
+            if path != latest:
+                raise ValueError('只能恢复最近一次姿态调整失败记录')
+            previous = json.loads(path.read_text());held = previous['held_object']
+            if previous.get('operation') != 'reorient' or previous.get('mode') != 'execute' or not previous.get('error') or previous.get('stop_error'):
+                raise ValueError('该记录不是停止已确认的姿态调整失败任务')
+            if self.tracker.state.get('object_id') != held['object_id'] or self.tracker.state.get('model_sha256') != held['model_sha256']:
+                raise ValueError('当前选中的物品与失败记录不一致')
+            directory.mkdir(parents=True, exist_ok=True)
+            # Consuming the claim before queries prevents a later restart from
+            # silently reusing this old grasp, including after a failed recovery.
+            with (directory/(path.stem+'.claimed')).open('x') as claim:
+                claim.write(str(time.time())+'\n')
+            recovery['source_report'] = str(path.relative_to(self.root))
+            config = json.loads(self.config_path.read_text())
+            with (self.root/'work/grasp/robot.lock').open('a') as robot_lock:
+                fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=False)
+                self.held_object = copy.deepcopy(held)
+                if not self.retain_reorientation_hold(held, config, recovery):
+                    raise ValueError(recovery['hold_retention']['reason'])
+            recovery['restored'] = True
+            self.update(state='failed', operation='reorient', error=previous['error'], reorientation_plan=None,
+                        reorientation_retry_available=True,
+                        message=previous['error']+'；已只读核对并恢复本次夹持记录，可重新选择姿态。控制器错误仍由执行前检查处理。')
+        except Exception as error:
+            recovery.update(error=str(error), error_type=type(error).__name__)
+            self.update(state='failed', operation='reorient', error='夹持记录恢复失败：'+str(error),
+                        message='夹持记录恢复失败：'+str(error), reorientation_retry_available=False)
+        finally:
+            self.robot = None
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory/f'{time.time_ns()}.json').write_text(json.dumps(recovery,ensure_ascii=False,indent=2))
+        return recovery['restored']
+
     def run_reorient(self, held, rotation, preview=False, position_mode='fixed'):
         mode='preview' if preview else self.mode
         report={'started_at':time.time(),'operation':'reorient','mode':mode,'held_object':held,
@@ -160,13 +275,20 @@ class ReorientationMixin:
             self.check_reorient_contact(held,config)
             self.execute_reorient(plan,held,config,settings,report,mesh['vertices'])
         except Exception as error:
+            retained = False
             if self.actuated:
-                with self.lock:self.held_object=None
                 try:self.robot.stop()
                 except Exception as stop_error:report['stop_error']=str(stop_error)
+                retained = self.retain_reorientation_hold(held, config, report)
             detail=f"{report['active_stage']}：{error}"
             report.update(error=detail,error_type=type(error).__name__,traceback=traceback.format_exc())
-            self.update(state='cancelled' if self.cancelled.is_set() else 'failed',message=detail,error=detail)
+            message = detail
+            if retained:
+                message += '；夹持记录已保留，可重新选择目标姿态后再试。'
+                if any(report['hold_retention'].get('controller_errors') or []):
+                    message += '控制器仍有错误，执行前需先恢复设备状态。'
+            self.update(state='cancelled' if self.cancelled.is_set() else 'failed',message=message,error=detail,
+                        reorientation_plan=None, reorientation_retry_available=retained or self.held_object is not None)
         finally:
             report['result']={**self.status,'busy':False}
             try:
