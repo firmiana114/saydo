@@ -24,7 +24,7 @@ def placement_settings(value, require_region=True):
     settings = {**DEFAULTS, **value}
     settings.pop('edge_margin_m', None)  # Legacy settings must not shrink the operator's rectangle.
     for key, low, high in [
-        ('release_gap_m', 0, .02),
+        ('release_gap_m', 0, .06),
         ('approach_height_m', .02, .3), ('retreat_height_m', .02, .3),
         ('planning_timeout_s', 1, 60), ('search_step_m', .005, .1),
         ('linear_sample_step_m', .005, .05), ('position_tolerance_m', .0001, .002),

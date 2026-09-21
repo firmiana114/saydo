@@ -87,7 +87,7 @@ class PlacementGeometryTests(unittest.TestCase):
 
     def test_small_region_missing_region_invalid_inputs_and_workspace(self):
         config, settings, held, vertices, arm = fixture();checker = Mock(return_value=(True, {}))
-        for key, value in [('release_gap_m', -1), ('release_gap_m', True), ('release_gap_m', float('nan')),
+        for key, value in [('release_gap_m', -1), ('release_gap_m', .0601), ('release_gap_m', True), ('release_gap_m', float('nan')),
                            ('descent_speed_percent', 100), ('region_xy_m', None)]:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 placement_settings({**settings, key: value})
@@ -144,7 +144,7 @@ class PlacementGeometryTests(unittest.TestCase):
 
     def test_small_height_triggers_raise_and_gap_is_adjustable(self):
         config, settings, held, vertices, arm = fixture();arm['pose'][2] = 70000
-        for gap in [0, .003, .01]:
+        for gap in [0, .003, .02, .06]:
             plan = plan_placement(held, vertices, arm, config, {**settings, 'release_gap_m': gap}, Mock(return_value=(True, {})), lambda: None)
             self.assertEqual(plan['waypoints'][0]['name'], 'raise')
             self.assertAlmostEqual(plan['object_bottom_z_m'], config['table_z_m'] + gap, delta=1.01e-6)
@@ -357,13 +357,13 @@ class PlacementControlTests(unittest.TestCase):
 
     def test_settings_save_is_atomic_validated_and_never_connects(self):
         original = self.path.read_bytes();value = {'revision': settings_revision(self.settings),
-            'region_xy_m': {'x_min': .2, 'x_max': .5, 'y_min': -.1, 'y_max': .1}, 'release_gap_m': .005}
+            'region_xy_m': {'x_min': .2, 'x_max': .5, 'y_min': -.1, 'y_max': .1}, 'release_gap_m': .06}
         with patch('placement_control.RobotClient') as client:
             result = self.service.save_placement_config(value)
             client.assert_not_called()
         self.assertFalse(result['motion_sent']);self.assertEqual(self.path.read_bytes(), original)
         saved = json.loads(self.service.placement_path.read_text())
-        self.assertEqual(saved['release_gap_m'], .005)
+        self.assertEqual(saved['release_gap_m'], .06)
         self.assertEqual(saved['descent_speed_percent'], self.settings['descent_speed_percent'])
         before = self.service.placement_path.read_bytes()
         with self.assertRaisesRegex(ValueError, '变化'):self.service.save_placement_config(value)

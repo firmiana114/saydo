@@ -23,7 +23,7 @@ class PlacementPanel {
 
   request() {
     if(!this.config?.revision)throw Error('未读取到有效放置配置');
-    if(this.fields.some(input=>input.value.trim()===''||!input.checkValidity()))throw Error('请输入有效的毫米数值；释放间隙范围为 0–20 毫米。');
+    if(this.fields.some(input=>input.value.trim()===''||!input.checkValidity()))throw Error('请输入有效的毫米数值；释放间隙范围为 0–60 毫米。');
     const values=this.fields.map(input=>Number(input.value)/1000);
     if(values.some(value=>!Number.isFinite(value))||values[0]>=values[1]||values[2]>=values[3])throw Error('X、Y 最小值必须分别小于最大值。');
     return {revision:this.config.revision,region_xy_m:{x_min:values[0],x_max:values[1],y_min:values[2],y_max:values[3]},release_gap_m:values[4]};
