@@ -15,7 +15,10 @@ const GraspEditorMath={
       const distance=M.dot(e2,q)/det;if(distance>=0&&distance<nearest){nearest=distance;hit=this.add(ray.origin,this.scale(ray.direction,distance));}}
     return hit;
   },
-  rotationDrag(rotation,axis,startRay,endRay,point){const M=ReorientationMath,n=rotation.map(row=>row[axis]),a=this.plane(startRay,point,n),b=this.plane(endRay,point,n);if(!a||!b)return null;
+  rotationFrame(rotation,frame='tcp'){return frame==='object'?ReorientationMath.identity():rotation;},
+  rotate(rotation,axis,angle,frame='tcp'){const M=ReorientationMath,vector=[0,0,0];vector[axis]=1;const delta=M.axisAngle(vector,angle);
+    return frame==='object'?M.multiply(delta,rotation):M.multiply(rotation,delta);},
+  rotationDrag(rotation,axis,startRay,endRay,point,frame='tcp'){const M=ReorientationMath,n=this.rotationFrame(rotation,frame).map(row=>row[axis]),a=this.plane(startRay,point,n),b=this.plane(endRay,point,n);if(!a||!b)return null;
     const x=this.sub(a,point),y=this.sub(b,point);if(Math.hypot(...x)<1e-6||Math.hypot(...y)<1e-6)return null;
     return Math.atan2(M.dot(n,M.cross(x,y)),M.dot(x,y));}
 };
@@ -33,15 +36,15 @@ class GraspEditorViewer extends ReorientationViewer{
     this.handles=[];
     if(this.grasp){
       const point=this.grasp.grasp_point_object_m,R=this.grasp.object_R_tcp,origin=project(V.add(point,offset)),length=Math.max(.025,Math.min(.07,this.radius*.7));
-      const strokes=[],labels=[];
+      const strokes=[],labels=[],frame=this.editMode==='rotate-object'?'object':'tcp',ringRotation=V.rotationFrame(R,frame);
       for(let axis=0;axis<3;axis++){
-        const vector=R.map(row=>row[axis]),cue=AxisDepthCue.describe(vector,this.basis[2]),end=project(V.add(V.add(point,offset),V.scale(vector,length)));
-        if(this.editMode==='rotate'){
-          const u=R.map(row=>row[(axis+1)%3]),v=R.map(row=>row[(axis+2)%3]),ring=[],vectors=[];
+        const vector=ringRotation.map(row=>row[axis]),cue=AxisDepthCue.describe(vector,this.basis[2]),end=project(V.add(V.add(point,offset),V.scale(vector,length)));
+        if(this.editMode==='rotate'||this.editMode==='rotate-object'){
+          const u=ringRotation.map(row=>row[(axis+1)%3]),v=ringRotation.map(row=>row[(axis+2)%3]),ring=[],vectors=[];
           for(let k=0;k<=64;k++){const theta=k*Math.PI/32,relative=V.add(V.scale(u,Math.cos(theta)*length),V.scale(v,Math.sin(theta)*length));vectors.push(relative);ring.push(project(V.add(V.add(point,offset),relative)));}
           for(let k=0;k<64;k++){const middle=V.scale(V.add(vectors[k],vectors[k+1]),.5),depth=M.dot(middle,this.basis[2])/length;
             const style=AxisDepthCue.describe(middle,this.basis[2]);strokes.push({a:ring[k],b:ring[k+1],color:colors[axis],cue:style,depth,ring:true,segmentIndex:k});}
-          this.handles.push({axis,ring});labels.push({text:'绕 +'+ 'XYZ'[axis]+' '+cue.symbol,p:ring[8+axis*5],color:colors[axis]});
+          this.handles.push({axis,ring,frame});labels.push({text:'绕 '+(frame==='object'?'物品':'TCP')+' +'+ 'XYZ'[axis]+' '+cue.symbol,p:ring[8+axis*5],color:colors[axis]});
         }else{
           strokes.push({a:origin,b:end,color:colors[axis],cue,depth:cue.value,ring:false});
           const left=end[0]<origin[0];labels.push({text:'TCP +'+ 'XYZ'[axis]+' '+cue.symbol,p:[Math.max(8,Math.min(width-90,end[0]+(left?-78:10))),Math.max(60,end[1]-12)],color:colors[axis]});
@@ -187,7 +190,7 @@ class GraspEditorPanel{
     };
     canvas.onpointermove=e=>{
       if(!drag||e.pointerId!==drag.id)return;if(this.locked){drag=null;return;}const p=point(canvas,e),factor=drag.fine?.2:1;
-      if(drag.h.ring){const angle=V.rotationDrag(drag.profile.object_R_tcp,drag.h.axis,drag.ray,viewer.ray(p),drag.profile.grasp_point_object_m);if(angle===null){this.feedback.textContent='圆环接近侧面，请先旋转视角再拖动。';return;}const axis=[0,0,0];axis[drag.h.axis]=1;this.draft.profile.object_R_tcp=M.multiply(drag.profile.object_R_tcp,M.axisAngle(axis,angle*factor));}
+      if(drag.h.ring){const angle=V.rotationDrag(drag.profile.object_R_tcp,drag.h.axis,drag.ray,viewer.ray(p),drag.profile.grasp_point_object_m,drag.h.frame);if(angle===null){this.feedback.textContent='圆环接近侧面，请先旋转视角再拖动。';return;}this.draft.profile.object_R_tcp=V.rotate(drag.profile.object_R_tcp,drag.h.axis,angle*factor,drag.h.frame);}
       else{const axis=V.sub(drag.h.b,drag.h.a),delta=M.dot(V.sub(p,drag.p),axis)/M.dot(axis,axis)*drag.h.length*factor;this.draft.profile.grasp_point_object_m=V.add(drag.profile.grasp_point_object_m,V.scale(drag.h.vector,delta));}
       changed();
     };

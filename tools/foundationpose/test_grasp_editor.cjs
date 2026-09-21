@@ -14,6 +14,39 @@ assert.equal(G.segmentDistance([.5,.2],[0,0],[1,0]),.2);
 let a={origin:[1,0,2],direction:[0,0,-1]},b={origin:[0,1,2],direction:[0,0,-1]};
 assert(Math.abs(G.rotationDrag(M.identity(),2,a,b,[0,0,0])-Math.PI/2)<1e-9,'Z ring quarter turn');
 assert.equal(G.rotationDrag(M.identity(),0,a,b,[0,0,0]),null,'edge-on rotation ring requires another view');
+const near=(actual,expected)=>assert(actual.flat().every((v,i)=>Math.abs(v-expected.flat()[i])<1e-9));
+const tilted=M.euler(31,-24,67),center=[.04,-.03,.02];
+const quarters=[[[1,0,0],[0,0,-1],[0,1,0]],[[0,0,1],[0,1,0],[-1,0,0]],[[0,-1,0],[1,0,0],[0,0,1]]];
+for(let axis=0;axis<3;axis++){
+ near(G.rotationFrame(tilted,'object'),M.identity());
+ near(G.rotationFrame(tilted,'tcp'),tilted);
+ near(G.rotate(tilted,axis,Math.PI/2,'object'),M.multiply(quarters[axis],tilted));
+ near(G.rotate(tilted,axis,Math.PI/2,'tcp'),M.multiply(tilted,quarters[axis]));
+ // Exercise the actual drag handler with a non-origin center and tilted TCP.
+ const normal=[0,0,0],u=[0,0,0],v=[0,0,0];normal[axis]=1;u[(axis+1)%3]=1;v[(axis+2)%3]=1;
+ const makeRay=radial=>({origin:G.add(center,G.add(radial,G.scale(normal,2))),direction:G.scale(normal,-1)});
+ const start=makeRay(u),end=makeRay(v);
+ assert(Math.abs(G.rotationDrag(tilted,axis,start,end,center,'object')-Math.PI/2)<1e-9);
+ for(const fine of [false,true]){
+  const canvas={getBoundingClientRect:()=>({left:0,top:0}),setPointerCapture(){},addEventListener(){}},camera={};
+  const p=Object.create(Panel.prototype);Object.assign(p,{locked:false,dirty:false,mode:{value:'rotate-object'},q:()=>camera,feedback:{textContent:''},
+    draft:{profile:{grasp_point_object_m:center.slice(),object_R_tcp:tilted.map(row=>row.slice())}},writeFields(){},
+    viewer:{canvas,handles:[{axis,ring:[[0,0],[1,0]],frame:'object'}],ray:pixel=>pixel[0]===0?start:end}});
+  p.bindGestures();canvas.onpointerdown({button:0,pointerId:1,clientX:0,clientY:0,shiftKey:fine,preventDefault(){}});
+  canvas.onpointermove({pointerId:1,clientX:1,clientY:0});canvas.onpointerup({pointerId:1});
+  near(p.draft.profile.object_R_tcp,G.rotate(tilted,axis,Math.PI/2*(fine?.2:1),'object'));
+  assert.deepEqual(p.draft.profile.grasp_point_object_m,center,'object-axis rotation must keep the grasp center fixed');assert(p.dirty);
+ }
+}
+// The rendered object rings stay fixed while TCP rings follow the orientation.
+context.document={createElementNS:()=>({children:[],setAttribute(){},appendChild(e){this.children.push(e);}})};
+const Viewer=vm.runInContext('GraspEditorViewer',context),viewer=Object.create(Viewer.prototype);
+Object.assign(viewer,{grasp:{grasp_point_object_m:center,object_R_tcp:tilted},distance:.05,radius:.1,basis:M.defaultView(),zoom:1,overlay:{replaceChildren(){}}});
+const project=p=>[200+p[0]*1000,150-p[1]*1000];
+viewer.editMode='rotate-object';viewer.drawOverlay(600,400,[0,0,0],project);const fixed=plain(viewer.handles);
+viewer.grasp.object_R_tcp=G.rotate(tilted,0,.8,'object');viewer.drawOverlay(600,400,[0,0,0],project);assert.deepEqual(plain(viewer.handles),fixed);
+viewer.editMode='rotate';viewer.drawOverlay(600,400,[0,0,0],project);assert.notDeepEqual(plain(viewer.handles).map(h=>h.ring),fixed.map(h=>h.ring));
+assert(fs.readFileSync(__dirname+'/live_tracker.html','utf8').includes('value="rotate-object"'));
 for(const basis of [M.defaultView(),M.orbit(M.defaultView(),[73,57],[98,67],146,115)]){
  const point=[.08,-.03,.04],scale=.2,width=400,height=300,pivot=[.1,.1,0],world=G.sub(point,pivot);
  const pixel=[width/2+M.dot(basis[0],world)*height/(2*scale),height/2-M.dot(basis[1],world)*height/(2*scale)];
