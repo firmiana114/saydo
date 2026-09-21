@@ -1,4 +1,4 @@
-"""Place a held mesh in a Base-frame rectangle, keeping its measured orientation."""
+"""Place a held mesh in a Base-frame rectangle, keeping its measured orientation at waypoints."""
 import heapq
 import subprocess
 import time
@@ -105,6 +105,28 @@ def sample_linear_path(start_raw, targets, step):
     return result
 
 
+def placement_motion_method(name):
+    if name in ('raise', 'transfer'):
+        return 'joint_pose'
+    if name in ('lower', 'retreat'):
+        return 'linear'
+    raise ValueError('未知的放置运动阶段')
+
+
+def placement_validation_points(start_raw, targets, step):
+    """Joint moves validate endpoints; only commanded linear moves are sampled."""
+    previous = list(start_raw); points = []
+    for target in targets:
+        if placement_motion_method(target['name']) == 'joint_pose':
+            points.append(target)
+        else:
+            points.extend(sample_linear_path(previous, [target], step))
+        previous = list(target['controller_pose'])
+    if len(points) > 480:
+        raise ValueError('放置路径超过采样检查数量上限')
+    return points
+
+
 def candidate_xy(low, high, current, step):
     nearest = np.clip(current, low, high)
     yield nearest
@@ -164,7 +186,8 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             ('lower', [*xy, release_z]), ('retreat', [*xy, release_z + settings['retreat_height_m']]),
         ]:
             matrix = current.copy();matrix[:3, 3] = xyz
-            target = linear_waypoint(name, matrix)
+            target = pose_waypoint(name, matrix)
+            target['method'] = placement_motion_method(name)
             target['controller_pose'][3:] = list(arm['pose'][3:])
             actual = controller_pose(target['controller_pose'])
             target['position_m'] = actual[:3, 3].tolist()
@@ -177,7 +200,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             release = next(w for w in targets if w['name'] == 'lower')
             released_world = object_vertices(controller_pose(release['controller_pose']), held, vertices)
             check_footprint(released_world, settings)
-            samples = sample_linear_path(arm['pose'], targets, settings['linear_sample_step_m'])
+            samples = placement_validation_points(arm['pose'], targets, settings['linear_sample_step_m'])
         except ValueError as error:
             attempt['reason'] = str(error)
             # Z and path limits may fail for every XY, but retain a bounded search.
@@ -188,7 +211,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
         try:
             valid, detail = reachable(samples, min(remaining, 3.))
         except subprocess.TimeoutExpired:
-            attempt['reason'] = '候选直线路径逆解检查超时'
+            attempt['reason'] = '候选运动端点/直线路径逆解检查超时'
             continue
         cancelled()
         if time.monotonic() >= deadline:
@@ -206,10 +229,12 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             'footprint_min_xy_m': released_world[:, :2].min(axis=0).tolist(),
             'footprint_max_xy_m': released_world[:, :2].max(axis=0).tolist(),
             'region_xy_m': settings['region_xy_m'],
-            'release_position': 1000, 'orientation_policy': 'keep_measured_object_orientation',
-            'motion_command': 'movel', 'reachability_check': detail,
+            'release_position': 1000, 'orientation_policy': 'keep_measured_object_orientation_at_waypoints',
+            'motion_command': 'mixed',
+            'motion_commands': {w['name']: 'movej_p' if w['method'] == 'joint_pose' else 'movel' for w in targets},
+            'joint_path_checked': False, 'reachability_check': detail,
             'search_attempt_count': attempted, 'search_attempts': attempts,
-            'validation': 'sampled_linear_tcp_ik_fk_and_live_feedback_not_full_environment_collision',
+            'validation': 'joint_endpoints_and_sampled_linear_tcp_ik_fk_with_live_feedback_not_full_paths',
             'contact_confirmed': False, 'stability_verified': False,
             'gripper_collision_checked': False,
         }

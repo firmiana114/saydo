@@ -17,7 +17,7 @@ from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from reorientation_geometry import model_geometry
 from placement_geometry import (placement_settings, plan_placement, object_vertices,
-                                check_footprint, check_tcp_workspace, sample_linear_path)
+                                check_footprint, check_tcp_workspace, placement_validation_points, placement_motion_method)
 
 
 def settings_revision(settings):
@@ -136,7 +136,7 @@ class PlacementMixin:
             checker = (self.root / config['ik_checker']).resolve()
             if not checker.is_file():
                 raise ValueError('缺少支持正解回验的离线检查器')
-            report['active_stage'] = '搜索放置位置和检查直线路径'
+            report['active_stage'] = '搜索放置位置并检查运动端点及下降/退出直线路径'
             plan = plan_placement(held, mesh['vertices'], arm, config, settings,
                 lambda points, timeout: check_waypoints(checker, tool, arm, points, timeout),
                 self.check_cancel, report.setdefault('search_attempts', []))
@@ -146,7 +146,7 @@ class PlacementMixin:
             self.update(placement_plan=plan)
             self.check_cancel();self.placement_config_unchanged(report)
             if mode != 'execute':
-                self.update(state='placement_preview', message='放置方案已生成；保持当前朝向，按几何高度留间隙释放。本次未发送运动。')
+                self.update(state='placement_preview', message='放置方案已生成：关节运动至上方，按当前朝向直线下降并留间隙释放。本次未发送运动。')
                 return
             current = self.arm_state()
             if np.max(np.abs(np.asarray(current['joint']) - arm['joint'])) > 30:
@@ -177,10 +177,11 @@ class PlacementMixin:
 
     def execute_placement(self, plan, held, config, settings, report, vertices):
         previous = list(plan['current_arm']['pose'])
-        names = {'raise': '提升至转移高度', 'transfer': '水平移至放置点上方',
+        names = {'raise': '关节运动至转移高度', 'transfer': '关节运动至放置点上方',
                  'lower': '保持朝向下降至释放高度', 'retreat': '松爪后竖直退出'}
         for target in plan['waypoints']:
             retreating = target['name'] == 'retreat'
+            joint_motion = placement_motion_method(target['name']) == 'joint_pose'
             report['active_stage'] = names[target['name']]
             self.update(state='placing', message=report['active_stage'] + '…')
             self.check_cancel();self.placement_config_unchanged(report)
@@ -190,12 +191,13 @@ class PlacementMixin:
                 self.check_cancel()
                 actual = self.arm_state();pose = controller_pose(actual['pose'])
                 check_tcp_workspace(pose, config)
-                if rotation_error(pose[:3, :3], start[:3, :3]) > np.deg2rad(settings['orientation_tolerance_deg']):
-                    raise ValueError('放置过程中实际朝向偏离规划朝向')
-                delta = end[:3, 3] - start[:3, 3]
-                fraction = np.clip(np.dot(pose[:3, 3] - start[:3, 3], delta) / max(np.dot(delta, delta), 1e-12), 0, 1)
-                if np.linalg.norm(pose[:3, 3] - start[:3, 3] - fraction * delta) > .01:
-                    raise ValueError('放置反馈偏离本段直线路径超过 10 毫米')
+                if not joint_motion:
+                    if rotation_error(pose[:3, :3], start[:3, :3]) > np.deg2rad(settings['orientation_tolerance_deg']):
+                        raise ValueError('放置过程中实际朝向偏离规划朝向')
+                    delta = end[:3, 3] - start[:3, 3]
+                    fraction = np.clip(np.dot(pose[:3, 3] - start[:3, 3], delta) / max(np.dot(delta, delta), 1e-12), 0, 1)
+                    if np.linalg.norm(pose[:3, 3] - start[:3, 3] - fraction * delta) > .01:
+                        raise ValueError('放置反馈偏离本段直线路径超过 10 毫米')
                 if not retreating:
                     self.check_reorient_contact(held, config)
                     world = object_vertices(pose, held, vertices);bottom = float(world[:, 2].min())
@@ -212,17 +214,20 @@ class PlacementMixin:
             arm = read_motion_state()
             if (np.linalg.norm(controller_pose(arm['pose'])[:3, 3] - start[:3, 3]) > settings['position_tolerance_m']):
                 raise ValueError('末端已离开放置路径的规划起点')
-            # Feedback can retain a small angular settling error. Check the commanded
-            # constant-orientation line from the measured XYZ; the watchdog bounds
-            # the actual angular error and the SDK checks the measured initial FK.
+            if rotation_error(controller_pose(arm['pose'])[:3, :3], start[:3, :3]) > np.deg2rad(settings['orientation_tolerance_deg']):
+                raise ValueError('末端朝向已偏离本段规划起点')
+            # Joint motion checks only its endpoint. Linear motion checks the
+            # commanded constant-orientation line from the measured XYZ; small
+            # angular settling error is bounded by feedback/arrival checks.
             sampling_start = list(arm['pose'][:3]) + list(target['controller_pose'][3:])
-            points = sample_linear_path(sampling_start, [target], settings['linear_sample_step_m'])
+            points = placement_validation_points(sampling_start, [target], settings['linear_sample_step_m'])
             self.verify_motion_targets(plan, config, report, arm, points)
             self.check_cancel();self.placement_config_unchanged(report)
             self.actuated = True;report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
             speed = settings['descent_speed_percent'] if target['name'] in ('lower', 'retreat') else settings['transfer_speed_percent']
-            self.robot.move_linear(target['controller_pose'], speed, self.cancelled, read_motion_state)
+            move = self.robot.move_joint_pose if joint_motion else self.robot.move_linear
+            move(target['controller_pose'], speed, self.cancelled, read_motion_state)
             record = {'stage': report['active_stage']};report.setdefault('arrival_checks', []).append(record)
             actual = wait_for_pose(read_motion_state, target['controller_pose'], self.check_cancel, record,
                                    settings['position_tolerance_m'], np.deg2rad(settings['orientation_tolerance_deg']))

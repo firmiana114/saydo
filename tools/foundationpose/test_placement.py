@@ -60,7 +60,11 @@ class PlacementGeometryTests(unittest.TestCase):
         plan = plan_placement(held, vertices, arm, config, settings, reachable, lambda: None)
         self.assertEqual(plan['search_attempt_count'], 2)
         self.assertGreater(len(calls[1]), len(plan['waypoints']))
-        self.assertTrue(all(w['method'] == 'linear' for w in plan['waypoints']))
+        self.assertTrue(all(w['method'] == ('joint_pose' if w['name'] in ('raise', 'transfer') else 'linear') for w in plan['waypoints']))
+        self.assertFalse(any(w['name'].startswith(('raise:', 'transfer:')) for w in calls[1]))
+        self.assertEqual(plan['motion_commands']['transfer'], 'movej_p')
+        self.assertEqual(plan['motion_commands']['lower'], 'movel')
+        self.assertEqual(plan['motion_commands']['retreat'], 'movel')
         self.assertTrue(all(w['controller_pose'][3:] == arm['pose'][3:] for w in calls[1]))
         self.assertEqual(plan['waypoints'][-1]['name'], 'retreat')
         self.assertIn('lower', [w['name'] for w in plan['waypoints']])
@@ -152,8 +156,8 @@ class PlacementControlTests(unittest.TestCase):
     def robot(self, failure=None):
         robot = Mock();self.opened = False;self.commands = []
         def read_arm():return copy.deepcopy(self.arm)
-        def move(pose, speed, cancelled, watchdog):
-            self.commands.append(('move', pose.copy()))
+        def move(method, pose, speed, cancelled, watchdog):
+            self.commands.append((method, pose.copy()))
             if failure == 'motion':raise TimeoutError('controller timeout')
             watchdog()
             self.arm['pose'] = pose.copy()
@@ -172,7 +176,9 @@ class PlacementControlTests(unittest.TestCase):
                      'pos': [1000 if self.opened else 500], 'speed': [0], 'force': [0]}
             if failure == 'release_feedback' and self.opened:state['sys_err'] = 1
             return {'state_info': state}
-        robot.move_linear.side_effect = move;robot.move_gripper.side_effect = open_gripper;robot.query.side_effect = query
+        robot.move_linear.side_effect = lambda *args: move('linear', *args)
+        robot.move_joint_pose.side_effect = lambda *args: move('joint', *args)
+        robot.move_gripper.side_effect = open_gripper;robot.query.side_effect = query
         self.service.arm_state = Mock(side_effect=read_arm)
         self.service.check_reorient_contact = Mock()
         self.service.verify_motion_targets = Mock()
@@ -192,23 +198,64 @@ class PlacementControlTests(unittest.TestCase):
         self.assertEqual(self.service.status['state'], 'placement_preview')
         self.assertFalse(client.call_args.kwargs['writes'])
         self.assertEqual(self.service.held_object['hold_id'], 'hold1')
-        robot.move_linear.assert_not_called();robot.move_gripper.assert_not_called();robot.stop.assert_not_called()
+        robot.move_linear.assert_not_called();robot.move_joint_pose.assert_not_called();robot.move_gripper.assert_not_called();robot.stop.assert_not_called()
         self.service.mode = 'preview';robot = self.robot();self.run_job(robot)
-        robot.move_linear.assert_not_called();robot.move_gripper.assert_not_called()
+        robot.move_linear.assert_not_called();robot.move_joint_pose.assert_not_called();robot.move_gripper.assert_not_called()
 
-    def test_success_lowers_opens_then_retreats_without_joint_moves_or_return(self):
+    def test_success_uses_joint_transfer_then_linear_lower_and_retreat(self):
         robot = self.robot();self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
         plan = self.service.status['placement_plan']
-        self.assertEqual([x[0] for x in self.commands], ['move', 'move', 'open', 'move'])
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'linear', 'open', 'linear'])
         self.assertEqual(self.commands[-2], ('open', 1000))
         self.assertEqual(self.commands[-1][1], plan['waypoints'][-1]['controller_pose'])
         self.assertIsNone(self.service.held_object)
-        robot.move_joint_pose.assert_not_called();robot.move_joints.assert_not_called();robot.set_register.assert_not_called()
+        robot.move_joint_pose.assert_called_once();robot.move_joints.assert_not_called();robot.set_register.assert_not_called()
         report = json.loads(next((self.root / 'work/grasp/placement_jobs').glob('*.json')).read_text())
         self.assertTrue(report['release_confirmed']);self.assertFalse(report['contact_confirmed'])
         self.assertTrue(all(check['settled'] for check in report['arrival_checks']))
         self.assertFalse(report['result']['busy'])
+
+    def test_raise_and_transfer_both_use_joint_pose(self):
+        self.arm['pose'][2] = 70000
+        robot = self.robot();self.run_job(robot)
+        self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'joint', 'linear', 'open', 'linear'])
+        self.assertEqual(robot.move_joint_pose.call_count, 2)
+        self.assertEqual(robot.move_linear.call_count, 2)
+        checks = self.service.verify_motion_targets.call_args_list
+        self.assertEqual([w['name'] for w in checks[0].args[-1]], ['raise'])
+        self.assertEqual([w['name'] for w in checks[1].args[-1]], ['transfer'])
+        self.assertTrue(all(w['name'].startswith('lower:') for w in checks[2].args[-1]))
+
+    def test_joint_path_can_curve_and_change_orientation_then_arrive_correctly(self):
+        robot = self.robot();original = robot.move_joint_pose.side_effect
+        def curve(pose, speed, cancelled, watchdog):
+            start = list(self.arm['pose'])
+            self.arm['pose'][0] += 30000;self.arm['pose'][2] += 30000
+            self.arm['pose'][5] += 300
+            watchdog()  # Intermediate Cartesian curve and rotation are valid for movej_p.
+            self.arm['pose'] = start
+            return original(pose, speed, cancelled, watchdog)
+        robot.move_joint_pose.side_effect = curve
+        self.run_job(robot)
+        self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
+        robot.move_gripper.assert_called_once_with(1000)
+
+    def test_linear_descent_still_rejects_curves_and_rotation(self):
+        for index, offset in [(0, 30000), (5, 300)]:
+            with self.subTest(index=index):
+                self.arm = fixture()[-1];self.service.actuated = False
+                self.service.held_object = copy.deepcopy(self.held)
+                robot = self.robot()
+                def wrong_path(pose, speed, cancelled, watchdog):
+                    self.arm['pose'][index] += offset
+                    watchdog()
+                robot.move_linear.side_effect = wrong_path
+                self.run_job(robot)
+                self.assertEqual(self.service.status['state'], 'failed')
+                robot.move_gripper.assert_not_called()
+                robot.stop.assert_called()
 
     def test_motion_arrival_cancel_and_slip_never_release(self):
         for failure in ['motion', 'arrival', 'below_table', 'cancel', 'slip']:
@@ -276,7 +323,7 @@ class PlacementControlTests(unittest.TestCase):
              patch('placement_control.model_geometry', return_value={'model_sha256': 'changed'}):
             self.service.run_placement(self.held, self.settings)
         self.assertIn('模型已变化', self.service.status['error'])
-        robot.move_linear.assert_not_called();robot.move_gripper.assert_not_called()
+        robot.move_linear.assert_not_called();robot.move_joint_pose.assert_not_called();robot.move_gripper.assert_not_called()
 
     def test_external_config_change_before_motion_blocks(self):
         robot = self.robot()
@@ -287,7 +334,7 @@ class PlacementControlTests(unittest.TestCase):
              patch('placement_control.model_geometry', return_value={'vertices': self.vertices, 'model_sha256': 'mesh1'}), \
              patch('placement_control.check_waypoints', side_effect=changed):
             self.service.run_placement(self.held, self.settings)
-        robot.move_linear.assert_not_called();robot.move_gripper.assert_not_called()
+        robot.move_linear.assert_not_called();robot.move_joint_pose.assert_not_called();robot.move_gripper.assert_not_called()
         self.assertIn('配置在规划后变化', self.service.status['error'])
 
 
