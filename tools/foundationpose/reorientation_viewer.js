@@ -13,7 +13,7 @@ const ReorientationMath={
   angles(r){const y=Math.asin(Math.max(-1,Math.min(1,-r[2][0]))),regular=Math.abs(Math.cos(y))>1e-6;
     return [(regular?Math.atan2(r[2][1],r[2][2]):0),y,(regular?Math.atan2(r[1][0],r[0][0]):Math.atan2(-r[0][1],r[1][1]))].map(v=>v*180/Math.PI);},
   column(r){return new Float32Array([r[0][0],r[1][0],r[2][0],r[0][1],r[1][1],r[2][1],r[0][2],r[1][2],r[2][2]]);},
-  rotate(rotation,delta,mode='free'){return mode==='free'?this.multiply(delta,rotation):this.multiply(rotation,delta);},
+  rotate(rotation,delta,mode='free'){return mode==='free'||mode==='base-ring'?this.multiply(delta,rotation):this.multiply(rotation,delta);},
   orbit(basis,start,end,width,height,fine=false){return this.multiply(basis,this.drag(start,end,width,height,basis,'free',fine));},
   objectOrigin(rotation,pivot,translation=[0,0,0]){return this.apply(rotation,pivot).map((v,k)=>translation[k]-v);},
   axisAngle(axis,angle){const [x,y,z]=this.unit(axis),c=Math.cos(angle),s=Math.sin(angle),t=1-c;
@@ -29,6 +29,20 @@ const ReorientationMath={
     const world=basis[0].map((_,k)=>axis.reduce((s,v,i)=>s+v*basis[i][k],0));
     return this.axisAngle(world,Math.atan2(length,dot)*factor);
   }
+};
+const ReorientationRings={
+  basis(rotation,mode){return mode==='base-ring'?ReorientationMath.identity():rotation;},
+  ray(pixel,width,height,basis,scale,center){const x=(pixel[0]-width/2)*2*scale/height,y=(height/2-pixel[1])*2*scale/height;
+    return {origin:center.map((v,i)=>v+basis[0][i]*x+basis[1][i]*y+basis[2][i]*scale*20),direction:basis[2].map(v=>-v)};},
+  angle(start,end,center,normal){const M=ReorientationMath;
+    const hit=ray=>{const denominator=M.dot(ray.direction,normal);if(Math.abs(denominator)<.08)return null;
+      const t=M.dot(center.map((v,i)=>v-ray.origin[i]),normal)/denominator;return ray.origin.map((v,i)=>v+ray.direction[i]*t-center[i]);};
+    const a=hit(start),b=hit(end);if(!a||!b||Math.hypot(...a)<1e-6||Math.hypot(...b)<1e-6)return null;
+    return Math.atan2(M.dot(normal,M.cross(a,b)),M.dot(a,b));},
+  distance(p,a,b){const d=b.map((v,i)=>v-a[i]),n=ReorientationMath.dot(d,d),t=n?Math.max(0,Math.min(1,ReorientationMath.dot(p.map((v,i)=>v-a[i]),d)/n)):0;
+    return Math.hypot(...p.map((v,i)=>v-a[i]-t*d[i]));},
+  hit(handles,p){const choices=handles.map(h=>({handle:h,distance:Math.min(...h.points.slice(1).map((b,i)=>this.distance(p,h.points[i],b)))})).sort((a,b)=>a.distance-b.distance);
+    return choices[0]?.distance<=12?choices[0].handle:null;}
 };
 // Depth cues describe direction relative to the view, independently of axis sign.
 const AxisDepthCue={
@@ -70,6 +84,8 @@ class ReorientationViewer{
   }
   resetView(){this.basis=ReorientationMath.defaultView();this.zoom=1;this.draw();}
   orbitView(basis,start,end,width,height,fine=false){this.basis=ReorientationMath.orbit(basis,start,end,width,height,fine);this.draw();}
+  ringRay(point){const center=this.translation.map(v=>v/2),scale=Math.max(.1,this.radius*1.55+Math.hypot(...this.translation)/2)/this.zoom;
+    return ReorientationRings.ray(point,this.canvas.clientWidth,this.canvas.clientHeight,this.basis,scale,center);}
   setModel(model){
     const gl=this.gl,version=++this.version;for(const texture of this.textures)if(texture)gl.deleteTexture(texture);this.textures=[];
     this.model=model;this.translation=[0,0,0];this.zoom=1;this.pivot=model.pivot_object_m||[0,0,0];this.radius=model.vertices.reduce((r,p)=>Math.max(r,Math.hypot(...p.map((v,k)=>v-this.pivot[k]))),.04);
@@ -126,6 +142,23 @@ class ReorientationViewer{
     const label=(text,x,y,color,size=15)=>add('text',{x,y,fill:color,'font-size':size,'font-weight':700,'font-family':'system-ui','paint-order':'stroke','stroke':'#071017','stroke-width':4,'stroke-linejoin':'round'},text);
     const arrow=(a,b,color,dashed=false)=>{add('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:'#071017','stroke-width':7});add('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:color,'stroke-width':3,'stroke-dasharray':dashed?'4 5':'none','stroke-linecap':'round'});
       if(!dashed){const angle=Math.atan2(b[1]-a[1],b[0]-a[0]),ends=[-.5,.5].map(d=>[b[0]-10*Math.cos(angle+d),b[1]-10*Math.sin(angle+d)]);add('path',{d:`M${ends[0]} L${b} L${ends[1]}`,fill:'none',stroke:color,'stroke-width':3,'stroke-linecap':'round','stroke-linejoin':'round'});}};
+    this.ringHandles=[];
+    if(this.dragMode==='object-ring'||this.dragMode==='base-ring'){
+      const frame=ReorientationRings.basis(this.rotation,this.dragMode),length=Math.max(.035,Math.min(.09,this.radius*.8)),strokes=[],labels=[];
+      for(let axis=0;axis<3;axis++){
+        const normal=frame.map(row=>row[axis]),u=frame.map(row=>row[(axis+1)%3]),v=frame.map(row=>row[(axis+2)%3]),points=[],vectors=[];
+        for(let k=0;k<=64;k++){const theta=k*Math.PI/32,relative=u.map((value,i)=>(value*Math.cos(theta)+v[i]*Math.sin(theta))*length);vectors.push(relative);points.push(project(relative.map((value,i)=>value+this.translation[i])));}
+        this.ringHandles.push({axis,normal,points});
+        for(let k=0;k<64;k++){const middle=vectors[k].map((value,i)=>(value+vectors[k+1][i])/2),cue=AxisDepthCue.describe(middle,this.basis[2]);strokes.push({axis,k,a:points[k],b:points[k+1],cue});}
+        const p=points[8+axis*5];labels.push({text:'绕'+(this.dragMode==='base-ring'?'基座':'物品')+' '+names[axis],p:[Math.max(8,Math.min(width-90,p[0])),Math.max(66,Math.min(height-22,p[1]))],axis});
+      }
+      for(const {axis,k,a,b,cue} of strokes.sort((a,b)=>a.cue.value-b.cue.value)){
+        if(cue.kind==='back'&&k%2)continue;
+        const attrs={x1:a[0],y1:a[1],x2:b[0],y2:b[1],opacity:cue.opacity,'stroke-dasharray':cue.dash};
+        add('line',{...attrs,stroke:'#071017','stroke-width':cue.width+2});add('line',{...attrs,stroke:colors[axis],'stroke-width':cue.width,'data-ring-axis':names[axis]});
+      }
+      for(const item of labels)label(item.text,...item.p,colors[item.axis],12);
+    }
     if(this.showAxes){
       const origin=project(offset);
       const axes=[];
@@ -168,17 +201,36 @@ class ReorientationPanel{
     this.restore.onclick=()=>{this.viewer.rotation=this.viewer.model.initial_rotation.map(row=>row.slice());this.syncAngles();this.changed();};
     this.positionMode.onchange=()=>{this.changed();};
     this.dragMode=document.querySelector('#reorientation-drag-mode');
+    this.viewer.dragMode=this.dragMode.value;this.selectedRingAxis=2;
     this.axes=document.querySelector('#reorientation-axes');this.axes.onchange=()=>{this.viewer.showAxes=this.axes.checked;this.viewer.draw();};
     this.viewReset=document.querySelector('#reorientation-view-reset');
     let anchor=null,viewAnchor=null;const canvas=this.viewer.canvas;
     const point=e=>{const r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
-    canvas.onpointerdown=e=>{if(this.disabled||!this.viewer.model||e.button!==0||anchor||viewAnchor)return;e.preventDefault();canvas.focus();anchor={id:e.pointerId,point:point(e),rotation:this.viewer.rotation.map(row=>row.slice()),mode:this.dragMode.value,fine:e.shiftKey};canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');};
-    const release=()=>{anchor=null;canvas.classList.remove('dragging');};this.cancelDrag=release;
-    canvas.onpointermove=e=>{if(!anchor||e.pointerId!==anchor.id)return;if(this.disabled){release();return;}const delta=ReorientationMath.drag(anchor.point,point(e),canvas.clientWidth,canvas.clientHeight,this.viewer.basis,anchor.mode,anchor.fine);this.viewer.rotation=ReorientationMath.rotate(anchor.rotation,delta,anchor.mode);this.syncAngles();this.changed();};
+    canvas.onpointerdown=e=>{
+      if(this.disabled||!this.viewer.model||e.button!==0||anchor||viewAnchor)return;e.preventDefault();canvas.focus();const p=point(e),mode=this.dragMode.value;
+      const ring=mode==='free'?null:ReorientationRings.hit(this.viewer.ringHandles||[],p);
+      if(mode!=='free'&&!ring){this.feedback.textContent='请拖动彩色圆环；左下角坐标卡片用于旋转观察视角。';return;}
+      if(ring)this.selectedRingAxis=ring.axis;
+      anchor={id:e.pointerId,point:p,rotation:this.viewer.rotation.map(row=>row.slice()),mode,fine:e.shiftKey,ring,
+        ray:ring?this.viewer.ringRay(p):null,center:this.viewer.translation.slice(),lastAngle:0,totalAngle:0,edited:false};
+      canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');
+    };
+    const release=()=>{const reset=anchor?.ring&&anchor.edited;anchor=null;canvas.classList.remove('dragging');if(reset){this.viewer.translation=[0,0,0];this.viewer.draw();}};this.cancelDrag=release;
+    this.dragMode.onchange=()=>{release();this.viewer.dragMode=this.dragMode.value;this.viewer.draw();};
+    canvas.onpointermove=e=>{
+      if(!anchor||e.pointerId!==anchor.id)return;if(this.disabled){release();return;}let delta;
+      if(anchor.ring){
+        const angle=ReorientationRings.angle(anchor.ray,this.viewer.ringRay(point(e)),anchor.center,anchor.ring.normal);
+        if(angle===null){this.feedback.textContent='圆环接近侧面，请先旋转观察视角再拖动。';return;}
+        const step=Math.atan2(Math.sin(angle-anchor.lastAngle),Math.cos(angle-anchor.lastAngle));anchor.totalAngle+=step;anchor.lastAngle=angle;
+        const axis=[0,0,0];axis[anchor.ring.axis]=1;delta=ReorientationMath.axisAngle(axis,anchor.totalAngle*(anchor.fine?.2:1));
+      }else delta=ReorientationMath.drag(anchor.point,point(e),canvas.clientWidth,canvas.clientHeight,this.viewer.basis,'free',anchor.fine);
+      this.viewer.rotation=ReorientationMath.rotate(anchor.rotation,delta,anchor.mode);anchor.edited=true;this.syncAngles();this.changed(!!anchor.ring);
+    };
     canvas.onpointerup=canvas.onpointercancel=e=>{if(anchor?.id===e.pointerId)release();};canvas.onlostpointercapture=release;
     canvas.addEventListener('wheel',e=>{if(this.disabled)return;e.preventDefault();this.viewer.zoom=Math.max(.6,Math.min(2.8,this.viewer.zoom*Math.exp(-e.deltaY*.001)));this.viewer.draw();},{passive:false});
     canvas.ondblclick=()=>{if(!this.disabled){this.viewer.zoom=1;this.viewer.draw();}};
-    canvas.onkeydown=e=>{if(this.disabled||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const sign=['ArrowLeft','ArrowDown'].includes(e.key)?-1:1,mode=this.dragMode.value,axis=mode==='free'?(e.key==='ArrowUp'||e.key==='ArrowDown'?this.viewer.basis[0]:this.viewer.basis[1]):[0,1,2].map(i=>i==='xyz'.indexOf(mode)?1:0);this.viewer.rotation=ReorientationMath.rotate(this.viewer.rotation,ReorientationMath.axisAngle(axis,sign*(e.shiftKey?1:5)*Math.PI/180),mode);this.syncAngles();this.changed();};
+    canvas.onkeydown=e=>{if(this.disabled||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();release();const sign=['ArrowLeft','ArrowDown'].includes(e.key)?-1:1,mode=this.dragMode.value,axis=mode==='free'?(e.key==='ArrowUp'||e.key==='ArrowDown'?this.viewer.basis[0]:this.viewer.basis[1]):[0,1,2].map(i=>i===this.selectedRingAxis?1:0);this.viewer.rotation=ReorientationMath.rotate(this.viewer.rotation,ReorientationMath.axisAngle(axis,sign*(e.shiftKey?1:5)*Math.PI/180),mode);this.syncAngles();this.changed();};
     const camera=this.cameraControl;
     const viewPoint=e=>{const r=camera.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
     const releaseView=()=>{const id=viewAnchor?.id;viewAnchor=null;camera.classList.remove('dragging');if(id!==undefined&&camera.hasPointerCapture(id))camera.releasePointerCapture(id);};
@@ -205,7 +257,7 @@ class ReorientationPanel{
   }
   syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});}
   anglesValid(){return this.inputs.every(x=>x.value!==''&&x.checkValidity());}
-  changed(){this.poseDirty=true;this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent='目标已调整；预览可查看位移和终点离桌高度，执行时重新检查。';}
+  changed(keepPreviewPosition=false){this.poseDirty=true;if(!keepPreviewPosition)this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent='目标已调整；预览可查看位移和终点离桌高度，执行时重新检查。';}
   async load(id,key){
     this.key=key;this.loading=true;const generation=++this.generation;this.info.textContent='正在加载物品模型…';
     try{const response=await fetch('/api/reorient/model?object_id='+encodeURIComponent(id)),model=await response.json();if(!response.ok)throw Error(model.error);if(generation!==this.generation)return;
