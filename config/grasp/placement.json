@@ -1,7 +1,6 @@
 {
   "region_xy_m": null,
   "release_gap_m": 0.003,
-  "edge_margin_m": 0.01,
   "approach_height_m": 0.05,
   "retreat_height_m": 0.05,
   "transfer_speed_percent": 10,
