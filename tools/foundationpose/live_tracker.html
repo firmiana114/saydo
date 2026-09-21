@@ -16,7 +16,7 @@ dialog{background:#182632;color:#e7eef5;border:1px solid #416177;border-radius:1
 <div id="message"></div><img id="stream" src="/stream.mjpg" alt="实时跟踪画面"><canvas id="view" width="640" height="360" style="display:none"></canvas>
 <div id="status">正在连接…</div><details class="compact-details"><summary>跟踪诊断</summary><div id="detail"></div><pre id="diagnostics" style="white-space:pre-wrap;color:#b9cad9"></pre>
 </details><details class="compact-details"><summary>识别与跟踪说明</summary><p>让整个物品入镜，点击“自动识别并跟踪”，系统会自动检测并分割目标；多个候选时点击目标。也可手动框选。初始化时保持静止，出现跟踪框后可缓慢移动物品；丢失后会自动重新识别，暂停按钮可停止自动恢复。</p>
-</details></section><section class="panel" id="arm-panel"><h2>机械臂控制</h2><div class="bar"><button id="grasp-preview">预览抓取方案</button><button id="grasp">抓取当前被跟踪物品</button><button id="arm-reset" disabled>机械臂复位</button><button id="gripper-open" disabled>打开夹爪</button><button id="gripper-status">读取夹爪状态</button><button id="grasp-stop" class="danger" disabled>停止运动</button></div><p class="note">机械臂复位：手动回到已记录姿态，夹爪开合保持不变；抓取完成后不会自动复位。</p><p id="gripper-info"></p><p id="grasp-mode"></p><pre id="grasp-status" style="white-space:pre-wrap;line-height:1.6"></pre>
+</details></section><section class="panel" id="arm-panel"><h2>机械臂控制</h2><div class="bar"><button id="grasp-preview">预览抓取方案</button><button id="grasp">抓取当前被跟踪物品</button><button id="arm-reset" disabled>机械臂复位(观测桌面)</button><button id="arm-reset-zero" disabled>机械臂复位(零位)</button><button id="gripper-open" disabled>打开夹爪</button><button id="gripper-status">读取夹爪状态</button><button id="grasp-stop" class="danger" disabled>停止运动</button></div><p class="note">观测桌面：回到已记录的观测姿态；零位：七个关节均回到 0°。两者均保持夹爪开合不变，可用“停止运动”中止；抓取完成后不会自动复位。</p><p id="gripper-info"></p><p id="grasp-mode"></p><pre id="grasp-status" style="white-space:pre-wrap;line-height:1.6"></pre>
 <details class="compact-details"><summary>记录夹法</summary><div class="bar"><button id="teach-grasp" disabled>记录当前夹法</button><label><input id="teach-point" type="checkbox">同时记录当前位置为夹持点</label></div>
 
 <p id="teach-feedback" role="status"></p><p class="note">先用示教器摆好夹爪相对物品的方向，停稳并保持可靠跟踪，再记录。勾选时请将夹爪参考点摆到实际希望夹持的位置；不勾选使用配置中的模型夹持点。接近方向采用已确认的工具 +Z 方向。记录只读取状态，不发送运动。每个物品保存一份，重新记录会替换；物品转动后夹法随之转动。</p></details>
@@ -44,7 +44,7 @@ dialog{background:#182632;color:#e7eef5;border:1px solid #416177;border-radius:1
 <p id="placement-feedback" role="status">请设置 Base 坐标系下的实际可用桌面范围。</p>
 <canvas id="placement-map" width="650" height="280" aria-label="桌面矩形、物品水平投影及工具中心点的俯视预览"></canvas>
 <pre id="placement-summary"></pre>
-<details class="compact-details"><summary>放置方式与检查范围</summary><p class="note">桌面高度采用已接受的估算值；释放间隙默认 3 毫米，表示模型最低点到桌面的距离，松爪后物品可能有短距离下落。范围直接约束物品整个水平投影，不额外缩小输入范围。到达转移高度和移至放置点上方使用 movej_p，途中位置和朝向可变化；下降与松爪后退出使用 movel，保持朝向竖直运动。关节运动检查目标端点，直线运动检查采样点，各段均核对稳定到位反馈。仅下降到位且夹持正常时松爪，张开未确认则不退出。软件没有桌面接触检测，也没有完整的夹指/环境碰撞模型；请确保当前物品朝向能够稳定落桌、夹爪有张开和退出空间。设置和预览均不发送运动。</p></details>
+<details class="compact-details"><summary>放置方式与检查范围</summary><p class="note">桌面高度采用已接受的估算值；释放间隙默认 3 毫米，表示模型最低点到桌面的距离，松爪后物品可能有短距离下落。范围直接约束物品整个水平投影，不额外缩小输入范围。到达转移高度和移至放置点上方使用 movej_p，途中位置和朝向可变化；下降、松爪后沿 grip_tcp 的 -Z 后撤、最后竖直退出均使用 movel。后撤距离读取预抓取距离 pregrasp_distance_m；-Z 是工具自身方向，不是基座向下方向。关节运动检查目标端点，直线运动检查采样点，各段均核对稳定到位反馈。仅下降到位且夹持正常时松爪，张开未确认则不后撤或退出。软件没有桌面接触检测，也没有完整的夹指/环境碰撞模型；请确保当前物品朝向能够稳定落桌、夹爪有张开和退出空间。设置和预览均不发送运动。</p></details>
 </section><details class="compact-details page-notes"><summary>使用前须知</summary><p class="note">坐标轴：X 红、Y 绿、Z 蓝，每根长 5 cm；原点为模型原点。抓取位置与朝向在点击时锁定，沿目标夹爪方向接近，执行过程中不再依赖视觉跟踪。首次使用物品时先记录夹法。默认允许执行抓取：点击抓取按钮且通过前置检查后才下发运动，启动和自动跟踪不会触发抓取。模型尺寸与实机定位精度仍需验证；自动检测只识别物品类别，不识别具体品牌。</p>
 </details><dialog id="objects"><h2>选择跟踪物品</h2><p>列表来自 work/object_models 的子目录。切换后会清除旧跟踪状态。</p><div id="object-list"></div><button id="objects-close">关闭</button></dialog>
 </main><script src="/reorientation_viewer.js"></script><script src="/placement_panel.js"></script><script>
@@ -88,6 +88,7 @@ let savingPosition=false, positionDirty=false, resetting=false;
 const positionInput=document.querySelector('#gripper-open-position');
 const positionFeedback=document.querySelector('#open-position-feedback');
 const resetButton=document.querySelector('#arm-reset');
+const zeroResetButton=document.querySelector('#arm-reset-zero');
 positionInput.oninput=()=>{positionDirty=true;positionFeedback.textContent='尚未保存：按回车或离开输入框以保存张开位置。';};
 positionInput.onkeydown=e=>{if(e.key==='Enter')positionInput.blur();};
 positionInput.onchange=async()=>{
@@ -98,13 +99,15 @@ positionInput.onchange=async()=>{
   catch(e){positionFeedback.textContent='保存失败：'+e.message;}
   finally{savingPosition=false;}
 };
-resetButton.onclick=async()=>{
-  if(resetting)return;
-  resetting=true;resetButton.disabled=true;document.querySelector('#grasp').disabled=true;
-  try{const r=await post('/api/arm/reset');document.querySelector('#grasp-status').textContent=r.message;}
-  catch(e){document.querySelector('#grasp-status').textContent=e.message;message(e.message);}
-  finally{resetting=false;}
-};
+for(const [button,path] of [[resetButton,'/api/arm/reset'],[zeroResetButton,'/api/arm/reset-zero']]){
+  button.onclick=async()=>{
+    if(resetting)return;
+    resetting=true;resetButton.disabled=true;zeroResetButton.disabled=true;document.querySelector('#grasp').disabled=true;
+    try{const r=await post(path);document.querySelector('#grasp-status').textContent=r.message;}
+    catch(e){document.querySelector('#grasp-status').textContent=e.message;message(e.message);}
+    finally{resetting=false;}
+  };
+}
 const teachButton=document.querySelector('#teach-grasp');
 teachButton.onclick=async()=>{
   if(teaching)return;teaching=true;teachButton.disabled=true;
@@ -145,6 +148,7 @@ reorientationPanel.update(s,savingForce||savingPosition||openingGripper||teachin
 placementPanel.update(s,savingForce||savingPosition||openingGripper||teaching||resetting||reorientationPanel.pending);
 positionInput.disabled=!!g.busy||actionPending||!g.open_position_config;
 resetButton.disabled=!!g.busy||actionPending||!g.motion_enabled||!g.reset_available;
+zeroResetButton.disabled=!!g.busy||actionPending||!g.motion_enabled||!g.zero_reset_available;
 if(g.open_position_config&&!positionDirty&&!savingPosition&&document.activeElement!==positionInput){positionInput.value=g.open_position_config.value;positionFeedback.textContent='已保存的张开位置：'+g.open_position_config.value+'；下一次抓取使用此值，保存不移动夹爪。';}
 teachButton.disabled=!!g.busy||actionPending||s.state!=='tracking'||!s.quality?.good;openButton.disabled=!!g.busy||actionPending||!g.motion_enabled;forceInput.disabled=!!g.busy||actionPending||!g.force_config;if(g.force_config&&!forceDirty&&!savingForce&&document.activeElement!==forceInput){forceInput.value=g.force_config.value;forceFeedback.textContent=g.force_config.message;}document.querySelector('#grasp').disabled=g.busy||actionPending||forceDirty||positionDirty||s.state!=='tracking'||!s.quality?.good;document.querySelector('#grasp-preview').disabled=document.querySelector('#grasp').disabled;document.querySelector('#grasp-stop').disabled=!g.busy;document.querySelector('#objects-open').disabled=!!g.busy;document.querySelector('#auto').disabled=!!g.busy||!s.model_ready||!s.auto_detection_supported;document.querySelector('#select').disabled=!!g.busy||!s.model_ready;document.querySelector('#pause').disabled=!!g.busy||s.state==='switching';document.querySelector('#grasp-mode').textContent=g.motion_enabled?'抓取模式：执行（航点检查后由控制器规划），夹持后竖直抬升':'抓取模式：仅方案预览，不发送机械臂或夹爪运动命令';let gt=g.message||'';if(g.target_object_id){gt+='\n已锁定物品：'+g.target_object_id+'（本次抓取不再跟随视觉更新）';}if(g.busy)message(g.operation==='place'?'正在执行桌面放置，可点击“停止放置”中止。':g.operation==='reset'?'机械臂正在复位，可点击“停止运动”中止。':g.operation==='reorient'?'正在保持末端位置调整物品姿态，可点击“停止运动”中止。':'正在按开始时锁定的位置抓取，请保持物品不动。');if(g.plan?.motion_validation){gt+='\n'+g.plan.motion_validation.message;}if(g.plan?.approach_direction_base){gt+='\n接近方向（底座 X/Y/Z）：'+g.plan.approach_direction_base.map(x=>x.toFixed(3)).join(', ');gt+='\n夹爪目标角度：'+g.plan.waypoints[0].controller_pose.slice(3).map(x=>(x/1000*180/Math.PI).toFixed(1)).join(', ')+' 度';}if(g.plan){gt+='\n物品：'+g.plan.object_id+'\n基座抓取点：'+g.plan.target_position_m.map(x=>(x*1000).toFixed(1)).join(', ')+' mm\n夹爪力度：原始值 '+g.plan.force_limit_raw+'（尚未换算牛顿）';gt+='\n路径：'+g.plan.waypoints.map(w=>({pregrasp:'预抓取点',grasp:'夹持点（闭合夹爪）',lift:'夹持后抬升'}[w.name]||w.name)+' ['+w.position_m.map(x=>(x*1000).toFixed(1)).join(', ')+'] mm').join(' → ');}document.querySelector('#grasp-status').textContent=gt;const cp=s.catchup_progress,lf=s.last_failure;document.querySelector('#diagnostics').textContent=(s.state==='catching_up'&&cp?'追帧：'+cp.steps+' 步，剩余延迟 '+cp.remaining_age_s.toFixed(2)+' s，已用 '+cp.elapsed_s.toFixed(1)+' / '+cp.budget_s.toFixed(1)+' s\n':'')+(lf?'最近失败 ['+lf.stage+']：'+lf.error+'（'+new Date(lf.at*1000).toLocaleTimeString()+'，可能属于上一次尝试）\n':'')+'诊断日志：'+(s.output||'')+'/events.jsonl';const q=s.quality||{};document.querySelector('#detail').textContent=`已处理连续帧：${s.tracked_frames}　相机序号：${s.sequence}\n推理耗时：${s.inference_seconds?(s.inference_seconds*1000).toFixed(0):'—'} ms　服务端结果年龄：${s.pose_age_s==null?'—':s.pose_age_s.toFixed(2)} s\n深度匹配偏差：${q.median_depth_residual_mm?.toFixed(1)??'—'} mm　重合深度像素：${q.overlap_depth_pixels??'—'}`;}catch(e){message('连接中断；请检查服务是否仍在运行。');}finally{busy=false;}}
 setInterval(update,250);update();

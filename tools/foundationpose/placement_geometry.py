@@ -108,7 +108,7 @@ def sample_linear_path(start_raw, targets, step):
 def placement_motion_method(name):
     if name in ('raise', 'transfer'):
         return 'joint_pose'
-    if name in ('lower', 'retreat'):
+    if name in ('lower', 'withdraw', 'retreat'):
         return 'linear'
     raise ValueError('未知的放置运动阶段')
 
@@ -152,6 +152,9 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
     table = config.get('table_z_m')
     if type(table) not in (int, float) or not np.isfinite(table):
         raise ValueError('桌面高度必须为有限米制数值')
+    withdraw_distance = config.get('pregrasp_distance_m')
+    if type(withdraw_distance) not in (int, float) or not np.isfinite(withdraw_distance) or not 0 < withdraw_distance <= .3:
+        raise ValueError('预抓取距离 pregrasp_distance_m 必须大于 0 且不超过 0.3 米，用于松爪后沿工具 -Z 后撤')
     current = controller_pose(arm['pose'])
     check_tcp_workspace(current, config)
     world = object_vertices(current, held, vertices)
@@ -179,11 +182,14 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
         attempt = {'candidate_index': attempted, 'tcp_xy_m': xy.tolist()}; attempts.append(attempt)
         if len(attempts) > 128:
             del attempts[64]
+        release_xyz = np.array([*xy, release_z])
+        withdraw_xyz = release_xyz - current[:3, 2] * withdraw_distance
+        retreat_xyz = withdraw_xyz + [0, 0, settings['retreat_height_m']]
         targets = []
         last = current
         for name, xyz in [
             ('raise', [*current[:2, 3], hover_z]), ('transfer', [*xy, hover_z]),
-            ('lower', [*xy, release_z]), ('retreat', [*xy, release_z + settings['retreat_height_m']]),
+            ('lower', release_xyz), ('withdraw', withdraw_xyz), ('retreat', retreat_xyz),
         ]:
             matrix = current.copy();matrix[:3, 3] = xyz
             target = pose_waypoint(name, matrix)
@@ -229,6 +235,8 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             'footprint_min_xy_m': released_world[:, :2].min(axis=0).tolist(),
             'footprint_max_xy_m': released_world[:, :2].max(axis=0).tolist(),
             'region_xy_m': settings['region_xy_m'],
+            'withdraw_distance_m': withdraw_distance,
+            'withdraw_direction_base': (-current[:3, 2]).tolist(),
             'release_position': 1000, 'orientation_policy': 'keep_measured_object_orientation_at_waypoints',
             'motion_command': 'mixed',
             'motion_commands': {w['name']: 'movej_p' if w['method'] == 'joint_pose' else 'movel' for w in targets},

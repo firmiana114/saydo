@@ -22,7 +22,7 @@ from placement_geometry import (DEFAULTS, placement_settings, plan_placement, ob
 def fixture():
     config = {'robot_ip': '127.0.0.1', 'robot_port': 9, 'ik_checker': 'checker',
               'workspace_reviewed': True, 'workspace_min_m': [-1, -1, 0], 'workspace_max_m': [1, 1, 1],
-              'table_z_m': -.02449, 'min_table_clearance_m': .01,
+              'table_z_m': -.02449, 'min_table_clearance_m': .01, 'pregrasp_distance_m': .05,
               'gripper': {'closed_position': 0, 'contact_position_margin': 20, 'open_position': 250}}
     settings = {**DEFAULTS, 'region_xy_m': {'x_min': .3, 'x_max': .6, 'y_min': -.2, 'y_max': .2}}
     attachment = np.eye(4);attachment[:3, 3] = [.01, 0, .07];attachment[:3, :3] = np.diag([1, -1, -1])
@@ -37,6 +37,7 @@ def fixture():
 class PlacementGeometryTests(unittest.TestCase):
     def test_height_uses_actual_rotated_mesh_and_tcp_offset(self):
         config, settings, held, vertices, arm = fixture()
+        config['pregrasp_distance_m'] = .001  # Keep the upside-down tool's withdrawal above the table.
         config['workspace_min_m'][2] = -.02  # Permit the lower TCP needed by the horizontal pose.
         for angles in [[3142, 0, 0], [1571, 0, 300], [0, 0, 0]]:
             with self.subTest(angles=angles):
@@ -98,6 +99,35 @@ class PlacementGeometryTests(unittest.TestCase):
                 {**settings, 'region_xy_m': {'x_min': .3, 'x_max': .32, 'y_min': 0, 'y_max': .02}}, checker, lambda: None)
         with self.assertRaisesRegex(ValueError, '工作区'):
             plan_placement(held, vertices, arm, {**config, 'workspace_max_m': [1, 1, .1]}, settings, checker, lambda: None)
+        checker.assert_not_called()
+
+    def test_withdrawal_follows_tool_negative_z_and_pregrasp_distance(self):
+        config, settings, held, vertices, arm = fixture()
+        arm['pose'][3:] = [2500, 200, 300]  # Tilted tool: local -Z is not base +Z.
+        for distance in (.03, .08):
+            with self.subTest(distance=distance):
+                config['pregrasp_distance_m'] = distance
+                plan = plan_placement(held, vertices, arm, config, settings, Mock(return_value=(True, {})), lambda: None)
+                targets = {w['name']: controller_pose(w['controller_pose']) for w in plan['waypoints']}
+                delta = targets['withdraw'][:3, 3] - targets['lower'][:3, 3]
+                np.testing.assert_allclose(delta, -targets['lower'][:3, 2] * distance, atol=1e-6)
+                self.assertGreater(np.linalg.norm(delta[:2]), .01)
+                np.testing.assert_allclose(targets['retreat'][:3, 3] - targets['withdraw'][:3, 3],
+                                           [0, 0, settings['retreat_height_m']], atol=1e-6)
+                self.assertEqual(plan['withdraw_distance_m'], distance)
+                self.assertEqual(plan['motion_commands']['withdraw'], 'movel')
+                self.assertTrue(any(w['name'].startswith('withdraw:') for w in plan['validation_points']))
+
+    def test_invalid_or_unreachable_withdrawal_blocks_entire_plan(self):
+        config, settings, held, vertices, arm = fixture();checker = Mock(return_value=(True, {}))
+        for distance in (None, 0, -.01, True, .31, float('nan')):
+            with self.subTest(distance=distance), self.assertRaises(ValueError):
+                plan_placement(held, vertices, arm, {**config, 'pregrasp_distance_m': distance}, settings, checker, lambda: None)
+        checker.assert_not_called()
+        # A tip-up tool would retreat below the configured table at this release height.
+        arm['pose'][3:] = [0, 0, 0]
+        with self.assertRaisesRegex(ValueError, '未找到'):
+            plan_placement(held, vertices, arm, config, settings, checker, lambda: None)
         checker.assert_not_called()
 
     def test_no_reachable_path_cancel_and_deadline_never_return_a_plan(self):
@@ -206,8 +236,8 @@ class PlacementControlTests(unittest.TestCase):
         robot = self.robot();self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
         plan = self.service.status['placement_plan']
-        self.assertEqual([x[0] for x in self.commands], ['joint', 'linear', 'open', 'linear'])
-        self.assertEqual(self.commands[-2], ('open', 1000))
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'linear', 'open', 'linear', 'linear'])
+        self.assertEqual(self.commands[-3], ('open', 1000))
         self.assertEqual(self.commands[-1][1], plan['waypoints'][-1]['controller_pose'])
         self.assertIsNone(self.service.held_object)
         robot.move_joint_pose.assert_called_once();robot.move_joints.assert_not_called();robot.set_register.assert_not_called()
@@ -220,9 +250,9 @@ class PlacementControlTests(unittest.TestCase):
         self.arm['pose'][2] = 70000
         robot = self.robot();self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
-        self.assertEqual([x[0] for x in self.commands], ['joint', 'joint', 'linear', 'open', 'linear'])
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'joint', 'linear', 'open', 'linear', 'linear'])
         self.assertEqual(robot.move_joint_pose.call_count, 2)
-        self.assertEqual(robot.move_linear.call_count, 2)
+        self.assertEqual(robot.move_linear.call_count, 3)
         checks = self.service.verify_motion_targets.call_args_list
         self.assertEqual([w['name'] for w in checks[0].args[-1]], ['raise'])
         self.assertEqual([w['name'] for w in checks[1].args[-1]], ['transfer'])
@@ -275,6 +305,40 @@ class PlacementControlTests(unittest.TestCase):
                 self.assertIn(self.service.status['state'], ('failed', 'cancelled'))
                 self.assertEqual(self.commands[-1], ('open', 1000))
                 self.assertIsNone(self.service.held_object);robot.stop.assert_called()
+
+    def test_withdrawal_failure_after_release_prevents_vertical_exit(self):
+        robot = self.robot();original = robot.move_linear.side_effect
+        def fail_after_open(pose, speed, cancelled, watchdog):
+            if self.opened:
+                self.commands.append(('withdraw_failed', pose.copy()))
+                raise TimeoutError('withdraw timeout')
+            return original(pose, speed, cancelled, watchdog)
+        robot.move_linear.side_effect = fail_after_open
+        self.run_job(robot)
+        self.assertEqual(self.service.status['state'], 'failed')
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'linear', 'open', 'withdraw_failed'])
+        self.assertIsNone(self.service.held_object)
+        self.assertIn('grip_tcp', self.service.status['error'])
+        robot.stop.assert_called()
+
+    def test_withdrawal_uses_measured_arrival_tool_axis(self):
+        self.arm['pose'][0] = 450000  # Start inside the region, with room for settling error.
+        robot = self.robot();original = robot.move_linear.side_effect
+        def small_arrival_error(pose, speed, cancelled, watchdog):
+            original(pose, speed, cancelled, watchdog)
+            if not self.opened:
+                self.arm['pose'][0] += 200
+                self.arm['pose'][3] += 1
+        robot.move_linear.side_effect = small_arrival_error
+        self.run_job(robot)
+        self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
+        report = json.loads(next((self.root/'work/grasp/placement_jobs').glob('*.json')).read_text())
+        arrival = controller_pose(report['arrival_checks'][0]['actual_arm_state']['pose'])
+        withdrawal = next(w for w in report['executed_waypoints'] if w['name'] == 'withdraw')
+        actual_target = controller_pose(withdrawal['controller_pose'])
+        np.testing.assert_allclose(actual_target[:3, 3],
+            arrival[:3, 3] - arrival[:3, 2] * self.config['pregrasp_distance_m'], atol=1e-6)
+        np.testing.assert_allclose(actual_target[:3, :3], arrival[:3, :3], atol=1e-10)
 
     def test_no_hold_stale_identity_version_settings_and_busy_rejected(self):
         with patch('placement_control.threading.Thread') as thread:

@@ -775,6 +775,8 @@ def main():
                     result = tracker.grasp.set_open_position(value['value'])
                 elif self.path == '/api/arm/reset':
                     result = tracker.grasp.start_reset()
+                elif self.path == '/api/arm/reset-zero':
+                    result = tracker.grasp.start_reset('zero')
                 elif self.path == '/api/reorient/preview':
                     result = tracker.grasp.start_reorient(value, preview=True)
                 elif self.path == '/api/reorient':

@@ -46,7 +46,7 @@ class GraspController(ReorientationMixin, PlacementMixin):
                 reset_available = False
             return {**self.status, 'force_config': self.force_config(),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
-                    'reset_available': reset_available, 'held_object': self.held_snapshot(),
+                    'reset_available': reset_available, 'zero_reset_available': True, 'held_object': self.held_snapshot(),
                     'placement_config': self.placement_configuration()}
 
     def set_open_position(self, value):
@@ -91,14 +91,17 @@ class GraspController(ReorientationMixin, PlacementMixin):
             return {'value': value, 'saved': True, 'motion_sent': False,
                     'message': '已保存到抓取配置，下一次抓取生效；本次不移动夹爪。'}
 
-    def start_reset(self):
+    def start_reset(self, target_kind='observation'):
+        if target_kind not in ('observation', 'zero'):
+            raise ValueError('未知的机械臂复位目标')
+        label = '机械臂复位(零位)' if target_kind == 'zero' else '机械臂复位(观测桌面)'
         with self.lock:
             if self.status['busy']:
                 raise ValueError('已有机械臂任务正在处理')
             if self.mode != 'execute':
                 raise ValueError('预览模式不发送机械臂复位指令')
             config = json.loads(self.config_path.read_text())
-            target = return_joint_target(config)
+            target = [0]*7 if target_kind == 'zero' else return_joint_target(config)
             if target is None:
                 raise ValueError('尚未配置机械臂复位目标，无法复位')
             if type(config['arm_speed_percent']) is not int or not 1 <= config['arm_speed_percent'] <= 100:
@@ -108,10 +111,11 @@ class GraspController(ReorientationMixin, PlacementMixin):
             self.robot = None
             self.status.update(state='resetting', operation='reset', busy=True, error=None, plan=None,
                                target_object_id=None, target_captured_at=None,
-                               message='正在检查机械臂，准备返回已记录的复位姿态…')
-            self.thread = threading.Thread(target=self.run_reset, args=(config, target), daemon=True)
+                               reset_target_kind=target_kind, message=f'正在检查机械臂，准备执行{label}…')
+            self.thread = threading.Thread(target=self.run_reset, args=(config, target, target_kind), daemon=True)
             self.thread.start()
-            return {'accepted': True, 'message': '已开始机械臂复位，夹爪开合保持不变。'}
+            return {'accepted': True, 'reset_target_kind': target_kind,
+                    'message': f'已开始{label}，夹爪开合保持不变。'}
 
     def return_to_joints(self, target, speed, report):
         self.check_cancel()
@@ -124,9 +128,11 @@ class GraspController(ReorientationMixin, PlacementMixin):
         if actual.shape != (7,) or not np.isfinite(actual).all() or np.max(np.abs(actual - target)) > 500:
             raise ValueError('返回关节角度误差超过 0.5 度或反馈无效')
 
-    def run_reset(self, config, target):
+    def run_reset(self, config, target, target_kind='observation'):
+        label = '机械臂复位(零位)' if target_kind == 'zero' else '机械臂复位(观测桌面)'
+        destination = '七关节零位' if target_kind == 'zero' else '已记录的观测桌面姿态'
         directory = self.root / 'work/grasp'
-        report = {'started_at': time.time(), 'operation': 'reset', 'target_joint_raw': target,
+        report = {'started_at': time.time(), 'operation': 'reset', 'reset_target_kind': target_kind, 'target_joint_raw': target,
                   'speed_percent': config['arm_speed_percent'], 'robot_motion_sent': False,
                   'active_stage': '复位前检查'}
         robot_lock = None
@@ -160,10 +166,10 @@ class GraspController(ReorientationMixin, PlacementMixin):
                 raise ValueError('机械臂未停稳或关节反馈无效，不能复位')
             self.check_cancel()
             self.actuated = True
-            report.update(active_stage='机械臂复位', robot_motion_sent=True)
-            self.update(message='正在返回已记录的复位姿态，夹爪开合保持不变…')
+            report.update(active_stage=label, robot_motion_sent=True)
+            self.update(message=f'正在返回{destination}，夹爪开合保持不变…')
             self.return_to_joints(target, config['arm_speed_percent'], report)
-            self.update(state='completed', message='机械臂已到达记录的复位姿态，夹爪开合保持不变。')
+            self.update(state='completed', message=f'机械臂已到达{destination}，夹爪开合保持不变。')
         except Exception as error:
             if self.actuated:
                 with self.lock:self.held_object=None

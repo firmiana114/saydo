@@ -162,6 +162,19 @@ class GripperHTTPTests(unittest.TestCase):
                         self.assertEqual(response.status,200)
                         self.assertTrue(json.loads(response.read())['accepted'])
                         reset.assert_called_once_with()
+                    self.assertIn('机械臂复位(观测桌面)', page)
+                    self.assertIn('机械臂复位(零位)', page)
+                    self.assertIn('id="arm-reset-zero"', page)
+                    with patch.object(trackers[0].grasp, 'start_reset', return_value={'accepted':True}) as reset:
+                        client.request('POST', '/api/arm/reset-zero', '{}', {'Content-Type':'application/json'})
+                        response=client.getresponse();self.assertEqual(response.status,200);response.read()
+                        reset.assert_called_once_with('zero')
+                    trackers[0].grasp.mode = 'preview'
+                    before = len(requests)
+                    client.request('POST', '/api/arm/reset-zero', '{}', {'Content-Type':'application/json'})
+                    response=client.getresponse();self.assertEqual(response.status,400);response.read()
+                    self.assertEqual(len(requests),before)
+                    trackers[0].grasp.mode = 'execute'
                     self.assertIn('id="reorientation-view"', page)
                     client.request('GET', '/reorientation_viewer.js')
                     response=client.getresponse()

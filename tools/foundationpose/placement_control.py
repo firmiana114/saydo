@@ -15,7 +15,7 @@ import numpy as np
 from grasp_geometry import controller_pose, rotation_error, contact_result
 from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
-from reorientation_geometry import model_geometry
+from reorientation_geometry import model_geometry, pose_waypoint
 from placement_geometry import (placement_settings, plan_placement, object_vertices,
                                 check_footprint, check_tcp_workspace, placement_validation_points, placement_motion_method)
 
@@ -178,14 +178,29 @@ class PlacementMixin:
     def execute_placement(self, plan, held, config, settings, report, vertices):
         previous = list(plan['current_arm']['pose'])
         names = {'raise': '关节运动至转移高度', 'transfer': '关节运动至放置点上方',
-                 'lower': '保持朝向下降至释放高度', 'retreat': '松爪后竖直退出'}
+                 'lower': '保持朝向下降至释放高度', 'withdraw': '松爪后沿 grip_tcp 的 -Z 方向后撤',
+                 'retreat': '后撤后竖直退出'}
         for target in plan['waypoints']:
-            retreating = target['name'] == 'retreat'
+            retreating = target['name'] in ('withdraw', 'retreat')
+            if retreating:
+                if not report.get('release_confirmed'):
+                    raise ValueError('未确认夹爪张开，不能后撤或退出')
+                # Anchor post-release motions to the last measured arrival pose.
+                # Recheck these corrected targets against actual joints before sending.
+                adjusted = controller_pose(previous)
+                if target['name'] == 'withdraw':
+                    adjusted[:3, 3] -= adjusted[:3, 2] * plan['withdraw_distance_m']
+                else:
+                    adjusted[2, 3] += settings['retreat_height_m']
+                target = pose_waypoint(target['name'], adjusted)
+                target.update(method='linear')
+                target['controller_pose'][3:] = list(previous[3:])
             joint_motion = placement_motion_method(target['name']) == 'joint_pose'
             report['active_stage'] = names[target['name']]
             self.update(state='placing', message=report['active_stage'] + '…')
             self.check_cancel();self.placement_config_unchanged(report)
             start = controller_pose(previous); end = controller_pose(target['controller_pose'])
+            check_tcp_workspace(end, config)
 
             def read_motion_state():
                 self.check_cancel()
@@ -225,7 +240,8 @@ class PlacementMixin:
             self.check_cancel();self.placement_config_unchanged(report)
             self.actuated = True;report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            speed = settings['descent_speed_percent'] if target['name'] in ('lower', 'retreat') else settings['transfer_speed_percent']
+            speed = settings['descent_speed_percent'] if target['name'] in ('lower', 'withdraw', 'retreat') else settings['transfer_speed_percent']
+            report.setdefault('executed_waypoints', []).append(copy.deepcopy(target))
             move = self.robot.move_joint_pose if joint_motion else self.robot.move_linear
             move(target['controller_pose'], speed, self.cancelled, read_motion_state)
             record = {'stage': report['active_stage']};report.setdefault('arrival_checks', []).append(record)
@@ -260,7 +276,7 @@ class PlacementMixin:
                 else:
                     raise TimeoutError('夹爪未确认完全张开，停止后续退出')
                 self.check_cancel()
-        self.update(state='completed', message='已完成几何放置、张开夹爪并竖直退出；未通过传感器确认接触或落桌后的稳定性。')
+        self.update(state='completed', message='已完成几何放置、张开夹爪、沿工具 -Z 后撤并竖直退出；未通过传感器确认接触或落桌后的稳定性。')
 
     def check_placement_open(self, config, require_open=False):
         state = self.robot.query('get_rm_plus_state_info')['state_info']

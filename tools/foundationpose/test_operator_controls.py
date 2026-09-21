@@ -28,9 +28,9 @@ class OperatorControlsTests(unittest.TestCase):
         (self.root/'tool.yaml').write_text(yaml.safe_dump({'controller_readback':{'tool_response_raw':self.tool}}))
         self.service = GraspController(self.root, None, self.path)
 
-    def robot(self, failure=None):
+    def robot(self, failure=None, initial_joints=None):
         robot = Mock()
-        arm = {'joint':[0]*7, 'pose':[0,0,200000,0,0,0], 'err':[0]}
+        arm = {'joint':initial_joints if initial_joints is not None else [0]*7, 'pose':[0,0,200000,0,0,0], 'err':[0]}
         def query(command):
             values = {'get_arm_software_info':{'Product_version':'RM75-BI'},
                       'get_rm_plus_mode':{'mode':0 if failure == 'communication' else 115200},
@@ -92,6 +92,58 @@ class OperatorControlsTests(unittest.TestCase):
         report = json.loads(next((self.root/'work/grasp/reset_jobs').glob('*.json')).read_text())
         self.assertEqual(report['arrival_checks'][0]['target_joint'], return_joint_target(self.config))
         self.assertFalse(report['result']['busy'])
+
+    def test_zero_reset_uses_seven_zero_angles_and_preserves_observation_target(self):
+        original = self.path.read_bytes()
+        robot = self.robot(initial_joints=[5000]*7)
+        with patch('grasp_control.RobotClient', return_value=robot), patch('grasp_control.time.sleep'):
+            result = self.service.start_reset('zero');self.service.thread.join(3)
+        self.assertEqual(result['reset_target_kind'], 'zero')
+        self.assertEqual(self.service.status['state'], 'completed')
+        self.assertIn('七关节零位', self.service.status['message'])
+        self.assertEqual(robot.move_joints.call_args.args[:2], ([0]*7, self.config['arm_speed_percent']))
+        robot.move_gripper.assert_not_called();robot.set_register.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), original)
+        report = json.loads(next((self.root/'work/grasp/reset_jobs').glob('*.json')).read_text())
+        self.assertEqual(report['reset_target_kind'], 'zero')
+        self.assertEqual(report['arrival_checks'][0]['target_joint'], [0]*7)
+
+    def test_zero_reset_is_independent_of_observation_target_but_keeps_write_gates(self):
+        self.path.write_text(json.dumps({**self.config, 'return_after_lift': {'joint_deg': [1, 2]}}))
+        self.assertFalse(self.service.snapshot()['reset_available'])
+        self.assertTrue(self.service.snapshot()['zero_reset_available'])
+        with patch('grasp_control.threading.Thread') as thread:
+            for kind in ('invalid', '', None, True):
+                with self.assertRaises(ValueError):self.service.start_reset(kind)
+            self.service.mode = 'preview'
+            with self.assertRaises(ValueError):self.service.start_reset('zero')
+            self.service.mode = 'execute';self.service.status['busy'] = True
+            with self.assertRaises(ValueError):self.service.start_reset('zero')
+            self.service.status['busy'] = False
+            thread.assert_not_called()
+            self.service.start_reset('zero')
+            self.assertEqual(thread.call_args.kwargs['args'][1:], ([0]*7, 'zero'))
+            with self.assertRaises(ValueError):self.service.start_reset()
+            with self.assertRaises(ValueError):self.service.open_gripper()
+
+    def test_zero_reset_failure_cancel_and_device_lock(self):
+        for failure in ('arrival', 'timeout', 'cancel', 'disabled', 'communication'):
+            with self.subTest(failure=failure):
+                self.service = GraspController(self.root, None, self.path)
+                robot = self.robot(failure, initial_joints=[1000]*7)
+                with patch('grasp_control.RobotClient', return_value=robot), patch('grasp_control.time.sleep'):
+                    self.service.start_reset('zero');self.service.thread.join(3)
+                self.assertEqual(self.service.status['state'], 'cancelled' if failure == 'cancel' else 'failed')
+                if failure in ('disabled', 'communication'):
+                    robot.move_joints.assert_not_called();robot.stop.assert_not_called()
+                else:robot.stop.assert_called()
+                robot.move_gripper.assert_not_called();robot.set_register.assert_not_called()
+        self.service = GraspController(self.root, None, self.path)
+        with (self.root/'work/grasp/robot.lock').open('a') as lock, patch('grasp_control.RobotClient') as client:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.service.start_reset('zero');self.service.thread.join(3)
+            client.assert_not_called()
+        self.assertEqual(self.service.status['state'], 'failed')
 
     def test_reset_rereads_communication_after_recovery(self):
         for failure, expected in [('communication', 'failed'), (None, 'completed')]:

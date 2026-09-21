@@ -68,11 +68,11 @@ class PlacementPanel {
     const plan=g.operation==='place'?g.placement_plan:null;
     if(plan){
       const mm=value=>(value*1000).toFixed(2);
-      const labels={raise:'到达转移高度',transfer:'移至上方',lower:'下降并松爪',retreat:'竖直退出'};
+      const labels={raise:'到达转移高度',transfer:'移至上方',lower:'下降并松爪',withdraw:'沿工具 -Z 后撤',retreat:'竖直退出'};
       this.summary.textContent='目标 TCP（Base X/Y/Z）：'+plan.target_tcp_position_m.map(mm).join(' / ')+' 毫米\n'+
         '物品最低点相对 TCP：'+mm(plan.lowest_point_offset_z_m)+' 毫米；释放间隙：'+mm(plan.release_gap_m)+' 毫米\n'+
         '路径：'+plan.waypoints.map(w=>(labels[w.name]||w.name)+' ('+(w.method==='joint_pose'?'movej_p':'movel')+') ['+w.position_m.map(mm).join(', ')+']').join(' → ')+' 毫米\n'+
-        '完全张开至 1000 后退出；执行会重新读取状态并规划。未验证物品松开后的稳定性、夹指与环境碰撞。';
+        '完全张开至 1000 后，沿 grip_tcp 的 -Z 后撤 '+mm(plan.withdraw_distance_m??0)+' 毫米，再竖直退出；执行会重新读取状态并规划。未验证物品松开后的稳定性、夹指与环境碰撞。';
     }else this.summary.textContent=this.config?.configured?'预览将显示物品占地范围、释放高度和动作顺序。':'请先输入实际可用桌面范围并保存，单位为毫米。';
     this.draw(plan);
   }
