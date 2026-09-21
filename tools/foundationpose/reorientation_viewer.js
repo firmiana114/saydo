@@ -30,6 +30,27 @@ const ReorientationMath={
     return this.axisAngle(world,Math.atan2(length,dot)*factor);
   }
 };
+// Depth cues describe direction relative to the view, independently of axis sign.
+const AxisDepthCue={
+  describe(vector,depth){const n=Math.hypot(...vector)||1,value=ReorientationMath.dot(vector,depth)/n;
+    const kind=value>.12?'front':value<-.12?'back':'plane';
+    return {value,kind,symbol:kind==='front'?'⊙':kind==='back'?'⊗':'—',text:kind==='front'?'朝向屏幕外':kind==='back'?'朝向屏幕内':'近似平行屏幕',
+      width:kind==='front'?3.5:kind==='back'?1.8:2.8,opacity:kind==='back'?.42:1,dash:kind==='back'?'5 4':'none'};
+  },
+  segment(add,a,b,color,cue,{arrow=true,badge=true,minor=false}={}){
+    const opacity=cue.opacity*(minor?.7:1),width=cue.width*(minor?.65:1),distance=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    const line={x1:a[0],y1:a[1],x2:b[0],y2:b[1],'stroke-linecap':'round','stroke-dasharray':cue.dash,opacity,'data-depth':cue.kind};
+    add('line',{...line,stroke:'#071017','stroke-width':width+3});add('line',{...line,stroke:color,'stroke-width':width});
+    if(arrow&&distance>8){const angle=Math.atan2(b[1]-a[1],b[0]-a[0]),ends=[-.5,.5].map(d=>[b[0]-9*Math.cos(angle+d),b[1]-9*Math.sin(angle+d)]);
+      add('path',{d:`M${ends[0]} L${b} L${ends[1]}`,fill:'none',stroke:color,'stroke-width':width,opacity,'stroke-linecap':'round'});}
+    if(badge&&cue.kind!=='plane'){
+      const r=minor?3.5:5.5;
+      add('circle',{cx:b[0],cy:b[1],r,fill:'#101820',stroke:color,'stroke-width':1.6,opacity:minor?.7:1,'data-depth':cue.kind});
+      if(cue.kind==='front')add('circle',{cx:b[0],cy:b[1],r:minor?1.2:1.8,fill:color});
+      else for(const sign of [-1,1])add('line',{x1:b[0]-r*.5,y1:b[1]-sign*r*.5,x2:b[0]+r*.5,y2:b[1]+sign*r*.5,stroke:color,'stroke-width':1.5});
+    }
+  }
+};
 class ReorientationViewer{
   constructor(canvas,overlay,viewControl=null){
     this.canvas=canvas;this.overlay=overlay;this.translation=[0,0,0];this.rotation=ReorientationMath.identity();this.zoom=1;this.version=0;this.textures=[];this.showAxes=true;
@@ -107,8 +128,17 @@ class ReorientationViewer{
       if(!dashed){const angle=Math.atan2(b[1]-a[1],b[0]-a[0]),ends=[-.5,.5].map(d=>[b[0]-10*Math.cos(angle+d),b[1]-10*Math.sin(angle+d)]);add('path',{d:`M${ends[0]} L${b} L${ends[1]}`,fill:'none',stroke:color,'stroke-width':3,'stroke-linecap':'round','stroke-linejoin':'round'});}};
     if(this.showAxes){
       const origin=project(offset);
-      for(let i=0;i<3;i++){const axis=[0,0,0];axis[i]=.05;const vector=ReorientationMath.apply(this.rotation,axis),end=project(vector.map((v,k)=>v+offset[k])),back=project(vector.map((v,k)=>offset[k]-v*.45));arrow(origin,back,colors[i],true);arrow(origin,end,colors[i]);
-        label('物品 '+names[i],Math.max(8,Math.min(width-70,end[0]+9)),Math.max(24,Math.min(height-24,end[1]-10-i*3)),colors[i]);}
+      const axes=[];
+      for(let i=0;i<3;i++)for(const sign of [-1,1]){const axis=[0,0,0];axis[i]=.05*sign*(sign<0?.45:1);const vector=ReorientationMath.apply(this.rotation,axis);
+        axes.push({i,sign,vector,end:project(vector.map((v,k)=>v+offset[k])),cue:AxisDepthCue.describe(vector,this.basis[2])});}
+      axes.sort((a,b)=>a.cue.value-b.cue.value);
+      for(const {i,sign,end,cue} of axes){const minor=sign<0;
+        AxisDepthCue.segment(add,origin,end,colors[i],cue,{minor,arrow:!minor,badge:!minor});
+        if(minor&&Math.hypot(end[0]-origin[0],end[1]-origin[1])<16)continue;
+        const text=(minor?'−':'物品 +')+names[i]+' '+cue.symbol;
+        const left=end[0]<origin[0],x=Math.max(8,Math.min(width-(minor?45:95),end[0]+(left?-(minor?35:80):10)));
+        label(text,x,Math.max(60,Math.min(height-24,end[1]+(minor?14:-12)-i*2)),colors[i],minor?10:13);
+      }
       add('circle',{cx:origin[0],cy:origin[1],r:5,fill:'#fff',stroke:'#071017','stroke-width':2});label('物品原点',origin[0]+10,origin[1]+23,'#b8c6d0',12);
     }
     const pivot=project(this.translation);if(Math.hypot(...this.translation)>1e-6){const from=project([0,0,0]);arrow(from,pivot,'#ffe19b',true);add('circle',{cx:from[0],cy:from[1],r:5,fill:'none',stroke:'#b8c6d0'});label('起点',from[0]-25,from[1]-12,'#b8c6d0',12);}add('circle',{cx:pivot[0],cy:pivot[1],r:8,fill:'none',stroke:'#ffe19b','stroke-width':2,'stroke-dasharray':'3 2'});add('line',{x1:pivot[0]+8,y1:pivot[1]+8,x2:pivot[0]+48,y2:pivot[1]+45,stroke:'#ffe19b','stroke-width':1,'stroke-dasharray':'3 3'});label(this.model.holding?(Math.hypot(...this.translation)>1e-6?'目标 TCP':'目标 TCP'):'预览中心（未抓取）',pivot[0]+50,pivot[1]+51,'#ffe19b',12);
@@ -116,8 +146,11 @@ class ReorientationViewer{
     if(this.viewControl){this.viewControl.style.width=cardW+'px';this.viewControl.style.height=cardH+'px';}
     add('rect',{x:12,y:height-cardH-12,width:cardW,height:cardH,rx:9,fill:'#101c28',stroke:'#385267'});
     label('固定基座坐标',22,height-cardH+6,'#cedce6',small?10:12);
-    for(let i=0;i<3;i++){const end=[anchor[0]+this.basis[0][i]*length,anchor[1]-this.basis[1][i]*length];arrow(anchor,end,colors[i]);label(names[i],end[0]+7,end[1]+4,colors[i],small?11:13);}
+    for(const i of [0,1,2].sort((a,b)=>this.basis[2][a]-this.basis[2][b])){const vector=[0,0,0];vector[i]=1;const cue=AxisDepthCue.describe(vector,this.basis[2]);
+      const end=[anchor[0]+this.basis[0][i]*length,anchor[1]-this.basis[1][i]*length];AxisDepthCue.segment(add,anchor,end,colors[i],cue);label('+'+names[i],end[0]+8,end[1]+4,colors[i],small?10:12);}
+
     label(small?'拖动旋转视角':'拖动视角 · 网格 5 cm',22,height-22,'#9aafbf',small?10:11);
+    label('⊙ 朝向你　⊗ 向屏幕内　— 近似平行',16,46,'#acbdca',11);
     label(this.textureState,16,26,'#cadce8',12);label(`${Math.round(this.zoom*100)}%`,width-62,26,'#cadce8',12);
     this.overlay.replaceChildren(svg);
   }

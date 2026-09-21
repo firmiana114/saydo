@@ -33,14 +33,28 @@ class GraspEditorViewer extends ReorientationViewer{
     this.handles=[];
     if(this.grasp){
       const point=this.grasp.grasp_point_object_m,R=this.grasp.object_R_tcp,origin=project(V.add(point,offset)),length=Math.max(.025,Math.min(.07,this.radius*.7));
+      const strokes=[],labels=[];
       for(let axis=0;axis<3;axis++){
-        const vector=R.map(row=>row[axis]),end=project(V.add(V.add(point,offset),V.scale(vector,length)));
+        const vector=R.map(row=>row[axis]),cue=AxisDepthCue.describe(vector,this.basis[2]),end=project(V.add(V.add(point,offset),V.scale(vector,length)));
         if(this.editMode==='rotate'){
-          const u=R.map(row=>row[(axis+1)%3]),v=R.map(row=>row[(axis+2)%3]),ring=[];
-          for(let k=0;k<=64;k++){const theta=k*Math.PI/32;ring.push(project(V.add(V.add(point,offset),V.add(V.scale(u,Math.cos(theta)*length),V.scale(v,Math.sin(theta)*length)))));}
-          add('polyline',{points:ring.map(p=>p.join(',')).join(' '),fill:'none',stroke:colors[axis],'stroke-width':3});this.handles.push({axis,ring});label('旋转 '+'XYZ'[axis],ring[8+axis*5],colors[axis]);
-        }else{arrow(origin,end,colors[axis]);label('TCP '+'XYZ'[axis],[end[0]+6,end[1]-5],colors[axis]);this.handles.push({axis,a:origin,b:end,length,vector});}
+          const u=R.map(row=>row[(axis+1)%3]),v=R.map(row=>row[(axis+2)%3]),ring=[],vectors=[];
+          for(let k=0;k<=64;k++){const theta=k*Math.PI/32,relative=V.add(V.scale(u,Math.cos(theta)*length),V.scale(v,Math.sin(theta)*length));vectors.push(relative);ring.push(project(V.add(V.add(point,offset),relative)));}
+          for(let k=0;k<64;k++){const middle=V.scale(V.add(vectors[k],vectors[k+1]),.5),depth=M.dot(middle,this.basis[2])/length;
+            const style=AxisDepthCue.describe(middle,this.basis[2]);strokes.push({a:ring[k],b:ring[k+1],color:colors[axis],cue:style,depth,ring:true,segmentIndex:k});}
+          this.handles.push({axis,ring});labels.push({text:'绕 +'+ 'XYZ'[axis]+' '+cue.symbol,p:ring[8+axis*5],color:colors[axis]});
+        }else{
+          strokes.push({a:origin,b:end,color:colors[axis],cue,depth:cue.value,ring:false});
+          const left=end[0]<origin[0];labels.push({text:'TCP +'+ 'XYZ'[axis]+' '+cue.symbol,p:[Math.max(8,Math.min(width-90,end[0]+(left?-78:10))),Math.max(60,end[1]-12)],color:colors[axis]});
+          this.handles.push({axis,a:origin,b:end,length,vector});
+        }
       }
+      for(const stroke of strokes.sort((a,b)=>a.depth-b.depth)){
+        if(stroke.ring&&stroke.cue.kind==='back'&&stroke.segmentIndex%2)continue;
+        if(stroke.ring){add('line',{x1:stroke.a[0],y1:stroke.a[1],x2:stroke.b[0],y2:stroke.b[1],stroke:'#071017','stroke-width':stroke.cue.width+2,opacity:stroke.cue.opacity,'stroke-dasharray':stroke.cue.dash});
+          add('line',{x1:stroke.a[0],y1:stroke.a[1],x2:stroke.b[0],y2:stroke.b[1],stroke:stroke.color,'stroke-width':stroke.cue.width,opacity:stroke.cue.opacity,'stroke-dasharray':stroke.cue.dash,'data-depth':stroke.cue.kind});}
+        else AxisDepthCue.segment(add,stroke.a,stroke.b,stroke.color,stroke.cue);
+      }
+      for(const item of labels)label(item.text,item.p,item.color);
       const pre=V.sub(point,V.scale(R.map(row=>row[2]),this.distance)),prePixel=project(V.add(pre,offset));arrow(prePixel,origin,'#ffd27c',true);
       add('circle',{cx:origin[0],cy:origin[1],r:5,fill:'#fff',stroke:'#071017','stroke-width':2});label('抓取中心',[origin[0]+9,origin[1]+19]);
       add('circle',{cx:prePixel[0],cy:prePixel[1],r:5,fill:'none',stroke:'#ffd27c','stroke-width':2});label('预抓点 → 工具 +Z',[prePixel[0]+8,prePixel[1]-8],'#ffd27c');
@@ -48,7 +62,10 @@ class GraspEditorViewer extends ReorientationViewer{
     const small=width<450,w=small?112:146,h=small?98:115,anchor=[small?62:80,height-(small?54:65)],length=small?30:42;
     if(this.viewControl){this.viewControl.style.width=w+'px';this.viewControl.style.height=h+'px';}
     add('rect',{x:12,y:height-h-12,width:w,height:h,rx:9,fill:'#101c28',stroke:'#385267'});label('物品坐标 · 视角',[22,height-h+6],'#cedce6',small?10:12);
-    for(let i=0;i<3;i++){const end=[anchor[0]+this.basis[0][i]*length,anchor[1]-this.basis[1][i]*length];arrow(anchor,end,colors[i]);label('XYZ'[i],[end[0]+6,end[1]+4],colors[i]);}
+    for(const i of [0,1,2].sort((a,b)=>this.basis[2][a]-this.basis[2][b])){const vector=[0,0,0];vector[i]=1;const cue=AxisDepthCue.describe(vector,this.basis[2]);
+      const end=[anchor[0]+this.basis[0][i]*length,anchor[1]-this.basis[1][i]*length];AxisDepthCue.segment(add,anchor,end,colors[i],cue);label('+'+'XYZ'[i],[end[0]+8,end[1]+4],colors[i],11);}
+
+    label('⊙ 朝向你　⊗ 向屏幕内　— 近似平行',[14,44],'#acbdca',11);
     label('拖动旋转视角',[22,height-22],'#9aafbf',11);label(this.textureState||'物品模型',[14,24]);label(`${Math.round(this.zoom*100)}%`,[width-58,24]);
     this.overlay.replaceChildren(svg);
   }
