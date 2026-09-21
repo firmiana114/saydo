@@ -10,7 +10,7 @@ from reorientation_geometry import pose_waypoint
 
 
 DEFAULTS = {
-    'region_xy_m': None, 'release_gap_m': .003, 'edge_margin_m': .01,
+    'region_xy_m': None, 'release_gap_m': .003,
     'approach_height_m': .05, 'retreat_height_m': .05,
     'transfer_speed_percent': 10, 'descent_speed_percent': 5,
     'planning_timeout_s': 20, 'search_step_m': .025, 'linear_sample_step_m': .02,
@@ -22,8 +22,9 @@ def placement_settings(value, require_region=True):
     if not isinstance(value, dict):
         raise ValueError('放置配置必须为 JSON 对象')
     settings = {**DEFAULTS, **value}
+    settings.pop('edge_margin_m', None)  # Legacy settings must not shrink the operator's rectangle.
     for key, low, high in [
-        ('release_gap_m', 0, .02), ('edge_margin_m', .002, .1),
+        ('release_gap_m', 0, .02),
         ('approach_height_m', .02, .3), ('retreat_height_m', .02, .3),
         ('planning_timeout_s', 1, 60), ('search_step_m', .005, .1),
         ('linear_sample_step_m', .005, .05), ('position_tolerance_m', .0001, .002),
@@ -56,15 +57,15 @@ def object_vertices(tcp, held, vertices):
 
 
 def region_bounds(settings):
-    region = settings['region_xy_m']; margin = settings['edge_margin_m']
-    return (np.array([region['x_min'], region['y_min']]) + margin,
-            np.array([region['x_max'], region['y_max']]) - margin)
+    region = settings['region_xy_m']
+    return (np.array([region['x_min'], region['y_min']]),
+            np.array([region['x_max'], region['y_max']]))
 
 
 def check_footprint(world, settings):
     low, high = region_bounds(settings)
     if np.any(world[:, :2].min(axis=0) < low - 1e-8) or np.any(world[:, :2].max(axis=0) > high + 1e-8):
-        raise ValueError('物品水平投影超出桌面放置范围或边缘余量')
+        raise ValueError('物品水平投影超出输入的桌面放置范围')
 
 
 def check_tcp_workspace(tcp, config):
@@ -145,7 +146,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
     high = np.minimum(high - upper[:2], np.asarray(config['workspace_max_m'])[:2])
     low = np.ceil(low * 1e6) / 1e6;high = np.floor(high * 1e6) / 1e6
     if np.any(low > high):
-        raise ValueError('当前朝向的物品无法完整放入指定桌面范围（含边缘余量）')
+        raise ValueError('当前朝向的物品无法完整放入指定桌面范围')
     attempts = diagnostics if diagnostics is not None else []
     deadline = time.monotonic() + settings['planning_timeout_s']; attempted = 0
     for xy in candidate_xy(low, high, current[:2, 3], settings['search_step_m']):
@@ -204,7 +205,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             'object_bottom_z_m': float(released_world[:, 2].min()),
             'footprint_min_xy_m': released_world[:, :2].min(axis=0).tolist(),
             'footprint_max_xy_m': released_world[:, :2].max(axis=0).tolist(),
-            'region_xy_m': settings['region_xy_m'], 'edge_margin_m': settings['edge_margin_m'],
+            'region_xy_m': settings['region_xy_m'],
             'release_position': 1000, 'orientation_policy': 'keep_measured_object_orientation',
             'motion_command': 'movel', 'reachability_check': detail,
             'search_attempt_count': attempted, 'search_attempts': attempts,

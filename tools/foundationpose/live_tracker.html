@@ -44,7 +44,7 @@ dialog{background:#182632;color:#e7eef5;border:1px solid #416177;border-radius:1
 <p id="placement-feedback" role="status">请设置 Base 坐标系下的实际可用桌面范围。</p>
 <canvas id="placement-map" width="650" height="280" aria-label="桌面矩形、物品水平投影及工具中心点的俯视预览"></canvas>
 <pre id="placement-summary"></pre>
-<details class="compact-details"><summary>放置方式与检查范围</summary><p class="note">桌面高度采用已接受的估算值；释放间隙默认 3 毫米，表示模型最低点到桌面的距离，松爪后物品可能有短距离下落。范围约束物品整个水平投影，默认留 10 毫米边缘余量。动作保持朝向，依次提升、水平转移、下降、完全张开夹爪、竖直退出；每段检查直线采样点的逆解/正解并核对到位反馈。仅下降到位且夹持正常时松爪，张开未确认则不退出。软件没有桌面接触检测，也没有完整的夹指/环境碰撞模型；请确保当前物品朝向能够稳定落桌、夹爪有张开和退出空间。设置和预览均不发送运动。</p></details>
+<details class="compact-details"><summary>放置方式与检查范围</summary><p class="note">桌面高度采用已接受的估算值；释放间隙默认 3 毫米，表示模型最低点到桌面的距离，松爪后物品可能有短距离下落。范围直接约束物品整个水平投影，不额外缩小输入范围。动作保持朝向，依次提升、水平转移、下降、完全张开夹爪、竖直退出；每段检查直线采样点的逆解/正解并核对到位反馈。仅下降到位且夹持正常时松爪，张开未确认则不退出。软件没有桌面接触检测，也没有完整的夹指/环境碰撞模型；请确保当前物品朝向能够稳定落桌、夹爪有张开和退出空间。设置和预览均不发送运动。</p></details>
 </section><details class="compact-details page-notes"><summary>使用前须知</summary><p class="note">坐标轴：X 红、Y 绿、Z 蓝，每根长 5 cm；原点为模型原点。抓取位置与朝向在点击时锁定，沿目标夹爪方向接近，执行过程中不再依赖视觉跟踪。首次使用物品时先记录夹法。默认允许执行抓取：点击抓取按钮且通过前置检查后才下发运动，启动和自动跟踪不会触发抓取。模型尺寸与实机定位精度仍需验证；自动检测只识别物品类别，不识别具体品牌。</p>
 </details><dialog id="objects"><h2>选择跟踪物品</h2><p>列表来自 work/object_models 的子目录。切换后会清除旧跟踪状态。</p><div id="object-list"></div><button id="objects-close">关闭</button></dialog>
 </main><script src="/reorientation_viewer.js"></script><script src="/placement_panel.js"></script><script>

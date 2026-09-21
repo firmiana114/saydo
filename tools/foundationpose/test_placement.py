@@ -64,13 +64,26 @@ class PlacementGeometryTests(unittest.TestCase):
         self.assertTrue(all(w['controller_pose'][3:] == arm['pose'][3:] for w in calls[1]))
         self.assertEqual(plan['waypoints'][-1]['name'], 'retreat')
         self.assertIn('lower', [w['name'] for w in plan['waypoints']])
-        self.assertGreaterEqual(plan['footprint_min_xy_m'][0], .31 - 1e-8)
-        self.assertLessEqual(plan['footprint_max_xy_m'][0], .59 + 1e-8)
+        self.assertGreaterEqual(plan['footprint_min_xy_m'][0], .3 - 1e-8)
+        self.assertLessEqual(plan['footprint_max_xy_m'][0], .6 + 1e-8)
+
+    def test_input_rectangle_is_not_shrunk_even_with_legacy_margin(self):
+        settings = placement_settings({**DEFAULTS, 'edge_margin_m': .01,
+            'region_xy_m': {'x_min': .3, 'x_max': 1., 'y_min': -1., 'y_max': -.3}})
+        self.assertNotIn('edge_margin_m', settings)
+        # Recorded post-transfer footprint: 9.943 mm inside the operator's upper Y boundary.
+        world = np.array([[.44989748, -.42517306, .1], [.56222221, -.3099425773, .1]])
+        check_footprint(world, settings)
+        world[1, 1] = -.3
+        check_footprint(world, settings)
+        world[1, 1] = -.2999
+        with self.assertRaisesRegex(ValueError, '超出输入'):
+            check_footprint(world, settings)
 
     def test_small_region_missing_region_invalid_inputs_and_workspace(self):
         config, settings, held, vertices, arm = fixture();checker = Mock(return_value=(True, {}))
         for key, value in [('release_gap_m', -1), ('release_gap_m', True), ('release_gap_m', float('nan')),
-                           ('descent_speed_percent', 100), ('edge_margin_m', 0), ('region_xy_m', None)]:
+                           ('descent_speed_percent', 100), ('region_xy_m', None)]:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 placement_settings({**settings, key: value})
         for region in ({'x_min': 1, 'x_max': 0, 'y_min': 0, 'y_max': 1},
