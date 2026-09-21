@@ -52,6 +52,7 @@ class PlacementGeometryTests(unittest.TestCase):
                 check_footprint(world, settings)
                 self.assertFalse(plan['contact_confirmed'])
                 self.assertEqual(plan['release_position'], 1000)
+                self.assertEqual(plan['region_constraint_scope'], 'candidate_selection_only')
 
     def test_search_constrains_entire_object_and_checks_midpoints(self):
         config, settings, held, vertices, arm = fixture();calls = []
@@ -245,6 +246,29 @@ class PlacementControlTests(unittest.TestCase):
         self.assertTrue(report['release_confirmed']);self.assertFalse(report['contact_confirmed'])
         self.assertTrue(all(check['settled'] for check in report['arrival_checks']))
         self.assertFalse(report['result']['busy'])
+
+    def test_rectangle_is_not_rechecked_during_motion_or_before_release(self):
+        robot = self.robot()
+        def feedback_outside_rectangle(original):
+            def move(pose, speed, cancelled, watchdog):
+                original(pose, speed, cancelled, watchdog)
+                if not self.opened:
+                    self.arm['pose'][0] -= 500  # 0.5 mm: within arrival tolerance, outside the selection rectangle.
+                    watchdog()
+            return move
+        robot.move_joint_pose.side_effect = feedback_outside_rectangle(robot.move_joint_pose.side_effect)
+        robot.move_linear.side_effect = feedback_outside_rectangle(robot.move_linear.side_effect)
+        self.run_job(robot)
+        self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
+        report = json.loads(next((self.root/'work/grasp/placement_jobs').glob('*.json')).read_text())
+        target = next(w for w in report['plan']['waypoints'] if w['name'] == 'lower')
+        check_footprint(object_vertices(controller_pose(target['controller_pose']), self.held, self.vertices), self.settings)
+        arrival = report['arrival_checks'][1]['actual_arm_state']
+        with self.assertRaisesRegex(ValueError, '超出输入'):
+            check_footprint(object_vertices(controller_pose(arrival['pose']), self.held, self.vertices), self.settings)
+        self.assertTrue(report['release_confirmed'])
+        robot.move_gripper.assert_called_once_with(1000)
+        robot.stop.assert_not_called()
 
     def test_raise_and_transfer_both_use_joint_pose(self):
         self.arm['pose'][2] = 70000

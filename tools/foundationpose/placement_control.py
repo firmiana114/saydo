@@ -17,7 +17,7 @@ from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from reorientation_geometry import model_geometry, pose_waypoint
 from placement_geometry import (placement_settings, plan_placement, object_vertices,
-                                check_footprint, check_tcp_workspace, placement_validation_points, placement_motion_method)
+                                check_tcp_workspace, placement_validation_points, placement_motion_method)
 
 
 def settings_revision(settings):
@@ -219,8 +219,6 @@ class PlacementMixin:
                     report['minimum_observed_object_z_m'] = min(report.get('minimum_observed_object_z_m', bottom), bottom)
                     if bottom < config['table_z_m'] - 1e-6:
                         raise ValueError('物品模型低于配置桌面，停止放置')
-                    if target['name'] == 'lower':
-                        check_footprint(world, settings)
                 else:
                     self.check_placement_open(config, require_open=True)
                 self.check_cancel()
@@ -250,7 +248,6 @@ class PlacementMixin:
             previous = list(actual['pose'])
             if target['name'] == 'lower':
                 world = object_vertices(controller_pose(actual['pose']), held, vertices)
-                check_footprint(world, settings)
                 bottom = float(world[:, 2].min());report['release_bottom_z_m'] = bottom
                 if not config['table_z_m'] - 1e-6 <= bottom <= config['table_z_m'] + settings['release_gap_m'] + settings['position_tolerance_m']:
                     raise ValueError('实际模型最低点未到达允许的释放高度，不能松爪')
