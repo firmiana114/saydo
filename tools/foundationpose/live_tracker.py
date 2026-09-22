@@ -26,6 +26,7 @@ from object_catalog import scan_objects, select_object, inferred_class
 from grasp_control import GraspController
 from live_events import EventLog
 from camera_checks import select_camera
+from icp_refinement import ICPSettings, centered_pose, refine_observation
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,6 +34,9 @@ ROOT = Path(__file__).resolve().parents[2]
 class Tracker:
     def __init__(self, args):
         self.args = args
+        self.icp_mode = getattr(args, 'icp_mode', 'off')
+        self.icp_settings = ICPSettings(budget_ms=getattr(args, 'icp_budget_ms', 20.))
+        self.icp_revision = 0
         self.models_root = Path(getattr(args, 'models_root', ROOT / 'work/object_models'))
         self.object_info = next((row for row in scan_objects(self.models_root) if row['mesh'] == str(args.mesh.resolve())),
             {'id': None, 'name': args.mesh.parent.name, 'mesh': str(args.mesh), 'detector_class': inferred_class(str(args.mesh))})
@@ -52,6 +56,7 @@ class Tracker:
                       'tracked_frames': 0, 'registered_frames': 0, 'camera_T_object': None,
                       'pose_accepted_for_robot_control': False, 'auto_recover': args.auto_recover,
                       'recovery_attempts': 0, 'recovery_interval_s': args.recovery_interval}
+        self.state['icp_config'] = self.icp_configuration()
         self.output = ROOT / 'work/foundationpose_live' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.output.mkdir(parents=True)
         self.events = EventLog(self.output / 'events.jsonl')
@@ -65,6 +70,7 @@ class Tracker:
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
              'camera_serial': args.serial, 'native_color': [1280, 720, 15], 'native_depth': [640, 360, 15],
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
+             'icp': {'mode': self.icp_mode, **vars(self.icp_settings)},
              'robot_commands': False, 'pose_frame': 'color optical camera; translation metres',
              'quality_gate': 'heuristic only; transparent surface depth and model dimensions unvalidated'}, indent=2))
         self.event('session_started', history_frames=self.history.maxlen,
@@ -73,6 +79,38 @@ class Tracker:
     def event(self, event, **values):
         return self.events.write(event, **{'generation': self.generation,
             'object_id': self.state.get('object_id'), **values})
+
+    def icp_configuration(self):
+        return {'mode': self.icp_mode, 'budget_ms': self.icp_settings.budget_ms, 'revision': self.icp_revision}
+
+    def set_icp_mode(self, mode, revision):
+        if mode not in ('off', 'shadow', 'apply'):
+            raise ValueError('ICP 模式必须为 off、shadow 或 apply')
+        with self.lock:
+            if type(revision) is not int or revision != self.icp_revision:
+                raise ValueError('ICP 设置已变化，请刷新状态后重试')
+            if self.grasp.snapshot()['busy']:
+                raise ValueError('机械臂任务处理中，不能切换 ICP')
+            if mode != self.icp_mode:
+                self.icp_mode = mode
+                self.icp_revision += 1
+                self.pose_history.clear()
+                self.state.update(camera_T_object=None, quality={}, icp=None,
+                                  icp_config=self.icp_configuration())
+                self.event('icp_mode_changed', **self.icp_configuration())
+            return self.icp_configuration()
+
+    def icp_result_current(self, generation, revision):
+        # Called under self.lock before publication AND estimator feedback.
+        if generation != self.generation:
+            return False
+        if revision != self.icp_revision:
+            # Registration consumed its command already. Keep the initialized raw
+            # estimator tracking so the next frame can publish with the new mode.
+            if self.state['state'] in ('initializing', 'catching_up'):
+                self.state.update(state='tracking', camera_T_object=None, quality={})
+            return False
+        return True
 
     def capture(self):
         sys.path.insert(0, str(ROOT / 'work/foundationpose_realsense_py311'))
@@ -370,6 +408,9 @@ class Tracker:
             context = dr.RasterizeCudaContext()
             estimator = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
                 scorer=ScorePredictor(), refiner=PoseRefinePredictor(), debug_dir=str(self.output), debug=0, glctx=context)
+            # Reuse uploaded topology/textures, but render the ORIGINAL model frame.
+            render_mesh_tensors = {**estimator.mesh_tensors,
+                'pos': torch.as_tensor(np.asarray(mesh.vertices), device='cuda', dtype=torch.float32)}
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
@@ -405,6 +446,8 @@ class Tracker:
                                     continue
                                 mesh, origin, bbox = next_mesh, next_origin, np.stack([-next_extents / 2, next_extents / 2])
                                 estimator = next_estimator
+                                render_mesh_tensors = {**estimator.mesh_tensors,
+                                    'pos': torch.as_tensor(np.asarray(mesh.vertices), device='cuda', dtype=torch.float32)}
                                 self.object_info = info
                                 detector_class = info['detector_class']
                                 detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
@@ -521,7 +564,7 @@ class Tracker:
                                     raise ValueError('FoundationPose returned nonfinite pose')
                                 def checked_render(current_pose, current_frame, last_pose=None, initial_mask=None):
                                     nonlocal last_health
-                                    _, rd, _ = nvdiffrast_render(K=current_frame['K'], H=360, W=640, mesh=mesh,
+                                    _, rd, _ = nvdiffrast_render(K=current_frame['K'], H=360, W=640, mesh_tensors=render_mesh_tensors,
                                         ob_in_cams=torch.as_tensor(current_pose[None], device='cuda', dtype=torch.float32), glctx=context)
                                     health = pose_health(current_pose, rd[0].detach().cpu().numpy(), current_frame['depth'], last_pose, initial_mask)
                                     last_health = health
@@ -546,10 +589,21 @@ class Tracker:
                                 pose = estimator.track_one(rgb=rgb, depth=frame['depth'].copy(), K=frame['K'], iteration=2)
                             if not np.isfinite(pose).all():
                                 raise ValueError('FoundationPose returned nonfinite pose')
-                            _, rendered, _ = nvdiffrast_render(K=frame['K'], H=360, W=640, mesh=mesh,
+                            _, rendered, _ = nvdiffrast_render(K=frame['K'], H=360, W=640, mesh_tensors=render_mesh_tensors,
                                 ob_in_cams=torch.as_tensor(pose[None], device='cuda', dtype=torch.float32), glctx=context)
                             rendered = rendered[0].detach().cpu().numpy()
-                            quality = pose_health(pose, rendered, frame['depth'], previous, mask)
+                            def render_icp(candidate):
+                                _, candidate_depth, _ = nvdiffrast_render(K=frame['K'], H=360, W=640, mesh_tensors=render_mesh_tensors,
+                                    ob_in_cams=torch.as_tensor(candidate[None], device='cuda', dtype=torch.float32), glctx=context)
+                                return candidate_depth[0].detach().cpu().numpy()
+                            # Refine only the final current frame, never the intermediate catch-up frames.
+                            stage = 'icp'
+                            with self.lock:
+                                icp_mode, icp_revision = self.icp_mode, self.icp_revision
+                            pose, rendered, quality, icp = refine_observation(pose, rendered, frame, previous, mask,
+                                icp_mode, self.icp_settings, render_icp, pose_health)
+                            icp['revision'] = icp_revision
+                            timings['icp_s'] = icp['elapsed_ms']/1000
                             last_health = quality
                         stage = 'publish'
                         duration = time.perf_counter() - started
@@ -576,10 +630,14 @@ class Tracker:
                         label = 'LOST - RESELECT' if lost else ('TRACKING' if quality['good'] else 'UNCERTAIN')
                         cv2.putText(bgr, f'{label} | {1/max(duration,.001):.1f} inference FPS', (8, 25), 0, .6, (0, 255, 0) if quality['good'] else (0, 120, 255), 2)
                         with self.lock:
-                            if generation != self.generation:
+                            if not self.icp_result_current(generation, icp_revision):
                                 continue
+                            if icp['applied']:
+                                center_transform = estimator.get_tf_to_centered_mesh().detach().cpu().numpy()
+                                estimator.pose_last = torch.as_tensor(centered_pose(pose, center_transform)[None],
+                                    device='cuda', dtype=torch.float32)
                             self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
-                                quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
+                                quality=quality, icp=icp, inference_seconds=duration, pose_frame_at=frame['time'],
                                 pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), pose_camera=frame.get('camera'), error=None)
                             if command:
                                 self.state.update(initialization_seconds=initialization_seconds, catchup_frames=catchup_count,
@@ -605,6 +663,7 @@ class Tracker:
                         if time.monotonic() - self.last_heartbeat >= 5:
                             self.event('tracking_summary', generation=generation, sequence=frame['sequence'],
                                 inference_s=duration, result_age_s=time.time() - frame['time'], quality=quality,
+                                icp={key: icp.get(key) for key in ('mode', 'accepted', 'applied', 'reason', 'elapsed_ms', 'iterations')},
                                 tracked_frames=self.state['tracked_frames'])
                             self.last_heartbeat = time.monotonic()
                         previous = np.asarray(pose).copy()
@@ -640,12 +699,20 @@ def main():
     parser.add_argument('--resume-reorientation-report', type=Path,
                         help='One-use read-only recovery of the latest failed reorientation; operator must confirm the same grasp was never released or moved')
     parser.add_argument('--serial', help='Select a camera by serial; default: the only connected D435I')
+    parser.add_argument('--icp-mode', choices=['off', 'shadow', 'apply'], default='off',
+                        help='Optional depth refinement: shadow records candidates; apply publishes validated candidates')
+    parser.add_argument('--icp-budget-ms', type=float, default=20.,
+                        help='Cooperative ICP plus validation budget in milliseconds, (0, 50]; default 20')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
     parser.add_argument('--no-auto-recover', dest='auto_recover', action='store_false', help='Disable automatic detection/reinitialization after tracking loss')
     parser.add_argument('--recovery-interval', type=float, default=0., help='Recovery cooldown in seconds; default 0 retries immediately on a fresh frame')
     args = parser.parse_args()
+    try:
+        ICPSettings(budget_ms=args.icp_budget_ms)
+    except ValueError as error:
+        parser.error(str(error))
     if not np.isfinite(args.recovery_interval) or args.recovery_interval < 0:
         parser.error('recovery-interval must be nonnegative')
     cv2.setNumThreads(1)
@@ -692,6 +759,8 @@ def main():
                 self.reply(200, Path(__file__).with_name('reorientation_viewer.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path == '/placement_panel.js':
                 self.reply(200, Path(__file__).with_name('placement_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/icp_controls.js':
+                self.reply(200, Path(__file__).with_name('icp_controls.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path == '/api/reorient/model':
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -771,11 +840,15 @@ def main():
                 elif self.path == '/api/pause':
                     tracker.pause()
                     result = {'paused': True}
+                elif self.path == '/api/icp':
+                    result = tracker.set_icp_mode(value['mode'], value['revision'])
                 elif self.path == '/api/grasp':
-                    tracker.grasp.start()
+                    with tracker.lock:
+                        tracker.grasp.start()
                     result = {'accepted': True, 'mode': args.grasp_mode}
                 elif self.path == '/api/grasp/preview':
-                    tracker.grasp.start(preview=True)
+                    with tracker.lock:
+                        tracker.grasp.start(preview=True)
                     result = {'accepted': True, 'mode': 'preview'}
                 elif self.path == '/api/grasp/profiles':
                     result = tracker.grasp.edit_grasp_profiles(value)

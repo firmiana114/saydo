@@ -1,0 +1,31 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const source=fs.readFileSync(__dirname+'/icp_controls.js','utf8');
+const elements=Object.fromEntries(['icp-enabled','icp-mode','icp-status'].map(k=>[k,{checked:false,disabled:false,value:'',textContent:''}]));
+const context={};vm.createContext(context);vm.runInContext(source,context);
+const calls=[];let resolve,reject;
+const panel=new context.ICPControls({querySelector:s=>elements[s.slice(1)]},(path,data)=>{
+ calls.push({path,data});return new Promise((a,b)=>{resolve=a;reject=b;});
+});
+const state=(mode,revision,busy=false,icp=null)=>({icp_config:{mode,revision,budget_ms:20},grasp:{busy},icp});
+(async()=>{
+ assert(elements['icp-enabled'].disabled);
+ panel.update(state('off',0));assert(!elements['icp-enabled'].checked);assert(elements['icp-mode'].disabled);
+ elements['icp-enabled'].checked=true;const first=elements['icp-enabled'].onchange();
+ assert.equal(calls[0].path,'/api/icp');assert.equal(calls[0].data.mode,'shadow');assert.equal(calls[0].data.revision,0);
+ assert(panel.pending);assert(elements['icp-enabled'].disabled);
+ panel.update(state('off',0));resolve({mode:'shadow',revision:1,budget_ms:20});await first;
+ assert(elements['icp-enabled'].checked);assert(!elements['icp-mode'].disabled);
+ panel.update(state('off',0));assert(elements['icp-enabled'].checked,'stale polling must not undo acknowledged update');
+ elements['icp-mode'].value='apply';const second=elements['icp-mode'].onchange();resolve({mode:'apply',revision:2});await second;
+ panel.update(state('apply',2,false,{revision:2,applied:true,accepted:true,elapsed_ms:8.25,initial_rmse_mm:3,final_rmse_mm:.2}));
+ assert(elements['icp-status'].textContent.includes('8.3 ms'));assert(elements['icp-status'].textContent.includes('精修已采用'));
+ panel.update(state('apply',2,true));assert(elements['icp-enabled'].disabled);await panel.change('off');assert.equal(calls.length,2);
+ panel.update(state('apply',2));elements['icp-enabled'].checked=false;const third=elements['icp-enabled'].onchange();reject(Error('版本冲突'));await third;
+ assert(elements['icp-enabled'].checked,'failed request must restore acknowledged mode');assert(elements['icp-status'].textContent.includes('版本冲突'));
+ const fourth=panel.change('off');resolve({mode:'off',revision:3});await fourth;assert(!elements['icp-enabled'].checked);
+ assert(calls.every(c=>c.path==='/api/icp'),'switch must never call robot endpoints');
+ const html=fs.readFileSync(__dirname+'/live_tracker.html','utf8');
+ assert(html.indexOf('id="icp-controls"')>html.indexOf('id="tracking-panel"'));
+ assert(html.indexOf('id="icp-controls"')<html.indexOf('id="grasp-editor-panel"'));
+ console.log('ICP controls passed: toggle, shadow/apply, hot update, stale polls, pending/busy gates, errors and timing display.');
+})().catch(e=>{console.error(e);process.exitCode=1;});

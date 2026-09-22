@@ -1,5 +1,41 @@
 # FoundationPose：环境、胶带重建与离线诊断
 
+## 可热切换的 ICP 深度精修
+
+实时跟踪页在相机画面上方提供“ICP 深度精修”开关和“仅对比 / 应用精修”选择。默认关闭；首次从网页打开默认使用仅对比模式。切换不重启服务、不重新加载模型、不发送机械臂动作，在后续处理帧生效。当前会话内刷新页面会读回服务端设置；重启服务后使用启动参数，网页修改不写入配置文件。
+
+- `off`：沿用原 FoundationPose 位姿。
+- `shadow`（仅对比）：计算、检查并记录候选，但显示、稳定性历史、抓取和 FoundationPose 下一帧仍使用原位姿。
+- `apply`（应用精修）：仅采用通过检查且未超时的候选，同步显示、稳定性历史和抓取输出，并换算到居中模型坐标后更新 FoundationPose 下一帧状态。拒绝时使用原位姿，原有跟踪质量及 500 毫秒观测时效要求继续生效。
+
+模式切换会清除稳定性历史和旧输出，须重新积累稳定观测才能抓取；切换期间算出的旧版本帧不会发布或反馈给跟踪器。机械臂任务忙时拒绝切换，版本号防止陈旧页面覆盖新设置。接口为 `POST /api/icp`，请求含 `mode` 与 `revision`；`GET /api/status` 返回 `icp_config` 和最近一帧的 `icp` 诊断。开始抓取和模式切换共享 tracker 锁，避免锁定位姿期间切换。
+
+算法使用当前帧的内参和米制深度，将模型渲染的可见表面与观测做投影对应的点到平面 ICP。初帧可使用同帧 SAM mask，追帧后不复用旧 mask。剔除轮廓边缘、缺失深度、深度不连续点和距离过远的对应，以 Huber 权重降低异常点影响；最多 1800 点、7 次迭代，匹配距离从 15 毫米收紧到 7.5 毫米。几何约束不足（如平面）、支持点/覆盖不足、可见表面中心移动超过 10 毫米或旋转超过 5°、固定支持集误差不改善、候选渲染复核失败均回退。复核不是绝对位姿精度或真实抓取成功的证明，透明/反光深度、旋转对称、模型和标定偏差仍需实测。
+
+时延预算默认 **20 毫秒**，包括 ICP 及候选渲染复核；可通过 `--icp-budget-ms` 设为大于 0、不超过 50 毫秒。采样点数和迭代次数有界，几何系统仅为 6×6；复用已上传模型的拓扑和纹理，单独保留原模型坐标顶点，避免每帧重复上传。仅对最终当前帧精修，不增加初始化追帧的逐步计算。观测年龄加预算超过 450 毫秒时直接跳过，原采图时间戳不变。
+
+预算是迭代间检查的软限制，不能抢占正在执行的 NumPy/CUDA 调用或操作系统调度；超预算结果不采用，实际耗时如实记录。网页显示最近帧耗时与拟合偏差；`poses.jsonl` 保存原/候选位姿、覆盖率、修正量、拒绝原因，现有 `events.jsonl` 五秒摘要包含 ICP 状态，切换单独记事件，不新增逐迭代日志。
+
+相机接入后的启动示例（仅在准备使用相机时执行）：
+
+```sh
+source tools/foundationpose/runtime_env.sh
+python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start --icp-mode shadow --icp-budget-ms 20
+```
+
+离线验证无需相机或机械臂；完整历史测试需本机已有 `config/` 文件：
+
+```sh
+work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_icp*.py' -v
+node tools/foundationpose/test_icp_controls.cjs
+source tools/foundationpose/runtime_env.sh
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python tools/foundationpose/benchmark_icp.py
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python tools/foundationpose/benchmark_icp.py --gpu
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python tools/foundationpose/benchmark_icp.py --gpu --mesh work/object_models/ob_yibao_350ml/model/model.obj
+```
+
+2026-09-22 MSI RTX 4060 Laptop 上，640×360 合成椭球、预热 10 次后统计 100 次：求解 P50/P95 约 5.1/5.2 毫秒，含 GPU 候选渲染复核约 7.0/7.1 毫秒。使用怡宝水瓶模型生成合成深度时，完整精修 P50/P95 约 10.3/10.6 毫秒，最大约 11.0 毫秒。该结果不含 FoundationPose 网络推理，也没有真实传感器噪声或并行相机采集/网络推理负载；透明物品、冷启动和在线总时延尚待相机接入后验证。先用“仅对比”观察耗时、拒绝率、深度匹配和多视角稳定性，再选择“应用精修”。
+
 ## 网页工作台
 
 桌面页面采用浅色工作台、深色三维视窗。左侧四个标签页分别为实时跟踪、物品夹法库、将物品摆至指定姿态、将物品放置在桌面；右侧机械臂控制栏始终属于同一个页面，停止运动按钮固定在控制区最上方。顶部物品切换与状态提示在各页均可使用。窄屏按可用宽度将导航和控制栏重排。

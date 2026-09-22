@@ -49,6 +49,7 @@ class GripperHTTPTests(unittest.TestCase):
 
             class Tracker:
                 def __init__(self, args):
+                    self.lock = threading.RLock()
                     self.stop = threading.Event()
                     self.events = SimpleNamespace(close=lambda: None)
                     self.grasp = GraspController(root, self, cfg)
