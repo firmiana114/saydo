@@ -1,9 +1,0 @@
-# 用户于 2026-09-20 确认：同型号且安装位置/朝向不变时复用手眼关系。
-# 仅复用机械安装变换；视觉推理必须读取每台相机自己的内参。
-enabled: true
-camera_model: RealSense D435I
-mount_unchanged_confirmed: true
-installation_id: saydo_rm75bi_d435i_ctag2f90d_20260914
-handeye_source_sha256: 3f5f457dd2bf9c0119b4312fb5db15b18d43e44604a65dd64df73d7f4c7a0887
-acceptance_source: explicit_user_confirmation_20260920
-accuracy_status: replacement_camera_grasp_accuracy_not_measured

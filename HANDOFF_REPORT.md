@@ -6,6 +6,7 @@
 - `live_tracker.py` 采集 D435I 并调用 FoundationPose，8089 提供网页与状态；`grasp_control.py` 执行抓取检查和动作，`grasp_robot.py` 与控制器通信。
 - 启动环境：`source tools/foundationpose/runtime_env.sh`；启动 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start`。启动不会自动抓取。
 - 几何配置在 `config/calibration/`，抓取参数在 `config/grasp/trial.json`；模型、原始标定和日志在忽略版本管理的 `work/`，需另行保留。
+- `config/` 子目录内的文件已改为本机维护并由 Git 忽略，仅跟踪各目录的 `.gitkeep`；首次克隆需另行提供配置，现有机器上的配置应完整保留并独立备份。
 - 更多硬件和历史验证见 `ros2_rm_ws/HANDOFF_REPORT.md`。
 
 ## 2026-09-21 姿态目标的物品/基座圆环

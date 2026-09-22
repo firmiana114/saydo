@@ -80,3 +80,8 @@ config.local.*
 Thumbs.db
 .idea/
 .vscode/
+
+# Machine-local configuration; retain subdirectory placeholders only
+/config/*/**
+!/config/**/
+!/config/**/.gitkeep

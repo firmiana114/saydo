@@ -72,3 +72,5 @@ cd /home/pc/saydo/ros2_rm_ws
 版本库包含项目说明、启动脚本与睿尔曼源码快照。项目根目录 `doc/`、ROS 编译和安装产物、日志、`work/` 临时数据、模型权重及传感器记录保留在本地，不上传。首次克隆后需安装 ROS 2 Jazzy 并按 `ros2_rm_ws/HANDOFF_REPORT.md` 的构建命令生成 `install_jazzy/`，随后才能运行启动脚本。
 
 第三方源码版本与 SDK 库说明见 `VENDORED_SOURCES.md`。
+
+`config/` 子目录内的配置和说明文件在各机器本地维护，Git 仅通过 `.gitkeep` 保留目录结构。首次克隆后需从已有部署或独立备份提供所需配置；已有部署同步时须保留本机配置。
