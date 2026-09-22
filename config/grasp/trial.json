@@ -2,38 +2,75 @@
   "robot_ip": "192.168.1.19",
   "robot_port": 8080,
   "nominal_tcp_user_accepted": true,
-  "action": "close_only_no_lift",
+  "action": "grasp_and_lift",
+  "lift_height_m": 0.15,
   "handeye_file": "config/calibration/handeye.yaml",
   "tool_file": "config/calibration/tool_grip_tcp.yaml",
   "ik_checker": "work/grasp/rm75_ik_check",
-  "arm_speed_percent": 2,
+  "arm_speed_percent": 40,
   "pregrasp_distance_m": 0.05,
-  "clearance_height_m": 0.08,
-  "max_target_distance_m": 0.3,
-  "max_plan_age_s": 5,
+  "max_target_distance_m": 1.0,
   "workspace_min_m": [-1.0, -1.0, 0.0],
   "workspace_max_m": [1.0, 1.0, 1.0],
-  "table_z_m": 0.0,
+  "table_z_m": -0.02449,
+  "min_table_clearance_m": 0.01,
   "workspace_reviewed": true,
   "gripper": {
     "vendor": "ZX",
     "device_id": 1,
-    "open_position": 900,
+    "open_position": 1000,
     "closed_position": 0,
     "contact_position_margin": 20,
-    "speed_limit_raw": 100,
-    "force_limit_raw": 10,
-    "force_target_raw": 10,
-    "force_units": "unverified_native_units_not_newtons",
-    "force_control_verified": false,
-    "contact_state_verified": false,
-    "close_timeout_s": 5
-  },
-  "objects": {
-    "ob_yibao_350ml": {
-      "grasp_point_object_m": [0, 0, 0],
-      "orientation": "keep_current_tcp",
-      "note": "First trial: 350 mL bottle, grip at nominal model centre, no lift. Nominal TCP explicitly accepted by user."
+    "force_limit_raw": 100,
+    "force_target_raw": 100,
+    "force_units": "native_units_not_newtons",
+    "force_control_verified": true,
+    "close_timeout_s": 5,
+    "verification": {
+      "date": "2026-09-18",
+      "source": "explicit_user_physical_test",
+      "controller_firmware": "V1.7.0",
+      "gripper_firmware": "V1.154",
+      "force_register": 1220,
+      "close_command": "hand_follow_pos",
+      "closed_position": 0,
+      "observations": {
+        "10": "轻轻夹住纸杯",
+        "50": "纸杯轻微变形"
+      },
+      "newton_conversion": "unknown",
+      "register_readback": "unavailable"
     }
+  },
+  "grasp_profile": {
+    "grasp_point_object_m": [0, 0, 0],
+    "orientation": "follow_object",
+    "object_R_tcp": null,
+    "approach_axis_tcp": [0, 0, 1],
+    "note": "Any currently tracked model; freeze the selected grasp pose at start, use taught object-relative position and orientation, lift vertically after grasp."
+  },
+  "return_after_lift": {
+    "joint_deg": [
+      -81.772,
+      -112.239,
+      77.689,
+      57.503,
+      43.099,
+      105.776,
+      214.58
+    ],
+    "captured_pose_raw": [
+      258504,
+      87523,
+      40266,
+      1894,
+      -457,
+      298
+    ],
+    "source": {
+      "path": "work/grasp/return_pose_capture_1789894446571849886.json",
+      "sha256": "63f0264a4dde46ae0a3d2ea54317d40fe666a079bf63773217d2aba26b808627"
+    },
+    "note": "User-positioned seven-joint target shared by manual arm reset and return after lift; captured read-only without robot motion."
   }
 }

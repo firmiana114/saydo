@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D435i/web adapter on official FoundationPose register/track_one; no robot API."""
+"""D435i/web adapter on official FoundationPose register/track_one; button-triggered grasp control."""
 import argparse
 from collections import deque
 import datetime
@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import urllib.request
+import urllib.parse
 
 import cv2
 import numpy as np
@@ -24,6 +25,7 @@ from live_checks import checked_box, pose_health, bottle_candidates, recovery_du
 from object_catalog import scan_objects, select_object, inferred_class
 from grasp_control import GraspController
 from live_events import EventLog
+from camera_checks import select_camera
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -55,9 +57,11 @@ class Tracker:
         self.events = EventLog(self.output / 'events.jsonl')
         self.last_heartbeat = 0.
         self.state['output'] = str(self.output)
-        self.state.update(object_id=self.object_info['id'], object_name=self.object_info['name'],
+        self.state.update(model_sha256=hashlib.sha256(args.mesh.read_bytes()).hexdigest(), object_id=self.object_info['id'], object_name=self.object_info['name'],
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
         self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
+        if getattr(args, 'resume_reorientation_report', None):
+            self.grasp.restore_reorientation_report(args.resume_reorientation_report)
         (self.output / 'session.json').write_text(json.dumps({'mesh': str(args.mesh), 'mesh_sha256': hashlib.sha256(args.mesh.read_bytes()).hexdigest(),
              'camera_serial': args.serial, 'native_color': [1280, 720, 15], 'native_depth': [640, 360, 15],
              'inference_resolution': [640, 360], 'algorithm': 'official FoundationPose register(iteration=5), track_one(iteration=2)',
@@ -76,8 +80,11 @@ class Tracker:
         pipe = rs.pipeline()
         started = False
         try:
+            devices = [{'serial': d.get_info(rs.camera_info.serial_number),
+                        'name': d.get_info(rs.camera_info.name)} for d in rs.context().query_devices()]
+            identity = select_camera(devices, self.args.serial)
             cfg = rs.config()
-            cfg.enable_device(self.args.serial)
+            cfg.enable_device(identity['serial'])
             cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 15)
             cfg.enable_stream(rs.stream.depth, 640, 360, rs.format.z16, 15)
             profile = pipe.start(cfg)
@@ -114,11 +121,20 @@ class Tracker:
                 if any(abs(v) > 1e-12 for v in intr.coeffs):
                     raise ValueError('Nonzero color distortion requires rectification')
                 K = np.array([[intr.fx / 2, 0, intr.ppx / 2], [0, intr.fy / 2, intr.ppy / 2], [0, 0, 1.]])
+                camera = {**identity, 'native_size': [intr.width, intr.height], 'image_size': [640, 360],
+                          'frame': 'color_optical_frame', 'K': K.tolist(),
+                          'distortion_coefficients': list(intr.coeffs)}
+                if sequence == 0:
+                    self.event('camera_connected', camera=camera)
+                    session_path = self.output / 'session.json'
+                    session = json.loads(session_path.read_text())
+                    session.update(camera_serial=identity['serial'], camera=camera)
+                    session_path.write_text(json.dumps(session, indent=2))
                 bgr = cv2.resize(np.asanyarray(color.get_data()), (640, 360), interpolation=cv2.INTER_AREA)
                 depth_m = cv2.resize(np.asanyarray(depth.get_data()).astype(np.float32) * scale, (640, 360), interpolation=cv2.INTER_NEAREST)
                 sequence += 1
                 last_camera_number = native_color.get_frame_number()
-                frame = {'bgr': bgr, 'depth': depth_m, 'K': K, 'sequence': sequence,
+                frame = {'bgr': bgr, 'depth': depth_m, 'K': K, 'camera': camera, 'sequence': sequence,
                          'camera_frame_number': int(native_color.get_frame_number()), 'time': captured_at,
                          'received_at': received_at, 'sensor_age_at_receive_s': received_at - captured_at,
                          'alignment_seconds': time.perf_counter() - align_started}
@@ -126,6 +142,7 @@ class Tracker:
                     self.latest = frame
                     self.history.append(frame)
                     self.state['sequence'] = sequence
+                    self.state['camera'] = camera
                     self.state['camera_frame_at'] = frame['time']
                     self.state['sensor_age_at_receive_s'] = frame['sensor_age_at_receive_s']
                     self.state['alignment_seconds'] = frame['alignment_seconds']
@@ -245,11 +262,11 @@ class Tracker:
             s = self.state
             if s['state'] != 'tracking' or not s.get('quality', {}).get('good') or s.get('camera_T_object') is None:
                 raise ValueError('当前没有可靠跟踪位姿')
-            if time.time() - s['pose_frame_at'] > .3:
+            if time.time() - s['pose_frame_at'] > .5:
                 raise ValueError('视觉位姿过期，不能用于抓取')
-            rows = [r for r in self.pose_history if r['generation'] == self.generation and r['time'] >= s['pose_frame_at'] - .8]
-            if len(rows) < 8 or rows[-1]['time'] - rows[0]['time'] < .5:
-                raise ValueError('请保持物品和机械臂静止，等待至少半秒稳定跟踪')
+            rows = [r for r in self.pose_history if r['generation'] == self.generation and r['time'] >= s['pose_frame_at'] - 1.0]
+            if len(rows) < 5 or rows[-1]['time'] - rows[0]['time'] < .5:
+                raise ValueError('请保持物品和机械臂静止，等待最近 1 秒内至少 5 个有效位姿，且覆盖至少半秒')
             points = np.array([r['pose'] for r in rows])[:, :3, 3]
             if np.max(np.linalg.norm(points - points[-1], axis=1)) > .005:
                 raise ValueError('目标位姿仍在变化，请先保持静止')
@@ -258,7 +275,8 @@ class Tracker:
             if np.max(angles) > np.deg2rad(15):
                 raise ValueError('目标朝向不稳定，请等待稳定跟踪')
             return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
-                    'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K')}
+                    'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K'),
+                    'model_sha256': s.get('model_sha256'), 'camera': s.get('pose_camera')}
 
     def image(self):
         with self.lock:
@@ -390,7 +408,7 @@ class Tracker:
                                 self.object_info = info
                                 detector_class = info['detector_class']
                                 detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
-                                self.state.update(state='ready', model_ready=True, model=info['mesh'], object_id=info['id'],
+                                self.state.update(state='ready', model_ready=True, model_sha256=hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest(), model=info['mesh'], object_id=info['id'],
                                     object_name=info['name'], pending_object_name=None, detector_class=detector_class,
                                     auto_detection_supported=detector_label is not None, model_extents_m=mesh.extents.tolist(),
                                     initialization_seconds=None, catchup_seconds=None, catchup_frames=0,
@@ -562,7 +580,7 @@ class Tracker:
                                 continue
                             self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
-                                pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), error=None)
+                                pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), pose_camera=frame.get('camera'), error=None)
                             if command:
                                 self.state.update(initialization_seconds=initialization_seconds, catchup_frames=catchup_count,
                                                   catchup_seconds=catchup_seconds)
@@ -619,7 +637,9 @@ def main():
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
-    parser.add_argument('--serial', default='135122077750')
+    parser.add_argument('--resume-reorientation-report', type=Path,
+                        help='One-use read-only recovery of the latest failed reorientation; operator must confirm the same grasp was never released or moved')
+    parser.add_argument('--serial', help='Select a camera by serial; default: the only connected D435I')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
@@ -668,6 +688,26 @@ def main():
             path = self.path.split('?')[0]
             if path == '/':
                 self.reply(200, Path(__file__).with_name('live_tracker.html').read_bytes(), 'text/html; charset=utf-8')
+            elif path == '/reorientation_viewer.js':
+                self.reply(200, Path(__file__).with_name('reorientation_viewer.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/placement_panel.js':
+                self.reply(200, Path(__file__).with_name('placement_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/api/reorient/model':
+                try:
+                    params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    self.reply(200, tracker.grasp.reorientation_model(params.get('object_id',[None])[0]))
+                except (ValueError, TypeError, KeyError, OSError) as error:
+                    self.reply(400, {'error':str(error)})
+            elif path == '/grasp_editor.js':
+                self.reply(200, Path(__file__).with_name('grasp_editor.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path in ('/api/grasp/profiles', '/api/grasp/editor-model'):
+                try:
+                    params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    object_id = params.get('object_id', [None])[0]
+                    result = tracker.grasp.grasp_profiles(object_id) if path.endswith('/profiles') else tracker.grasp.grasp_editor_model(object_id)
+                    self.reply(200, result)
+                except (ValueError, TypeError, KeyError, OSError) as error:
+                    self.reply(400, {'error':str(error)})
             elif path == '/api/status':
                 self.reply(200, tracker.snapshot())
             elif path == '/api/objects':
@@ -734,10 +774,35 @@ def main():
                 elif self.path == '/api/grasp':
                     tracker.grasp.start()
                     result = {'accepted': True, 'mode': args.grasp_mode}
+                elif self.path == '/api/grasp/preview':
+                    tracker.grasp.start(preview=True)
+                    result = {'accepted': True, 'mode': 'preview'}
+                elif self.path == '/api/grasp/profiles':
+                    result = tracker.grasp.edit_grasp_profiles(value)
+                elif self.path == '/api/grasp/teach':
+                    result = tracker.grasp.teach(value.get('use_current_point', False))
                 elif self.path == '/api/gripper/status':
                     result = tracker.grasp.hardware_status()
+                elif self.path == '/api/gripper/open':
+                    result = tracker.grasp.open_gripper()
                 elif self.path == '/api/gripper/force-config':
                     result = tracker.grasp.set_force_config(value['value'])
+                elif self.path == '/api/gripper/open-position':
+                    result = tracker.grasp.set_open_position(value['value'])
+                elif self.path == '/api/arm/reset':
+                    result = tracker.grasp.start_reset()
+                elif self.path == '/api/arm/reset-zero':
+                    result = tracker.grasp.start_reset('zero')
+                elif self.path == '/api/reorient/preview':
+                    result = tracker.grasp.start_reorient(value, preview=True)
+                elif self.path == '/api/reorient':
+                    result = tracker.grasp.start_reorient(value)
+                elif self.path == '/api/place/config':
+                    result = tracker.grasp.save_placement_config(value)
+                elif self.path == '/api/place/preview':
+                    result = tracker.grasp.start_placement(value, preview=True)
+                elif self.path == '/api/place':
+                    result = tracker.grasp.start_placement(value)
                 elif self.path == '/api/grasp/stop':
                     tracker.grasp.abort()
                     result = {'cancelled': True}
@@ -750,7 +815,7 @@ def main():
                     self.reply(404, {'error': 'not found'})
                     return
                 self.reply(200, result)
-            except (ValueError, KeyError, TypeError, RuntimeError) as error:
+            except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
                 self.reply(400, {'error': str(error)})
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
