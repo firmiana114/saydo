@@ -34,7 +34,9 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python tools/foundationpose/benchmark_i
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python tools/foundationpose/benchmark_icp.py --gpu --mesh work/object_models/ob_yibao_350ml/model/model.obj
 ```
 
-2026-09-22 MSI RTX 4060 Laptop 上，640×360 合成椭球、预热 10 次后统计 100 次：求解 P50/P95 约 5.1/5.2 毫秒，含 GPU 候选渲染复核约 7.0/7.1 毫秒。使用怡宝水瓶模型生成合成深度时，完整精修 P50/P95 约 10.3/10.6 毫秒，最大约 11.0 毫秒。该结果不含 FoundationPose 网络推理，也没有真实传感器噪声或并行相机采集/网络推理负载；透明物品、冷启动和在线总时延尚待相机接入后验证。先用“仅对比”观察耗时、拒绝率、深度匹配和多视角稳定性，再选择“应用精修”。
+2026-09-22 MSI RTX 4060 Laptop 上，640×360 合成椭球、预热 10 次后统计 100 次：求解 P50/P95 约 5.1/5.2 毫秒，含 GPU 候选渲染复核约 7.0/7.1 毫秒。使用怡宝水瓶模型生成合成深度时，完整精修 P50/P95 约 10.3/10.6 毫秒，最大约 11.0 毫秒。该基准不含 FoundationPose 网络推理，也没有真实传感器噪声或并行相机采集/网络推理负载。
+
+随后 D435I 在线测试水瓶和纸杯，每物品每模式 60 帧。开关热切换正常，全部保持跟踪，但 **shadow/apply 接受率均为 0%，真实精修效果尚未验收**：水瓶有效对应覆盖约 50%，被 60% 门槛拒绝；纸杯覆盖约 81%，主要因候选旋转超过 5° 被拒绝，少量未通过渲染复核。纸杯回退路径的 ICP P95 约 10.1 毫秒，发布约 15 Hz；查询时位姿年龄均低于 210 毫秒。当前保留 shadow 观察，不把回退路径的低时延当作精修成功的证据。详细记录及后续待分析项见根目录 `HANDOFF_REPORT.md` 的相机在线实测章节。
 
 ## 网页工作台
 
