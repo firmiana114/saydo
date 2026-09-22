@@ -57,7 +57,7 @@ python tools/foundationpose/migrate_model_grasps.py --root . --apply
 编辑方式中的旋转分为“绕 TCP X/Y/Z”和“绕物品 X/Y/Z”。前者圆环随 TCP 朝向转动，后者圆环与物品坐标轴保持平行；两者均以当前抓取中心为圆心，只改变 `object_R_tcp`，不移动抓取点。物品轴旋转左乘增量矩阵，TCP 轴旋转右乘；旋转交互使用选中圆环所在平面，Shift 为精细调整。保存的数据格式与原有夹法库一致。
 
 - 每个物品最多 32 套夹法，含稳定编号、名称、启用状态、优先级、物品坐标系中的抓取中心 `grasp_point_object_m` 与旋转 `object_R_tcp`。工具 +Z 为接近方向；旧的“距模型原点 20 厘米”限制移除，编辑保存按模型包围盒及附近余量检查，运动仍检查现有工作区和目标距离。
-- 参数覆盖可单独指定预抓距离、张开位置与力度原始值；空白沿用当前全局值，覆盖仅作用于本次抓取，不改写 `trial.json`。单独力度同时作为本次目标力度/限力值，保留硬件上限检查。现有放置后撤距离仍读取全局 `pregrasp_distance_m`。
+- 每条夹法必须在 `overrides` 中保存 `force_target_raw`（1–100）和 `open_position`（0–1000）；不再留空继承全局力度/张开位置。力度同时作为本次目标力度和限力值，仍检查硬件上限。仅预抓距离可以留空沿用全局值；放置后撤距离仍读取全局 `pregrasp_distance_m`。
 - 手动模式只检查指定夹法，失败不会偷偷更换；自动模式在同一冻结观测、同一起始机械臂状态下检查已启用候选，按模型/工具/标定绑定、工作区、设备参数和预抓/夹持/抬升航点 IK→FK 筛选，优先级高者优先，同优先级比较离线关节变化量。总检查预算 12 秒、每次 SDK 检查最多 3 秒；超时日志明确记录未完成的搜索。并不自动生成未定义夹法，也不在动作失败后继续尝试别的夹法。
 - 所有候选检查都在夹爪开合或机械臂运动前完成；执行仍逐段核对运动学及实际到位，保存选中的 `grasp_id`、`grasp_name`、候选通过/拒绝理由与实际参数。候选的航点可达性检查不等于完整路径/环境碰撞或夹持稳定性证明。
 - 旧集中库按只读方式兼容，新写入仅操作目标物品目录中的 `grasp_profiles.json`（schema_version 3），不改动其他物品。原子替换前在该物品的 `grasp_profile_backups/` 保存副本；编辑接口按版本号拒绝陈旧写入，使用既有任务和设备锁。迁移规则见本页顶部。
@@ -315,13 +315,20 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 
 检查：`python -m unittest discover -s tools/foundationpose -p 'test_grasp.py' -v`。不以模拟执行测试代替实机验收。
 
-### 抓取张开位置与机械臂复位
+### 记录夹法的力度、张开位置与机械臂复位
 
-“抓取时夹爪打开位置”接受 0–1000 的整数原始值，1000 表示完全张开，不是毫米。
-按回车或离开输入框，通过 `POST /api/gripper/open-position` 携带 `{"value":300}` 保存
-`config/grasp/trial.json` 的 `gripper.open_position`；只替换该字段，保留其他配置与格式。
-保存不发送硬件命令，下一次抓取生效，重启后保留；独立“打开夹爪”仍固定完全张开。
-保存与抓取、复位共享设备锁，任务进行中拒绝修改，日志位于 `work/grasp/open_position_commands/`。
+右侧“记录夹法”区域直接展开，包含新夹法的力度（1–100 原始值，非牛顿）和抓取张开位置（0–1000，1000 为完全张开，不是毫米或角度）。输入只修改草稿，点击记录时通过 `/api/grasp/teach` 提交 `object_id`、`use_current_point` 和 `gripper_parameters={force_target_raw,open_position}`，随新夹法保存，不立即下发硬件，也不影响已有夹法。
+
+新夹法默认：纸杯力度 10，其他物品力度 75；马克杯张开位置 200，其他物品 1000。依据已登记物品 ID 的纸杯/mug 标记选择默认值；切换物品重置记录表单的默认值，同一物品的状态轮询不会覆盖手动输入。夹法编辑器的两项参数也明确显示且必填。保存或复制夹法后，执行使用对应条目中的值。
+
+现有夹法批量绑定使用 `bind_gripper_parameters.py`，默认预览，`--apply` 才写入。上线时先确认没有活动任务并处理夹持状态，再停止服务、持有设备锁迁移。四个物品共 22 条夹法写入指定值；保留 ID、几何、选择方式和历史，修改参数后清除当前版本的实测成功标记，原文件备份及编辑记录留在各物品目录。缺少绑定值的旧条目会显示 `parameter_error` 并拒绝执行，不静默沿用全局值。
+
+```sh
+python tools/foundationpose/bind_gripper_parameters.py --root .
+python tools/foundationpose/bind_gripper_parameters.py --root . --apply
+```
+
+原全局夹爪参数表单已移除。“打开夹爪”按钮仍固定完全张开至 1000。为兼容已有维护调用，旧 `/api/gripper/open-position` 和 `/api/gripper/force-config` 路由仍保留，其中力度路由在执行模式下仍可能立即写入硬件；它们不再决定已绑定夹法的实际抓取力度/开度，也不作为 MCP 工具暴露。
 
 “机械臂复位”调用 `POST /api/arm/reset`，读取 `return_after_lift.joint_deg`，
 按现有 `arm_speed_percent` 回到记录的七关节复位姿态，保持夹爪开合不变。
@@ -330,9 +337,11 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 预览模式、未配置返回姿态及已有任务时拒绝复位；“停止运动”可中止抓取或复位。
 任务结果沿用状态接口的 `grasp` 字段，`operation=reset` 区分复位；记录保存在 `work/grasp/reset_jobs/`。
 
-### 网页力度配置
+### 夹爪参数的工具输出
 
-力度输入为 1–100 的整数原始值，不是牛顿。执行模式下，按回车或离开输入框通过 `/api/gripper/force-config` 实际写入 1220，匹配的成功回复到达后才更新本次服务配置；下一次抓取使用同一力度。输入本身不发送位置动作，抓取期间或夹爪运动时拒绝更新，设备锁防止与其他抓取进程冲突。失败或超时显示“下发未确认”，不自动重试、不假报已生效。预览模式只改配置、不写硬件。服务重启后恢复文件配置但不自动下发；日志在 `work/grasp/force_commands/`。
+`get_grasp_profiles` 的每条夹法返回 `effective_parameters`，包含力度、限力、开度、预抓距离、抬升高度、速度及单位；这是保存的执行设置，不是硬件读回值。`get_status.grasp.grasp_configuration` 和 `get_robot_state.controller.grasp_configuration` 返回当前物品的选择模式、夹法参数摘要及新建默认值。真正选择并执行的参数记录在任务的 `result.plan.effective_parameters` 和候选检查结果中。
+
+Agent 输出过滤旧 `force_config` / `open_position_config` 全局字段，避免误认为它们是本次抓取参数；历史任务日志不回写成新值。`get_grasp_profiles.defaults` 仅代表新夹法的初始值。
 
 2026-09-17 再次只读查询实机：`force:true, touch:false`。官方文档中 `touch` 是触觉支持能力，`touch_sw` 才是触觉开关；通用 `set_rm_plus_touch` 接口的存在不代表当前设备支持触觉。此结论依据协议反馈，不等同于拆机鉴定。
 

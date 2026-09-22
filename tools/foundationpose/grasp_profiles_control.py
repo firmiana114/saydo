@@ -11,7 +11,8 @@ import yaml
 
 from grasp_geometry import plan_grasp, workspace_blockers, rotation_error, controller_pose
 from grasp_library import (GraspLibrary, MAX_GRASPS, revision, checked_profile, checked_overrides,
-                           point_limits, binding_error, effective_config)
+                           point_limits, binding_error, effective_config, object_gripper_defaults,
+                           checked_bound_overrides, effective_parameters)
 from reorientation_geometry import model_geometry
 from reorientation_visual import model_appearance
 
@@ -19,6 +20,27 @@ from reorientation_visual import model_appearance
 class GraspProfilesMixin:
     def grasp_library(self):
         return GraspLibrary(self.root, getattr(self.tracker, 'models_root', None))
+
+    def grasp_configuration(self, config):
+        object_id = getattr(self.tracker, 'state', {}).get('object_id')
+        if not object_id:
+            return {'object_id': None, 'grasps': [], 'teaching_defaults': None}
+        try:
+            value = self.grasp_library().object(object_id)
+            entries = []
+            for entry in value['grasps']:
+                row = {key: entry.get(key) for key in ('id', 'name', 'enabled', 'priority')}
+                try:
+                    row['effective_parameters'] = effective_parameters(config, entry)
+                    row['parameter_error'] = None
+                except ValueError as error:
+                    row.update(effective_parameters=None, parameter_error=str(error))
+                entries.append(row)
+            return {'object_id': object_id, 'selection_mode': value['selection_mode'],
+                    'selected_id': value['selected_id'], 'revision': revision(value), 'grasps': entries,
+                    'teaching_defaults': object_gripper_defaults(object_id), 'error': None}
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            return {'object_id': object_id, 'grasps': [], 'teaching_defaults': object_gripper_defaults(object_id), 'error': str(error)}
 
     def grasp_editor_model(self, object_id):
         geometry = model_geometry(self.tracker.models_root, object_id)
@@ -42,12 +64,17 @@ class GraspProfilesMixin:
         for entry in value['grasps']:
             row = copy.deepcopy(entry)
             row['binding_error'] = binding_error(entry, geometry['model_sha256'], tool, handeye)
+            try:
+                row['effective_parameters'] = effective_parameters(config, entry)
+                row['parameter_error'] = None
+            except ValueError as error:
+                row.update(effective_parameters=None, parameter_error=str(error))
             entries.append(row)
         return {**value, 'grasps':entries, 'revision':revision(value), 'object_id':object_id,
                 'object_name':geometry['object_name'], 'model_sha256':geometry['model_sha256'], 'maximum':MAX_GRASPS,
                 'changed_at':self.status.get('grasp_library_changed_at'),
-                'defaults':{'pregrasp_distance_m':config['pregrasp_distance_m'],
-                            'open_position':config['gripper']['open_position'], 'force_target_raw':self.force_config()['value']}}
+                'parameter_scope':'per_grasp',
+                'defaults':{'pregrasp_distance_m':config['pregrasp_distance_m'], **object_gripper_defaults(object_id)}}
 
     def edit_grasp_profiles(self, request):
         if not isinstance(request, dict):
@@ -94,7 +121,8 @@ class GraspProfilesMixin:
                         raise ValueError('夹法启用状态或优先级无效（0–100）')
                     if request.get('id') is not None and selected is None:
                         raise ValueError('夹法不存在，请重新载入')
-                    profile = checked_profile(data.get('profile'));overrides = checked_overrides(data.get('overrides',{}))
+                    profile = checked_profile(data.get('profile'))
+                    overrides = checked_bound_overrides({**object_gripper_defaults(object_id), **checked_overrides(data.get('overrides',{}))})
                     low,high = point_limits(geometry['vertices']);point = np.asarray(profile['grasp_point_object_m'])
                     if np.any(point<low) or np.any(point>high):
                         raise ValueError('抓取中心超出模型附近允许的编辑范围')
@@ -138,6 +166,7 @@ class GraspProfilesMixin:
         # Config-only installations keep their existing single-profile behavior.
         if not entries and not library.has_object(observation['object_id']):
             entries = [{'id':'config','name':'配置夹法','enabled':True,'priority':0,'profile':copy.deepcopy(config['grasp_profile']),
+                        'overrides':object_gripper_defaults(observation['object_id']),
                         'model_sha256':observation.get('model_sha256'),'tool_response':tool['controller_readback']['tool_response_raw']}]
         if value['selection_mode']=='manual':
             entries = [g for g in entries if g['id']==value['selected_id']]
@@ -156,6 +185,7 @@ class GraspProfilesMixin:
                 if error:
                     raise ValueError(error)
                 effective = effective_config(config,entry)
+                row['effective_parameters'] = effective_parameters(config, entry)
                 profile = {**copy.deepcopy(config['grasp_profile']),**entry['profile']}
                 plan = plan_grasp(arm['pose'],base_object,profile,effective)
                 blockers = workspace_blockers(plan,effective)
@@ -183,5 +213,6 @@ class GraspProfilesMixin:
         self.check_cancel()
         _,plan,profile,effective,entry = min(passed,key=lambda item:item[0])
         plan.update(grasp_id=entry['id'],grasp_name=entry['name'],grasp_selection_mode=value['selection_mode'],
-                    grasp_candidates=results,grasp_library_revision=revision(value))
+                    grasp_candidates=results,grasp_library_revision=revision(value),
+                    effective_parameters=effective_parameters(config, entry))
         return plan,profile,effective

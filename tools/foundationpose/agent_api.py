@@ -109,8 +109,13 @@ class AgentAPI:
         return {'session_id': self.session_id, 'tracking': {k: result.get(k) for k in [
             'state', 'error', 'object_id', 'object_name', 'model_ready', 'auto_detection_supported',
             'camera_age_s', 'pose_age_s', 'quality', 'bottle_candidates', 'selection_id']},
-            'grasp': result['grasp'], 'active_task_id': self.active,
+            'grasp': self.agent_controller_state(result['grasp']), 'active_task_id': self.active,
             'task_recording_error': self.recording_error}
+
+    @staticmethod
+    def agent_controller_state(state):
+        # Old UI compatibility fields are not the parameters used by bound grasps.
+        return {key: value for key, value in state.items() if key not in ('force_config', 'open_position_config')}
 
     def frame(self):
         with self.tracker.lock:
@@ -154,7 +159,7 @@ class AgentAPI:
                 'tool_frame': robot.query('get_current_tool_frame'),
                 'work_frame': robot.query('get_current_work_frame'),
                 'gripper': robot.query('get_rm_plus_state_info')['state_info'],
-                'controller': self.grasp.snapshot(), 'active_task_id': self.active}
+                'controller': self.agent_controller_state(self.grasp.snapshot()), 'active_task_id': self.active}
 
     def vision(self, operation, args):
         with self.tracker.lock, self.grasp.lock:

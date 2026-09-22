@@ -114,20 +114,21 @@ class GraspEditorPanel{
   newEntry(){
     if(!this.model||!this.data)return;this.activeId=null;
     const low=this.model.point_min_m,high=this.model.point_max_m;
-    this.draft={name:'新夹法',enabled:true,priority:0,profile:{grasp_point_object_m:[0,0,0].map((v,i)=>Math.max(low[i],Math.min(high[i],v))),object_R_tcp:ReorientationMath.identity()},overrides:{}};
+    this.draft={name:'新夹法',enabled:true,priority:0,profile:{grasp_point_object_m:[0,0,0].map((v,i)=>Math.max(low[i],Math.min(high[i],v))),object_R_tcp:ReorientationMath.identity()},overrides:{force_target_raw:this.data.defaults.force_target_raw,open_position:this.data.defaults.open_position}};
     this.dirty=true;this.writeFields();this.feedback.textContent='新夹法尚未保存。拖动箭头/圆环，或输入坐标和角度。';
   }
   selectEntry(id){
     const entry=this.data?.grasps.find(g=>g.id===id);if(!entry)return;
     this.activeId=id;this.list.value=id;this.draft=JSON.parse(JSON.stringify(entry));this.dirty=false;this.writeFields();
-    this.feedback.textContent=entry.binding_error||'已载入 '+entry.name+'；选择列表只用于编辑，“使用选中夹法”才会改变抓取选择。';
+    this.feedback.textContent=entry.binding_error||entry.parameter_error||'已载入 '+entry.name+'；选择列表只用于编辑，“使用选中夹法”才会改变抓取选择。';
   }
   writeFields(){
     const d=this.draft;this.q('name').value=d.name;this.q('enabled').checked=d.enabled;this.q('priority').value=d.priority;
     this.pointInputs.forEach((el,i)=>{el.value=(d.profile.grasp_point_object_m[i]*1000).toFixed(2);el.min=this.model.point_min_m[i]*1000;el.max=this.model.point_max_m[i]*1000;});
     ReorientationMath.angles(d.profile.object_R_tcp).forEach((v,i)=>this.angleInputs[i].value=v.toFixed(2));
     for(const [id,key,factor] of [['distance','pregrasp_distance_m',1000],['opening','open_position',1],['force','force_target_raw',1]]){
-      this.q(id).value=d.overrides?.[key]==null?'':d.overrides[key]*factor;this.q(id).placeholder='沿用 '+this.data.defaults[key]*factor;
+      this.q(id).value=d.overrides?.[key]==null?(id==='distance'?'':this.data.defaults[key]*factor):d.overrides[key]*factor;
+      this.q(id).placeholder=id==='distance'?'沿用 '+this.data.defaults[key]*factor:'随夹法保存';
     }
     this.redraw();
   }
@@ -140,6 +141,7 @@ class GraspEditorPanel{
   formValue(){
     if(!this.q('name').value.trim()||this.fields.filter(e=>e.type!=='checkbox'&&e.value!=='').some(e=>!e.checkValidity()))throw Error('请检查名称、坐标、角度和参数范围。');
     if([...this.pointInputs,...this.angleInputs,this.q('priority')].some(e=>e.value.trim()===''||!Number.isFinite(Number(e.value))))throw Error('坐标、角度和优先级不能为空。');
+    if([this.q('opening'),this.q('force')].some(e=>e.value.trim()===''||!Number.isInteger(Number(e.value))))throw Error('夹爪力度和抓取张开位置必须为整数且不能为空。');
     const overrides={};for(const [id,key,factor] of [['distance','pregrasp_distance_m',.001],['opening','open_position',1],['force','force_target_raw',1]])if(this.q(id).value.trim()!=='')overrides[key]=Number(this.q(id).value)*factor;
     const old=this.draft?.profile,angles=old?ReorientationMath.angles(old.object_R_tcp):[];
     const point=old&&this.pointInputs.every((e,i)=>e.value===(old.grasp_point_object_m[i]*1000).toFixed(2))?old.grasp_point_object_m.slice():this.pointInputs.map(e=>Number(e.value)/1000);
@@ -162,9 +164,7 @@ class GraspEditorPanel{
     if(this.data){
       const oldDistance=this.data.defaults.pregrasp_distance_m;
       if(g.pregrasp_distance_m!=null)this.data.defaults.pregrasp_distance_m=g.pregrasp_distance_m;
-      if(g.force_config)this.data.defaults.force_target_raw=g.force_config.value;
-      if(g.open_position_config)this.data.defaults.open_position=g.open_position_config.value;
-      for(const [id,key,factor] of [['distance','pregrasp_distance_m',1000],['opening','open_position',1],['force','force_target_raw',1]])this.q(id).placeholder='沿用 '+this.data.defaults[key]*factor;
+      this.q('distance').placeholder='沿用 '+this.data.defaults.pregrasp_distance_m*1000;
       if(oldDistance!==this.data.defaults.pregrasp_distance_m)this.redraw();
     }
     this.locked=!!g.busy||otherPending||this.pending||this.loading||!this.data;
@@ -173,7 +173,7 @@ class GraspEditorPanel{
     this.q('auto').disabled=this.locked||this.dirty;
     this.q('delete').disabled=this.locked||!this.activeId;this.q('duplicate').disabled=this.locked||!this.activeId||this.dirty;
     const selected=this.data?.grasps.find(e=>e.id===this.activeId);
-    this.q('use').disabled=this.locked||this.dirty||!selected?.enabled||!!selected?.binding_error;
+    this.q('use').disabled=this.locked||this.dirty||!selected?.enabled||!!selected?.binding_error||!!selected?.parameter_error;
     this.q('preview').disabled=this.locked||this.dirty||state.state!=='tracking'||!state.quality?.good;
     this.q('camera').disabled=!this.viewer.model;
     const plan=g.plan;

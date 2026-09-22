@@ -45,6 +45,21 @@ def checked_overrides(value):
     return copy.deepcopy(value)
 
 
+def object_gripper_defaults(object_id):
+    """Defaults for newly recorded grasps; execution always uses saved values."""
+    name = str(object_id or '').lower().replace('-', '_')
+    paper = 'paper_cup' in name or '纸杯' in name
+    mug = 'mug' in name or '马克杯' in name or 'makebei' in name
+    return {'force_target_raw': 10 if paper else 75, 'open_position': 200 if mug else 1000}
+
+
+def checked_bound_overrides(value):
+    result = checked_overrides(value)
+    if not {'force_target_raw', 'open_position'} <= set(result):
+        raise ValueError('夹法尚未绑定夹爪力度和抓取张开位置，请更新并保存夹法')
+    return result
+
+
 def point_limits(vertices):
     points = np.asarray(vertices, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
@@ -64,7 +79,7 @@ def binding_error(entry, model_hash, tool_response, handeye=None):
 
 
 def effective_config(config, entry):
-    result = copy.deepcopy(config);overrides = checked_overrides(entry.get('overrides', {}))
+    result = copy.deepcopy(config);overrides = checked_bound_overrides(entry.get('overrides', {}))
     if 'pregrasp_distance_m' in overrides:
         result['pregrasp_distance_m'] = overrides['pregrasp_distance_m']
     if 'open_position' in overrides:
@@ -73,6 +88,16 @@ def effective_config(config, entry):
         result['gripper']['force_target_raw'] = overrides['force_target_raw']
         result['gripper']['force_limit_raw'] = overrides['force_target_raw']
     return result
+
+
+def effective_parameters(config, entry):
+    result = effective_config(config, entry)
+    return {'gripper_parameters_source': 'grasp_profile', 'force_target_raw': result['gripper']['force_target_raw'],
+            'force_limit_raw': result['gripper']['force_limit_raw'], 'open_position': result['gripper']['open_position'],
+            'force_units': result['gripper'].get('force_units', 'native_units_not_newtons'),
+            'open_position_units': 'native_position_0_to_1000',
+            'pregrasp_distance_m': result.get('pregrasp_distance_m'),
+            'lift_height_m': result.get('lift_height_m'), 'arm_speed_percent': result.get('arm_speed_percent')}
 
 
 class GraspLibrary:
@@ -167,7 +192,9 @@ class GraspLibrary:
         if len(value['grasps']) >= MAX_GRASPS:
             raise ValueError(f'每个物品最多保存 {MAX_GRASPS} 套夹法，请先删除不需要的记录')
         entry = {**copy.deepcopy(record), 'id': uuid.uuid4().hex, 'name': time.strftime('示教夹法 %m-%d %H:%M:%S'),
-                 'enabled': True, 'priority': 0, 'overrides': {}, 'source': 'taught', 'tested_successfully': False}
+                 'enabled': True, 'priority': 0,
+                 'overrides': checked_bound_overrides({**object_gripper_defaults(object_id), **record.get('overrides', {})}),
+                 'source': 'taught', 'tested_successfully': False}
         value['grasps'].append(entry)
         value.update(selection_mode='manual', selected_id=entry['id'])
         self.write_object(object_id, value, before)

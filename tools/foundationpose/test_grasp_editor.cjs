@@ -64,7 +64,7 @@ panel.pointInputs=point.map((v,i)=>input('p'+i,(v*1000).toFixed(2)));panel.angle
 let result=plain(panel.formValue());assert.deepEqual(result.profile.object_R_tcp,plain(original),'metadata edits must not quantize/rebind the saved orientation');assert.deepEqual(result.profile.grasp_point_object_m,point);
 assert.deepEqual(result.overrides,{pregrasp_distance_m:.08,open_position:500,force_target_raw:20});
 panel.pointInputs[0].value='42';panel.angleInputs[0].value='90';result=plain(panel.formValue());assert.equal(result.profile.grasp_point_object_m[0],.042);assert(Math.abs(M.angles(result.profile.object_R_tcp)[0]-90)<1e-8);
-input('force','');assert(!Object.hasOwn(panel.formValue().overrides,'force_target_raw'));
+input('force','');assert.throws(()=>panel.formValue(),/夹爪力度/);input('force','20');
 panel.angleInputs[1].value='';assert.throws(()=>panel.formValue());
 console.log('Grasp editor checks passed: ray/surface/plane selection, arbitrary origin, ring rotation, view invariance, unit conversion and lossless metadata edits.');
 const unsaved=Object.create(Panel.prototype);let sent=false;

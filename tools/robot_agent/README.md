@@ -23,6 +23,14 @@
 
 `start_tracking` 的框为当前 640×360 图像的 `[x0,y0,x1,y1]`。先用 `select_object` 后等待 `get_status.tracking.model_ready`；自动检测只识别类别，必须结合图像确认实例，不能将另一只杯子当作目标模型。当前未实现多实例长期身份跟踪。
 
+## 夹法参数输出
+
+`get_grasp_profiles` 返回每条夹法的 `effective_parameters`：`force_target_raw`、`force_limit_raw`、`open_position`、`pregrasp_distance_m`、`lift_height_m`、`arm_speed_percent` 及单位。力度和开度来自该夹法的保存值，不从全局夹爪设置继承；它们不是当前硬件寄存器读回值。缺少绑定值时返回 `parameter_error`，执行拒绝该候选。
+
+`get_status` 的 `grasp.grasp_configuration` 和 `get_robot_state` 的 `controller.grasp_configuration` 提供当前物品的选择方式及各夹法参数摘要。Agent 输出不包含旧全局力度/开度字段。抓取任务的 `result.plan.effective_parameters` 记录实际选用的参数；历史任务保留当时的值。
+
+当前初始化规则：纸杯力度 10，其他物品 75；马克杯抓取张开位置 200，其他物品 1000。前端“记录夹法”表单可填写新夹法参数，保存不发送夹爪动作。MCP 抓取入参仍是物品编号和请求编号，不允许单次请求暗中覆盖夹法参数。
+
 ## 任务和失败语义
 
 每次预览或动作必须提供唯一 `request_id`（8–96 位字母、数字、下划线或连字符）。同编号同参数返回原任务，不重复执行；同编号不同参数拒绝。HTTP 断连、超时或损坏响应不自动重试；先以该编号 `get_task`，需要重发也必须使用同一个编号及原参数。

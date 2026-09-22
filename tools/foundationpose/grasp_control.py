@@ -21,7 +21,7 @@ from camera_checks import camera_binding, check_camera_observation
 from reorientation_control import ReorientationMixin
 from placement_control import PlacementMixin
 from grasp_profiles_control import GraspProfilesMixin
-from grasp_library import binding_error, revision
+from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
 
 class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
@@ -47,6 +47,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             except (ValueError, TypeError, KeyError, AttributeError):
                 reset_available = False
             return {**self.status, 'force_config': self.force_config(),
+                    'grasp_configuration': self.grasp_configuration(config),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
                     'reset_available': reset_available, 'zero_reset_available': True, 'held_object': self.held_snapshot(),
                     'placement_config': self.placement_configuration(), 'pregrasp_distance_m': config.get('pregrasp_distance_m')}
@@ -335,12 +336,19 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             profile.update(record['profile'])
         return profile
 
-    def teach(self, use_current_point=False):
+    def teach(self, use_current_point=False, gripper_parameters=None, expected_object_id=None):
         if type(use_current_point) is not bool:
             raise ValueError('记录位置选项必须为布尔值')
         observation = copy.deepcopy(self.tracker.grasp_observation())
         if not observation.get('object_id') or not observation.get('model_sha256'):
             raise ValueError('记录夹法需要已登记的物品模型')
+        if expected_object_id is not None and observation['object_id'] != expected_object_id:
+            raise ValueError('当前物品已变化，请重新确认记录夹法的物品和参数')
+        if gripper_parameters is None:
+            gripper_parameters = object_gripper_defaults(observation['object_id'])
+        if not isinstance(gripper_parameters, dict) or set(gripper_parameters) != {'force_target_raw', 'open_position'}:
+            raise ValueError('记录夹法必须提供力度和抓取张开位置')
+        gripper_parameters = checked_bound_overrides(gripper_parameters)
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有抓取任务正在处理')
@@ -348,7 +356,8 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             self.actuated = False
             self.cancelled.clear()
         directory = self.root / 'work/grasp'
-        report = {'at': time.time(), 'observation': observation, 'use_current_point': use_current_point, 'motion_sent': False}
+        report = {'at': time.time(), 'observation': observation, 'use_current_point': use_current_point,
+                  'gripper_parameters': gripper_parameters, 'motion_sent': False}
         try:
             directory.mkdir(parents=True, exist_ok=True)
             with (directory / 'robot.lock').open('a') as lock:
@@ -376,14 +385,17 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 plan_grasp(arm['pose'], base_object, profile, config)
                 self.check_cancel()
                 record = {'profile': profile, 'model_sha256': observation['model_sha256'],
+                          'overrides': gripper_parameters,
                           'tool_response': tool['controller_readback']['tool_response_raw'],
                           'flange_T_camera': handeye['flange_T_color_optical_camera'], 'recorded_at': time.time()}
                 entry = self.grasp_library().append_taught(observation['object_id'], record)
                 report['grasp_id'] = entry['id']
                 report['record'] = record
                 message = '已新增并选用当前物品的夹法，保存朝向' + ('及夹持位置' if use_current_point else '；夹持位置采用记录时的文件配置')
+                message += f"；夹爪力度 {gripper_parameters['force_target_raw']}，抓取张开位置 {gripper_parameters['open_position']}。"
                 self.update(state='taught', message=message, plan=None, grasp_library_changed_at=time.time())
-                return {'message': message, 'profile': profile, 'grasp_id':entry['id'], 'motion_sent': False}
+                return {'message': message, 'profile': profile, 'grasp_id':entry['id'],
+                        'gripper_parameters': gripper_parameters, 'motion_sent': False}
         except Exception as error:
             report['error'] = str(error)
             self.update(state='failed', message='记录夹法失败：' + str(error), error=str(error))
@@ -484,9 +496,6 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         try:
             with self.lock:
                 config = json.loads(self.config_path.read_text())
-                if self.force_override is not None:
-                    config['gripper']['force_target_raw'] = self.force_override
-                    config['gripper']['force_limit_raw'] = self.force_override
             report['effective_gripper_config'] = dict(config['gripper'])
             report['config_sha256'] = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
             if mode == 'execute':

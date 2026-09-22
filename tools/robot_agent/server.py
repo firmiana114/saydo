@@ -46,7 +46,7 @@ def create_server(backend):
 
     @server.tool(annotations=read)
     async def get_status() -> CallToolResult:
-        """Read tracking readiness, execution mode, held-object/version, placement configuration and active task ID. No hardware writes."""
+        """Read tracking readiness, execution mode, held-object/version, placement configuration and active task ID. grasp.grasp_configuration lists saved grasp choices and each one's effective force_target_raw/open_position plus motion settings. No hardware writes."""
         return await call('/api/agent/status')
 
     @server.tool(annotations=read)
@@ -71,7 +71,7 @@ def create_server(backend):
 
     @server.tool(annotations=read)
     async def get_grasp_profiles(object_id: str) -> CallToolResult:
-        """Read saved grasp candidates and manual/automatic selection for a model. Does not change the selected grasp."""
+        """Read saved grasp candidates, manual/automatic selection, and each grasp's effective_parameters: bound force_target_raw/force_limit_raw (native units, not newtons), open_position (0–1000), pregrasp distance/lift (metres) and speed (percent). These are saved execution settings, not hardware readback. Missing bindings appear as parameter_error; defaults are for NEW grasps only. Does not change any parameter or selection."""
         return await call('/api/agent/profiles?object_id='+quote(object_id, safe=''))
 
     @server.tool(annotations=write)
@@ -96,7 +96,7 @@ def create_server(backend):
 
     @server.tool(annotations=write)
     async def grasp(object_id: str, request_id: str) -> CallToolResult:
-        """Physically grasp and lift the currently tracked requested model using existing saved parameters and all backend checks. Requires user intent to grasp. Returns task ID; retries MUST keep the same request_id."""
+        """Physically grasp/lift the requested tracked model using the selected grasp's bound force and opening plus all backend checks. Read get_grasp_profiles for parameters; completed task result.plan.effective_parameters records the actual selection. Requires user intent. Returns task ID; retries MUST keep the same request_id."""
         return await action('grasp', request_id, {'object_id':object_id})
 
     @server.tool(annotations=read)

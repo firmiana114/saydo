@@ -718,6 +718,8 @@ def main():
                     self.reply(400, {'error':str(error)})
             elif path == '/grasp_editor.js':
                 self.reply(200, Path(__file__).with_name('grasp_editor.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/teach_grasp_panel.js':
+                self.reply(200, Path(__file__).with_name('teach_grasp_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path in ('/api/grasp/profiles', '/api/grasp/editor-model'):
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -807,7 +809,8 @@ def main():
                 elif self.path == '/api/grasp/profiles':
                     result = tracker.grasp.edit_grasp_profiles(value)
                 elif self.path == '/api/grasp/teach':
-                    result = tracker.grasp.teach(value.get('use_current_point', False))
+                    result = tracker.grasp.teach(value.get('use_current_point', False),
+                        gripper_parameters=value.get('gripper_parameters'), expected_object_id=value.get('object_id'))
                 elif self.path == '/api/gripper/status':
                     result = tracker.grasp.hardware_status()
                 elif self.path == '/api/gripper/open':
