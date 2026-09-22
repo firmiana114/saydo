@@ -56,7 +56,7 @@ class GraspProfilesMixin:
         if action not in ('save', 'duplicate', 'delete', 'select'):
             raise ValueError('未知的夹法操作')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能修改夹法库')
             directory = self.root/'work/grasp';directory.mkdir(parents=True, exist_ok=True)
             with (directory/'robot.lock').open('a') as lock:

@@ -73,7 +73,7 @@ class ReorientationMixin:
     def start_reorient(self, value, preview=False):
         rotation = checked_rotation(value.get('rotation'))
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有机械臂任务正在处理')
             held = copy.deepcopy(self.held_object)
             if held is None:

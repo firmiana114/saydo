@@ -55,7 +55,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         if type(value) is not int or not 0 <= value <= 1000:
             raise ValueError('抓取时夹爪打开位置必须为 0–1000 的整数原始值')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能更改抓取张开位置')
             directory = self.root / 'work/grasp'
             directory.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             raise ValueError('未知的机械臂复位目标')
         label = '机械臂复位(零位)' if target_kind == 'zero' else '机械臂复位(观测桌面)'
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有机械臂任务正在处理')
             if self.mode != 'execute':
                 raise ValueError('预览模式不发送机械臂复位指令')
@@ -209,7 +209,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
 
     def set_force_config(self, value):
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('抓取任务进行中，不能更改力度')
             if type(value) is not int or not 1 <= value <= 100:
                 raise ValueError('力度必须为 1–100 的整数原始值，不能按牛顿输入')
@@ -259,7 +259,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
 
     def open_gripper(self):
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('抓取任务进行中，不能打开夹爪')
             if self.mode != 'execute':
                 raise ValueError('预览模式不发送夹爪运动指令')
@@ -300,6 +300,9 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def update(self, **values):
         with self.lock:
             self.status.update(values)
+            observer = getattr(self, 'agent_observer', None)
+            if observer is not None:
+                observer(self.status)
 
     def hardware_status(self):
         config = json.loads(self.config_path.read_text())
@@ -339,7 +342,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         if not observation.get('object_id') or not observation.get('model_sha256'):
             raise ValueError('记录夹法需要已登记的物品模型')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有抓取任务正在处理')
             self.status.update(busy=True, state='teaching', message='正在读取当前夹法，不发送运动…', error=None)
             self.actuated = False
@@ -390,11 +393,13 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             records = self.grasp_library().object_directory(observation['object_id'])/'teach_commands';records.mkdir(parents=True,exist_ok=True)
             (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
 
-    def start(self, preview=False):
+    def start(self, preview=False, expected_object_id=None):
         # Take the tracker lock before the grasp lock (snapshot uses the same order).
         observation = copy.deepcopy(self.tracker.grasp_observation())
+        if expected_object_id is not None and observation.get('object_id') != expected_object_id:
+            raise ValueError('当前跟踪物品已变化，拒绝抓取其他物品')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有抓取任务正在处理')
             self.cancelled.clear()
             self.actuated = False

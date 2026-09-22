@@ -45,7 +45,7 @@ class PlacementMixin:
         if not isinstance(value, dict) or set(value) != {'region_xy_m', 'release_gap_m', 'revision'}:
             raise ValueError('请提交桌面矩形范围、释放间隙及当前配置版本')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能更改放置设置')
             directory = self.root / 'work/grasp';directory.mkdir(parents=True, exist_ok=True)
             temporary = None
@@ -82,7 +82,7 @@ class PlacementMixin:
         if not isinstance(value, dict):
             raise ValueError('放置请求必须为 JSON 对象')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有机械臂任务正在处理')
             held = copy.deepcopy(self.held_object)
             if held is None:

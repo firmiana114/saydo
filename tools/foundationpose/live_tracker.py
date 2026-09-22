@@ -26,6 +26,7 @@ from object_catalog import scan_objects, select_object, inferred_class
 from grasp_control import GraspController
 from live_events import EventLog
 from camera_checks import select_camera
+from agent_api import AgentAPI, AgentError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -640,6 +641,8 @@ def main():
     parser.add_argument('--resume-reorientation-report', type=Path,
                         help='One-use read-only recovery of the latest failed reorientation; operator must confirm the same grasp was never released or moved')
     parser.add_argument('--serial', help='Select a camera by serial; default: the only connected D435I')
+    parser.add_argument('--agent-token-file', type=Path,
+                        help='Enable authenticated Agent routes using an owner-only bearer token file')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
@@ -666,6 +669,7 @@ def main():
     except OSError:
         pass
     tracker = Tracker(args)
+    agent_api = AgentAPI(tracker, args.agent_token_file) if args.agent_token_file else None
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *unused):
@@ -686,6 +690,20 @@ def main():
 
         def do_GET(self):
             path = self.path.split('?')[0]
+            if path.startswith('/api/agent/'):
+                if agent_api is None:
+                    self.reply(404, {'error': {'code': 'AGENT_DISABLED', 'message': 'Agent 接口未启用'}})
+                elif not agent_api.authorized(self.headers.get('Authorization')):
+                    self.reply(401, {'error': {'code': 'UNAUTHORIZED', 'message': 'Agent 认证失败'}})
+                else:
+                    try:
+                        params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                        self.reply(200, agent_api.get(path, params))
+                    except AgentError as error:
+                        self.reply(400, {'error': error.payload})
+                    except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
+                        self.reply(400, {'error': {'code': 'READ_FAILED', 'message': str(error)}})
+                return
             if path == '/':
                 self.reply(200, Path(__file__).with_name('live_tracker.html').read_bytes(), 'text/html; charset=utf-8')
             elif path == '/reorientation_viewer.js':
@@ -745,6 +763,13 @@ def main():
                 self.reply(404, {'error': 'not found'})
 
         def do_POST(self):
+            if self.path.startswith('/api/agent/'):
+                if agent_api is None:
+                    self.reply(404, {'error': {'code': 'AGENT_DISABLED', 'message': 'Agent 接口未启用'}})
+                    return
+                if not agent_api.authorized(self.headers.get('Authorization')):
+                    self.reply(401, {'error': {'code': 'UNAUTHORIZED', 'message': 'Agent 认证失败'}})
+                    return
             origin = self.headers.get('Origin')
             if origin and origin != 'http://' + self.headers.get('Host', ''):
                 self.reply(403, {'error': 'origin mismatch'})
@@ -754,7 +779,9 @@ def main():
                 if not 0 <= size <= 4096:
                     raise ValueError('Invalid request size')
                 value = json.loads(self.rfile.read(size) or b'{}')
-                if self.path == '/api/freeze':
+                if self.path.startswith('/api/agent/'):
+                    result = agent_api.post(self.path, value)
+                elif self.path == '/api/freeze':
                     result = tracker.freeze()
                 elif self.path == '/api/object':
                     tracker.switch_object(value['id'])
@@ -815,6 +842,8 @@ def main():
                     self.reply(404, {'error': 'not found'})
                     return
                 self.reply(200, result)
+            except AgentError as error:
+                self.reply(400, {'error': error.payload})
             except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
                 self.reply(400, {'error': str(error)})
 
