@@ -24,6 +24,10 @@ class Store:
                     calls = [json.loads(r[0]) for r in db.execute('SELECT body FROM calls WHERE run_id=?', (key,))]
                     unknown = any(c['name'] in ('grasp', 'place', 'reset_arm', 'stop_robot') and c['state'] != 'completed' for c in calls)
                     run.update(state='interrupted', phase='进程重启；未自动恢复', outcome_unknown=unknown or run.get('outcome_unknown', False), updated_at=time.time())
+                    if run.get('timeline_version') == 1:
+                        events = run.setdefault('events', [])
+                        events.append({'event': 'final', 'seq': len(events)+1, 'at': time.time(),
+                            'state': 'interrupted', 'text': '进程重启，任务已中断；未自动恢复。'})
                     db.execute('UPDATE runs SET body=? WHERE id=?', (self.encode(run), key))
         self.path.chmod(0o600)
 
@@ -49,7 +53,8 @@ class Store:
 
     def create(self, instruction, model, mode):
         run = {'run_id': uuid.uuid4().hex, 'instruction': instruction, 'model': model, 'mode': mode,
-               'state': 'running', 'phase': '读取初始状态', 'created_at': time.time(), 'updated_at': time.time(), 'events': []}
+               'state': 'running', 'phase': '读取初始状态', 'created_at': time.time(), 'updated_at': time.time(),
+               'timeline_version': 1, 'events': []}
         with self.connect() as db:
             db.execute('INSERT INTO runs VALUES (?,?)', (run['run_id'], self.encode(run)))
         return run
@@ -69,7 +74,9 @@ class Store:
 
     def recent(self):
         with self.connect() as db:
-            return [json.loads(row[0]) for row in db.execute('SELECT body FROM runs ORDER BY rowid DESC LIMIT 20')]
+            runs = [json.loads(row[0]) for row in db.execute('SELECT body FROM runs ORDER BY rowid DESC LIMIT 20')]
+        # The history list needs summaries only; fetch a selected run's full timeline separately.
+        return [{key: value for key, value in run.items() if key != 'events'} for run in runs]
 
     def prepare(self, run_id, call_id, name, args, step):
         record = {'call_id': call_id, 'name': name, 'arguments': args, 'request_id': f'run-{run_id}-step-{step:03}',

@@ -12,7 +12,10 @@ from .robot_adapter import Blocked
 
 
 def call(name, args=None, ident='call-1'):
-    return {'status': 'completed', 'output': [{'type': 'function_call', 'name': name, 'call_id': ident, 'arguments': json.dumps(args or {})}]}
+    args = dict(args or {})
+    if name != 'finish_task':
+        args.setdefault('progress_message', '我先确认当前情况，再继续下一步。')
+    return {'status': 'completed', 'output': [{'type': 'function_call', 'name': name, 'call_id': ident, 'arguments': json.dumps(args)}]}
 
 
 def end(outcome='answered', evidence=None):
@@ -296,6 +299,65 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'blocked')
         self.assertEqual(len(self.adapter.sent), 1)
+
+    async def test_timeline_commentary_timing_and_full_summary_are_ordered(self):
+        first=call('get_status', {'progress_message':'我先读取状态，确认下一步。'}, 'c')
+        first['output'].insert(0, {'type':'reasoning','encrypted_content':'PRIVATE_REASONING'})
+        final=end('answered',['c']);args=json.loads(final['output'][0]['arguments']);args['summary']='完整总结\n'+'结果。'*300
+        final['output'][0]['arguments']=json.dumps(args)
+        result,_=await self.execute(FakeLLM(first,final))
+        events=result['events'];kinds=[e['event'] for e in events]
+        self.assertEqual(kinds[-1],'final')
+        self.assertEqual([e['seq'] for e in events],list(range(1,len(events)+1)))
+        self.assertTrue(all('at' in e for e in events))
+        self.assertLess(kinds.index('model_message'),kinds.index('tool_started'))
+        self.assertLess(kinds.index('tool_started'),kinds.index('tool_finished'))
+        timings=[e for e in events if e['event']=='llm']
+        self.assertEqual(len(timings),2)
+        self.assertTrue(all(e['seconds']>=0 and e['outcome']=='completed' for e in timings))
+        self.assertEqual(events[-1]['text'],args['summary'])
+        self.assertNotIn('PRIVATE_REASONING',json.dumps(events))
+        self.assertNotIn('progress_message',self.adapter.sent[0][1])
+
+    async def test_fallback_attempts_have_separate_timing_before_next_call(self):
+        result,_=await self.execute(FakeLLM(ModelUnavailable('no'),call('get_status'),end('answered',['call-1'])))
+        events=result['events'];timings=[e for e in events if e['event']=='llm']
+        self.assertEqual([e['invocation'] for e in timings],[1,2,3])
+        self.assertEqual([e['outcome'] for e in timings],['unavailable','completed','completed'])
+        first_end=next(e['seq'] for e in timings if e['invocation']==1)
+        next_start=next(e['seq'] for e in events if e['event']=='llm_started' and e['invocation']==2)
+        self.assertLess(first_end,next_start)
+
+    async def test_failed_llm_is_timed_and_final_is_last(self):
+        result,_=await self.execute(FakeLLM(LLMError('unavailable')))
+        timing=next(e for e in result['events'] if e['event']=='llm')
+        self.assertEqual(timing['outcome'],'failed');self.assertGreaterEqual(timing['seconds'],0)
+        self.assertEqual(result['events'][-1]['event'],'final')
+
+    async def test_cancelled_llm_is_timed_without_late_commentary(self):
+        llm=FakeLLM('wait');runner=self.make(llm);ident=runner.submit('观察')
+        await llm.started.wait();await runner.cancel(ident);await runner.worker
+        result=self.store.get(ident)
+        timing=next(e for e in result['events'] if e['event']=='llm')
+        self.assertEqual(timing['outcome'],'cancelled')
+        self.assertFalse(any(e['event']=='model_message' for e in result['events']))
+        self.assertEqual(result['events'][-1]['event'],'final')
+
+    async def test_failed_tool_is_logged_before_final(self):
+        self.adapter.fail=Blocked('设备不就绪')
+        result,_=await self.execute(FakeLLM(call('grasp',{'object_id':'b'})))
+        self.assertEqual([e['event'] for e in result['events']][-2:],['tool_finished','final'])
+        self.assertEqual(result['events'][-2]['state'],'blocked')
+
+    async def test_native_commentary_takes_precedence_and_summary_appears_once(self):
+        first=call('get_status',{'progress_message':'备用过程说明。'},'c')
+        first['output'].insert(0,{'type':'message','content':[{'type':'output_text','text':'我先读取当前状态。'}]})
+        final=end('answered',['c'])
+        final['output'].insert(0,{'type':'message','content':[{'type':'output_text','text':'不重复展示这份未经证据校验的结束说明。'}]})
+        result,_=await self.execute(FakeLLM(first,final))
+        messages=[e['text'] for e in result['events'] if e['event']=='model_message']
+        self.assertEqual(messages,['我先读取当前状态。'])
+        self.assertEqual(sum(e['event']=='final' for e in result['events']),1)
 
 
 class StoreTests(unittest.TestCase):

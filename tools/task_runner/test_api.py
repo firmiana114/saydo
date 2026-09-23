@@ -52,9 +52,16 @@ class APITests(unittest.TestCase):
                 break
             time.sleep(.01)
         self.assertEqual(run['state'], 'succeeded')
+        self.assertEqual(run['events'][-1]['event'], 'final')
+        self.assertEqual(len([e for e in run['events'] if e['event']=='llm']), 2)
+        _, listing = self.request('GET', '/api/task-runs')
+        self.assertNotIn('events', json.loads(listing)['runs'][0])
         status, html = self.request('GET', '/')
         self.assertEqual(status, 200)
         self.assertNotIn(b'private-test-key', html)
+        self.assertIn(b'id="timeline"', html)
+        _, script = self.request('GET', '/app.js')
+        self.assertIn(b'root.SaydoTimeline=', script)
         self.assertEqual(self.request('GET', '/.env')[0], 404)
 
     def test_cross_site_and_rebinding_rejected(self):

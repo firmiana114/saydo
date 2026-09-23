@@ -29,15 +29,24 @@ class Runner:
             raise ValueError('任务指令长度应为1–4000字符')
         run = self.store.create(instruction.strip(), self.config.model, self.config.mode)
         self.active = run
+        self.emit(run, 'phase', text='任务已接收，正在读取初始状态。')
         self.cancelled = asyncio.Event()
         self.adapter = self.adapter_factory()
         self.worker = asyncio.create_task(self.run(run))
         return run['run_id']
 
-    def progress(self, phase):
-        if self.active:
+    def emit(self, run, event, **values):
+        events = run.setdefault('events', [])
+        events.append({'event': event, 'seq': len(events)+1, 'at': time.time(), **values})
+        self.store.save(run)
+
+    def progress(self, phase, record_event=True):
+        if self.active and self.active['phase'] != phase:
             self.active['phase'] = phase
-            self.store.save(self.active)
+            if record_event:
+                self.emit(self.active, 'phase', text=phase)
+            else:
+                self.store.save(self.active)
 
     def finish(self, run, state, summary, **extra):
         phase = {'succeeded': '任务已结束', 'blocked': '需要处理', 'failed': '执行失败', 'cancelled': '已取消'}[state]
@@ -71,6 +80,8 @@ class Runner:
         self.stopping = True
         run = self.store.create('操作员请求停止机械臂', self.config.model, self.config.mode)
         record = self.store.prepare(run['run_id'], 'operator-stop', 'stop_robot', {}, 0)
+        before = time.monotonic()
+        self.emit(run, 'tool_started', name='stop_robot', call_id='operator-stop')
         try:
             async with self.stop_lock:
                 result = await self.adapter_factory().stop()
@@ -83,7 +94,10 @@ class Runner:
             self.finish(run, 'blocked', '停止未确认，需现场核对', outcome_unknown=True)
             raise Blocked('停止未确认，需现场核对', uncertain=True)
         finally:
+            record['seconds'] = round(time.monotonic()-before, 3)
             self.store.save_call(run['run_id'], record)
+            self.emit(run, 'tool_finished', name='stop_robot', call_id='operator-stop', state=record['state'], seconds=record['seconds'])
+            self.emit(run, 'final', text=run['summary'], state=run['state'])
             self.stopping = False
 
     def check(self):
@@ -91,11 +105,26 @@ class Runner:
             raise Cancelled()
 
     async def model_response(self, history, run, turn):
+        try:
+            return await self.model_call(history, run, turn)
+        except ModelUnavailable:
+            if not self.config.fallback_model or turn != 0 or run['model'] != self.config.model or run['model'] == self.config.fallback_model:
+                raise
+            self.emit(run, 'model_fallback', **{'from': run['model'], 'to': self.config.fallback_model})
+            run['model'] = self.config.fallback_model
+            return await self.model_call(history, run, turn)
+
+    async def model_call(self, history, run, turn):
         self.check()
         tools = schemas(self.config.mode)
         if run.get('finalizing'):
             tools = [tool for tool in tools if tool['name'] == 'finish_task']
-        pending = asyncio.create_task(self.llm.generate(history, tools, run['model'], self.prompt+'\n当前模式：'+self.config.mode))
+        model = run['model']
+        invocation = 1 + sum(e['event'] == 'llm_started' for e in run['events'])
+        self.emit(run, 'llm_started', invocation=invocation, turn=turn+1, model=model)
+        before = time.monotonic()
+        outcome = 'failed'
+        pending = asyncio.create_task(self.llm.generate(history, tools, model, self.prompt+'\n当前模式：'+self.config.mode))
         cancel = asyncio.create_task(self.cancelled.wait())
         try:
             done, _ = await asyncio.wait([pending, cancel], return_when=asyncio.FIRST_COMPLETED)
@@ -103,20 +132,23 @@ class Runner:
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
                 raise Cancelled()
-            return await pending
+            response = await pending
+            outcome = 'completed'
+            return response
         except ModelUnavailable:
-            if not self.config.fallback_model or turn != 0 or run['model'] != self.config.model or run['model'] == self.config.fallback_model:
-                raise
-            run['events'].append({'event': 'model_fallback', 'from': run['model'], 'to': self.config.fallback_model})
-            run['model'] = self.config.fallback_model
-            self.store.save(run)
-            return await self.model_response(history, run, turn+1)
+            outcome = 'unavailable'
+            raise
+        except (Cancelled, asyncio.CancelledError):
+            outcome = 'cancelled'
+            raise
         finally:
             if not pending.done():
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
             cancel.cancel()
             await asyncio.gather(cancel, return_exceptions=True)
+            self.emit(run, 'llm', invocation=invocation, turn=turn+1, model=model,
+                seconds=round(time.monotonic()-before, 3), outcome=outcome)
 
     @staticmethod
     def append_result(history, call_id, name, result):
@@ -132,6 +164,7 @@ class Runner:
     async def run(self, run):
         started = time.monotonic()
         record = None
+        tool_started = None
         try:
             async with asyncio.timeout(self.config.run_timeout):
                 initial = await self.adapter.initial()
@@ -145,10 +178,8 @@ class Runner:
                     self.check()
                     if len(json.dumps(history)) > 2*1024*1024:
                         raise Blocked('本次任务上下文已达到上限')
-                    self.progress(f'模型判断中 · 第 {turn+1} 轮')
-                    before = time.monotonic()
+                    self.progress(f'模型判断中 · 第 {turn+1} 轮', record_event=False)
                     response = await self.model_response(history, run, turn)
-                    run['events'].append({'event': 'llm', 'turn': turn+1, 'seconds': round(time.monotonic()-before, 3), 'model': run['model']})
                     self.check()
                     output = response['output']
                     calls = [item for item in output if item.get('type') == 'function_call']
@@ -157,16 +188,24 @@ class Runner:
                     history.extend(output)
                     call = calls[0]
                     name, args = validate(call, self.config.mode)
+                    progress_message = args.pop('progress_message', None)
                     if run.get('finalizing') and name != 'finish_task':
                         raise Blocked('收尾修正期间不允许新的工具或动作')
                     if call['call_id'] in results:
                         raise Blocked('模型重复使用工具调用编号')
+                    messages = [part.get('text', '') for item in output if item.get('type') == 'message'
+                        for part in item.get('content', []) if part.get('type') == 'output_text'] if name != 'finish_task' else []
+                    if progress_message and not any(message.strip() for message in messages):
+                        messages.append(progress_message)
+                    for message in messages:
+                        if message.strip():
+                            self.emit(run, 'model_message', text=message, call_id=call['call_id'])
                     if name == 'finish_task':
                         evidence = set(args['evidence_call_ids'])
                         invalid_evidence = not evidence <= results.keys() or (args['outcome'] == 'succeeded' and not set(motions) <= evidence)
                         if invalid_evidence and results and not run.get('finalizing'):
                             run['finalizing'] = True
-                            run['events'].append({'event': 'finish_evidence_correction'})
+                            self.emit(run, 'finish_evidence_correction', text='正在核对并修正总结引用的执行证据。')
                             self.append_result(history, call['call_id'], name, {'error': '引用了错误的证据编号。只修正 finish_task，不得再执行动作。',
                                 'available_evidence_call_ids': list(results), 'required_motion_evidence_call_ids': list(motions)})
                             continue
@@ -190,10 +229,11 @@ class Runner:
                     if name in MOTIONS and any(m['name'] == name and m['arguments'] == args for m in motions.values()):
                         raise Blocked('本次任务已成功执行相同动作，拒绝重复执行')
                     record = self.store.prepare(run['run_id'], call['call_id'], name, args, turn+1)
-                    self.progress('执行工具：'+name)
-                    before = time.monotonic()
+                    self.progress('执行工具：'+name, record_event=False)
+                    tool_started = time.monotonic()
                     record['state'] = 'dispatching'
                     self.store.save_call(run['run_id'], record)
+                    self.emit(run, 'tool_started', name=name, call_id=call['call_id'])
                     if name == 'stop_robot':
                         result = await self.adapter.stop()
                     else:
@@ -215,8 +255,9 @@ class Runner:
                         held = result.get('task', {}).get('result', {}).get('held_object')
                         motions[call['call_id']] = {'name': name, 'task_id': record['request_id'], 'arguments': args,
                             'hold_id': held.get('hold_id') if held else None}
-                    record.update(state='unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-before, 3))
+                    record.update(state='unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-tool_started, 3))
                     self.store.save_call(run['run_id'], record)
+                    self.emit(run, 'tool_finished', name=name, call_id=call['call_id'], state=record['state'], seconds=record['seconds'])
                     record = None
                 raise Blocked('达到最大模型调用次数')
         except Cancelled:
@@ -238,8 +279,10 @@ class Runner:
             self.finish(run, 'blocked' if isinstance(error, Blocked) or uncertain else 'failed', message, outcome_unknown=uncertain)
         finally:
             if record:
-                record.update(state=run['state'], outcome_unknown=run.get('outcome_unknown', False))
+                record.update(state=run['state'], outcome_unknown=run.get('outcome_unknown', False),
+                    seconds=round(time.monotonic()-tool_started, 3) if tool_started is not None else 0)
                 self.store.save_call(run['run_id'], record)
+                self.emit(run, 'tool_finished', name=record['name'], call_id=record['call_id'], state=record['state'], seconds=record['seconds'])
             run['elapsed_s'] = round(time.monotonic()-started, 3)
-            self.store.save(run)
+            self.emit(run, 'final', text=run.get('summary', run['phase']), state=run['state'])
             self.active = None

@@ -35,6 +35,10 @@ DEFINITIONS = {
 
 def schema(name):
     description, properties = DEFINITIONS[name]
+    properties = dict(properties)
+    if name != 'finish_task':
+        properties['progress_message'] = {'type': 'string', 'minLength': 1, 'maxLength': 600,
+            'description': '面向用户的一两句过程说明：已确认的进展，以及本次准备做什么。只说明行动，不展开内部推理；未执行的动作不能说已完成。'}
     return {'type': 'function', 'name': name, 'description': description, 'strict': True,
         'parameters': {'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}}
 

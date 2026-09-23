@@ -42,9 +42,12 @@ def make_handler(runner, store, loop, host, port):
                 return self.reply(403, {'error': '不允许的 Host'})
             try:
                 if self.path in ('/', '/app.js'):
-                    name = 'index.html' if self.path == '/' else 'app.js'
+                    name = 'index.html' if self.path == '/' else self.path.lstrip('/')
                     mime = 'text/html; charset=utf-8' if name.endswith('html') else 'application/javascript; charset=utf-8'
-                    return self.reply(200, Path(__file__).with_name(name).read_bytes(), mime)
+                    body = Path(__file__).with_name(name).read_bytes()
+                    if name == 'app.js':
+                        body = Path(__file__).with_name('timeline.js').read_bytes()+b'\n'+body
+                    return self.reply(200, body, mime)
                 if self.path == '/api/task-runs':
                     return self.reply(200, {'runs': store.recent(), 'mode': runner.config.mode,
                         'model': runner.config.model, 'fallback_model': runner.config.fallback_model,
