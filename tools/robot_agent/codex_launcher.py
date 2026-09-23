@@ -4,6 +4,7 @@ import os
 import json
 from pathlib import Path
 import sys
+import tomllib
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,9 +13,9 @@ sys.path.insert(0, str(ROOT))
 from tools.task_runner.config import Config
 
 
-def disabled_skills(roots):
+def disabled_skills(roots, known_paths=()):
     """Disable discovered skills without reading their instruction contents."""
-    folders = set()
+    folders = {str(Path(path).absolute()) for path in known_paths}
     visited = set()
     for root in roots:
         for directory, children, files in os.walk(root, followlinks=True):
@@ -43,6 +44,7 @@ def main():
         agent_home = Path.home() / '.local/share/saydo-codex/codex-home'
         if not (agent_home / 'config.toml').is_file():
             raise ValueError('缺少任务专用 Codex 配置')
+        agent_config = tomllib.loads((agent_home / 'config.toml').read_text())
         env['CODEX_HOME'] = str(agent_home)
         env['SAYDO_CODEX_API_KEY'] = config.api_key
         if config.llm_proxy:
@@ -65,7 +67,9 @@ def main():
         for parent in (workspace, *workspace.parents):
             skill_roots.extend([parent / '.agents/skills', parent / '.codex/skills'])
         args = [str(binary), '-c', 'model_providers.trendengine.base_url=' + json.dumps(base_url),
-                '-c', disabled_skills(skill_roots), *sys.argv[1:]]
+                '-c', disabled_skills(skill_roots,
+                    (row['path'] for row in agent_config.get('skills', {}).get('config', []))),
+                *sys.argv[1:]]
         os.execve(binary, args, env)
     except (OSError, ValueError):
         # Never print parser errors that could contain credential file contents.

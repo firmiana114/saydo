@@ -7,6 +7,12 @@ from codex_launcher import disabled_skills
 
 
 class SkillIsolationTests(unittest.TestCase):
+    def test_keep_disabled_bundled_skills_before_first_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / 'skills/.system/skill-creator'
+            rows = tomllib.loads(disabled_skills([], [missing]))['skills']['config']
+            self.assertEqual(rows, [{'path': str(missing), 'enabled': False}])
+
     def test_new_skills_are_disabled_on_the_next_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
