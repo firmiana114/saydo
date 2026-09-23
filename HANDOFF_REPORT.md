@@ -37,7 +37,12 @@
 
 - 模型选择与滚动区域验收：72项执行器测试及3组前端检查通过；浏览器选择Sol/low后刷新仍保留，真实只读任务两轮均按Sol/low发起并成功，未调用运动工具。生产第5页确认最近任务区240px内承载817px内容、进度区460px内承载3650px内容，均为独立滚动。仅重启任务执行器，8089视觉服务未重启；主服务保持execute、默认Terra/medium。记录为 `work/task_runner_validation/model_picker/validation.json`。
 
-## 2026-09-23 Codex 清理重装，MCP 独立保留
+## 2026-09-23 Codex 恢复，与任务执行器并存
+
+- MSI 保留官方 CLI 0.156.0，恢复自定义 Responses 提供方，按用户指定默认使用 `gpt-5.6-sol / medium`。`~/.local/bin/codex` 通过 `tools/robot_agent/codex_launcher.py` 读取项目 `.env` 的密钥、地址和代理后启动官方二进制；不复制密钥、不修改执行器配置。启动方式见 `tools/robot_agent/README.md`。
+- 保留原18个MCP工具及writes审批设置，标准项目指令继续加载。模型密钥通过专用环境变量传递，子shell自动过滤密钥变量；不恢复已删除的旧会话和隔离目录。无需重启8089或8091服务。本轮验证仅允许只读MCP工具，不下发运动。
+
+## 2026-09-23 Codex 清理重装，MCP 独立保留（历史记录）
 
 - 按用户要求删除 MSI 旧 Codex CLI、专用 `saydo-agent`/`codex` 包装脚本、独立运行目录、旧 API 密钥、模型/权限/Skills 设置、会话及临时目录。检查时桌面端、VS Code Codex 扩展和对应设置已不存在；未改动本机 Mac 的 Codex 环境。下文旧 Agent 配置及验证记录仅代表当时状态。
 - MSI 从官方 npm 平台包重新安装 Codex CLI 0.156.0，下载后核对 SHA-512 完整性；入口为 `~/.local/bin/codex`，直接链接版本目录中的官方可执行文件。`codex login status` 返回未登录，未恢复模型 API Key 或原模型、推理强度、全局审批、指令隔离设置。

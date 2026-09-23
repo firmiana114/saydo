@@ -76,7 +76,11 @@ python tools/foundationpose/live_tracker.py --host 127.0.0.1 --port 8089 --auto-
 
 启动、自动识别和连接 MCP 不发送机械臂动作。`--grasp-mode preview` 可关闭抓取/姿态调整/放置/复位执行，预览和观察仍可用；停止工具仍可发停止命令。不要在活动任务或需保留夹持记录时重启后端。
 
-启动 `codex` 后载入工具；客户端登录需另行完成。旧的 `saydo-agent` 包装入口已移除。安装器仅为该 MCP 设置 `writes` 工具审批策略；停止工具可直接调用，避免在停止请求上等待额外审批。未开放改标定、改运动参数、任意关节运动、清除错误或重启服务的 Agent 工具。
+MSI 已恢复 `codex` 入口，默认 `gpt-5.6-sol / medium`。入口链接到本目录 `codex_launcher.py`，再启动 `~/.local/lib/codex/0.156.0/bin/codex` 官方 CLI；从项目权限600的 `.env` 读取模型密钥、Responses地址和模型代理，仅在当前进程环境传递密钥，不写入仓库、命令参数或 `auth.json`。自定义提供方使用 API Key，无需 ChatGPT 登录。CLI 升级时需同步更新启动脚本中的官方二进制路径。
+
+在 MSI 运行 `cd /home/pc/saydo && codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。`~/.codex/config.toml` 保存提供方、默认模型及原18个MCP工具登记；标准项目指令继续加载。SayDo网页执行器仍独立运行，模型选择及execute模式不受影响。两者共用后端设备锁，不应同时提交设备动作。
+
+安装器仅为该 MCP 设置 `writes` 工具审批策略；停止工具可直接调用，避免在停止请求上等待额外审批。未开放改标定、改运动参数、任意关节运动、清除错误或重启服务的 Agent 工具。`saydo-agent` 旧入口仍不使用。
 
 认证只针对新增的 `/api/agent/` 路由；原网页接口沿用既有部署方式和访问边界，本次没有将其改造成新的认证体系。
 
