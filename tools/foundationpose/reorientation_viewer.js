@@ -288,7 +288,7 @@ class ReorientationPanel{
   async request(preview){
     if(this.pending||this.disabled||!this.held||!this.anglesValid())return;
     this.pending=true;this.preview.disabled=true;this.execute.disabled=true;
-    try{await post(preview?'/api/reorient/preview':'/api/reorient',{object_id:this.held.object_id,hold_id:this.held.hold_id,model_sha256:this.viewer.model.model_sha256,rotation:this.viewer.rotation,position_mode:this.positionMode.value});this.poseDirty=false;this.feedback.textContent='正在按所选位置模式检查目标姿态与离桌条件…';this.planShown=null;}
+    try{await post(preview?'/api/reorient/preview':'/api/reorient',{object_id:this.held.object_id,hold_id:this.held.hold_id,orientation_version:this.held.orientation_version,model_sha256:this.viewer.model.model_sha256,rotation:this.viewer.rotation,position_mode:this.positionMode.value});this.poseDirty=false;this.feedback.textContent='正在按所选位置模式检查目标姿态与离桌条件…';this.planShown=null;}
     catch(e){this.feedback.textContent=e.message;}
     finally{this.pending=false;}
   }

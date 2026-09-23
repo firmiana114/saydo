@@ -20,6 +20,7 @@ import numpy as np
 
 from grasp_robot import RobotClient
 from object_catalog import scan_objects
+from reorientation_geometry import rotation_from_rpy_deg, checked_position_request
 
 
 class AgentError(ValueError):
@@ -94,6 +95,8 @@ class AgentAPI:
             task = self.get_task(self.active)
             terminal = not status.get('busy', False)
             result = {k: status.get(k) for k in ['state', 'busy', 'operation', 'message', 'error', 'plan', 'placement_plan', 'gripper_contact', 'reset_target_kind']}
+            if task['operation'] in ('reorient', 'preview_reorient'):
+                result['reorientation_plan'] = status.get('reorientation_plan')
             result['held_object'] = self.grasp.held_snapshot()
             task.update(state=status.get('state', 'running'), terminal=terminal,
                         updated_at=time.time(), result=json_value(result),
@@ -190,6 +193,8 @@ class AgentAPI:
         schemas = {'grasp': {'object_id'}, 'preview_grasp': {'object_id'},
                    'place': {'hold_id', 'orientation_version', 'placement_revision'},
                    'preview_place': {'hold_id', 'orientation_version', 'placement_revision'},
+                   'reorient': {'object_id', 'hold_id', 'orientation_version', 'target_rpy_deg', 'position_mode'},
+                   'preview_reorient': {'object_id', 'hold_id', 'orientation_version', 'target_rpy_deg', 'position_mode'},
                    'reset': {'target'}}
         if operation not in schemas or not isinstance(args, dict) or set(args) != schemas[operation]:
             raise AgentError('INVALID_ARGUMENTS', '未知的动作或参数。')
@@ -199,6 +204,15 @@ class AgentAPI:
                 or not args['hold_id'] or type(args['orientation_version']) is not int
                 or args['orientation_version'] < 0 or not isinstance(args['placement_revision'], str)):
             raise AgentError('INVALID_ARGUMENTS', '夹持编号、朝向版本或放置版本无效。')
+        if operation in ('reorient', 'preview_reorient'):
+            if (any(not isinstance(args[k], str) or not args[k].strip() for k in ('object_id', 'hold_id'))
+                    or type(args['orientation_version']) is not int or args['orientation_version'] < 0):
+                raise AgentError('INVALID_ARGUMENTS', '物品、夹持编号及朝向版本无效。')
+            try:
+                rotation = rotation_from_rpy_deg(args['target_rpy_deg']).tolist()
+                checked_position_request(args['position_mode'])
+            except ValueError as error:
+                raise AgentError('INVALID_ARGUMENTS', str(error)) from error
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True, allow_nan=False).encode()).hexdigest()
         with self.tracker.lock, self.grasp.lock:
             with closing(self.connect()) as db:
@@ -211,7 +225,7 @@ class AgentAPI:
                 raise AgentError('TASK_STATE_UNCERTAIN', '先处理任务记录故障，再开始动作。')
             if self.grasp.status['busy'] or self.grasp.status.get('stopping') or self.active:
                 raise AgentError('BUSY', '已有任务正在处理或停止状态尚未确认。')
-            if operation in ('grasp', 'place', 'reset') and self.grasp.mode != 'execute':
+            if operation in ('grasp', 'place', 'reset', 'reorient') and self.grasp.mode != 'execute':
                 raise AgentError('EXECUTION_DISABLED', '服务处于预览模式，执行工具不可发送动作。')
             task = {'task_id': task_id, 'operation': operation, 'arguments': args, 'session_id': self.session_id,
                     'state': 'starting', 'terminal': False, 'created_at': time.time(), 'updated_at': time.time()}
@@ -223,6 +237,14 @@ class AgentAPI:
                     self.grasp.start(preview=operation == 'preview_grasp', expected_object_id=args['object_id'])
                 elif operation == 'reset':
                     self.grasp.start_reset(args['target'])
+                elif operation in ('reorient', 'preview_reorient'):
+                    held = self.grasp.held_snapshot()
+                    if (held is None or args['hold_id'] != held['hold_id'] or args['object_id'] != held['object_id']
+                            or args['orientation_version'] != held['orientation_version']):
+                        raise AgentError('HOLD_CHANGED', '物品、夹持关系或朝向已变化，先读取状态并重新规划。')
+                    value = {k: held[k] for k in ['object_id', 'hold_id', 'model_sha256', 'orientation_version']}
+                    value.update(rotation=rotation, position_mode=args['position_mode'])
+                    self.grasp.start_reorient(value, preview=operation == 'preview_reorient')
                 else:
                     held = self.grasp.held_snapshot()
                     if held is None or args['hold_id'] != held['hold_id'] or args['orientation_version'] != held['orientation_version']:

@@ -1,5 +1,6 @@
 """Reuse Saydo's authenticated HTTP client; own the fixed state polling."""
 import asyncio
+import math
 import time
 from urllib.parse import quote
 from tools.robot_agent.client import RobotBackend, BackendError
@@ -102,6 +103,10 @@ class RobotAdapter:
             raise ValueError('不支持的工具')
         state = await self.status()
         self.check_idle(state)
+        if name in ('preview_reorient', 'reorient'):
+            held = state.get('grasp', {}).get('held_object')
+            if not held or any(held.get(k) != args[k] for k in ('object_id', 'hold_id', 'orientation_version')):
+                raise Blocked('物品、夹持关系或朝向版本已变化；先读取状态并重新规划')
         if name in MOTIONS:
             if self.config.mode != 'execute' or state['grasp'].get('mode') != 'execute':
                 raise Blocked('当前模式不允许实际动作')
@@ -134,7 +139,7 @@ class RobotAdapter:
         self.motion_inflight = False
         if result.get('state') == 'interrupted' or result.get('outcome_unknown'):
             raise Blocked('后端报告结果未知，需人工核对', uncertain=True)
-        expected = 'completed' if name in MOTIONS else ('preview' if name == 'preview_grasp' else 'placement_preview')
+        expected = 'completed' if name in MOTIONS else {'preview_grasp':'preview', 'preview_place':'placement_preview', 'preview_reorient':'reorient_preview'}[name]
         if result.get('state') != expected:
             raise Blocked('后端任务未成功：'+str(result.get('state')))
         latest = await self.status()
@@ -145,8 +150,43 @@ class RobotAdapter:
                 raise Blocked('抓取结束但预期夹持关系未确认', uncertain=True)
         if name == 'place' and (result.get('result', {}).get('held_object') is not None or latest['grasp'].get('held_object') is not None):
             raise Blocked('放置结束但夹持记录未清除', uncertain=True)
+        if name in ('preview_reorient', 'reorient'):
+            self.verify_reorientation(name, args, result, latest)
         return {'task': result, 'status': latest, 'verified': name in MOTIONS,
                 'verification_scope': 'controller_feedback_only; not independent contact/slip/visual verification'}
+
+    @staticmethod
+    def verify_reorientation(name, args, task, status):
+        expected = args['orientation_version'] + (name == 'reorient')
+        held = task.get('result', {}).get('held_object')
+        current = status.get('grasp', {}).get('held_object')
+        for value in (held, current):
+            if (not value or value.get('hold_id') != args['hold_id'] or value.get('object_id') != args['object_id']
+                    or type(value.get('orientation_version')) is not int or value['orientation_version'] != expected):
+                raise Blocked('姿态任务结束但夹持身份或朝向版本未确认', uncertain=name == 'reorient')
+        if name != 'reorient':
+            return
+        try:
+            plan = task['result']['reorientation_plan']
+            target = [row[:3] for row in plan['base_T_object_target'][:3]]
+            tolerance = plan['orientation_tolerance_deg']
+            if type(tolerance) not in (int, float) or not math.isfinite(tolerance) or not .1 <= tolerance <= 3:
+                raise ValueError('invalid tolerance')
+            for matrix in (target, held['current_object_rotation'], current['current_object_rotation']):
+                if (len(matrix) != 3 or any(len(row) != 3 for row in matrix)
+                        or any(type(v) not in (int, float) or not math.isfinite(v) for row in matrix for v in row)):
+                    raise ValueError('invalid rotation')
+                if any(abs(sum(matrix[i][k]*matrix[j][k] for k in range(3))-(i==j)) > 1e-3 for i in range(3) for j in range(3)):
+                    raise ValueError('non-orthogonal rotation')
+                determinant = sum(matrix[0][i]*(matrix[1][(i+1)%3]*matrix[2][(i+2)%3]-matrix[1][(i+2)%3]*matrix[2][(i+1)%3]) for i in range(3))
+                if abs(determinant-1) > 1e-3:
+                    raise ValueError('improper rotation')
+            for actual in (held['current_object_rotation'], current['current_object_rotation']):
+                cosine = (sum(actual[i][j]*target[i][j] for i in range(3) for j in range(3))-1)/2
+                if math.degrees(math.acos(max(-1., min(1., cosine)))) > tolerance+1e-6:
+                    raise ValueError('target orientation not reached')
+        except (KeyError, TypeError, ValueError, IndexError) as error:
+            raise Blocked('姿态任务的目标朝向与实际反馈未核验通过', uncertain=True) from error
 
     async def stop(self):
         # A submission can arrive after the first stop. Do not report cancellation

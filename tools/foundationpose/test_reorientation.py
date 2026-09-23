@@ -85,7 +85,7 @@ class ReorientationTests(unittest.TestCase):
         config,_,held,_,_=fixture()
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);cfg=root/'trial.json';cfg.write_text(json.dumps(config));service=GraspController(root,None,cfg)
-            request={'rotation':np.eye(3).tolist(),**{k:held[k] for k in ['object_id','model_sha256','hold_id']}}
+            request={'rotation':np.eye(3).tolist(),'orientation_version':0,**{k:held[k] for k in ['object_id','model_sha256','hold_id']}}
             with patch('reorientation_control.threading.Thread') as thread:
                 with self.assertRaisesRegex(ValueError,'尚无'):service.start_reorient(request)
                 service.held_object=held

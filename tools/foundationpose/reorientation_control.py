@@ -80,6 +80,8 @@ class ReorientationMixin:
                 raise ValueError('本次服务尚无成功抓取记录，请先抓取物品后再调整姿态')
             if value.get('hold_id') != held['hold_id'] or value.get('object_id') != held['object_id'] or value.get('model_sha256') != held['model_sha256']:
                 raise ValueError('预览模型或夹持记录已变化，请重新加载物品模型')
+            if type(value.get('orientation_version')) is not int or value['orientation_version'] != held.get('orientation_version', 0):
+                raise ValueError('夹持朝向版本已变化或缺失，请刷新状态后重新规划')
             if 'max_shift_m' in value:
                 raise ValueError('自适应位置已取消位移上限，请刷新页面后重试')
             position_mode=checked_position_request(value.get('position_mode','fixed'))
@@ -263,6 +265,8 @@ class ReorientationMixin:
             plan=plan_reorientation(held,mesh['vertices'],rotation,arm,config,settings,
                 lambda waypoints,timeout:endpoint_reachability(checker,tool,arm,waypoints,timeout),self.check_cancel,position_mode,report.setdefault('search_attempts',[]))
             plan.update(object_id=held['object_id'],object_name=held['object_name'],hold_id=held['hold_id'],
+                        orientation_version=held.get('orientation_version',0),
+                        orientation_tolerance_deg=settings['orientation_tolerance_deg'],
                         can_execute=mode=='execute',flange_T_grip_tcp=tool['flange_T_grip_tcp'])
             report['plan']=plan
             self.update(reorientation_plan=plan)

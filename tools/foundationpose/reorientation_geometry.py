@@ -41,6 +41,17 @@ def checked_rotation(value):
     return transform(matrix)[:3, :3]
 
 
+def rotation_from_rpy_deg(value):
+    """Absolute base-frame object orientation, Rz(z) @ Ry(y) @ Rx(x)."""
+    if not isinstance(value, list) or len(value) != 3 or any(
+            type(v) not in (int, float) or not np.isfinite(v) or not -180 <= v <= 180 for v in value):
+        raise ValueError('target_rpy_deg 必须为三个有限角度，每项在 -180 到 180 度之间')
+    x, y, z = np.deg2rad(value)
+    cx, cy, cz = np.cos([x, y, z]);sx, sy, sz = np.sin([x, y, z])
+    return checked_rotation([[cz*cy, cz*sy*sx-sz*cx, cz*sy*cx+sz*sx],
+        [sz*cy, sz*sy*sx+cz*cx, sz*sy*cx-cz*sx], [-sy, cy*sx, cy*cx]])
+
+
 def reorientation_settings(value):
     value = {'search_step_m': .025, **value}
     for key in ('adaptive_max_shift_m','translation_step_m','rotation_step_deg','max_joint_step_deg'):

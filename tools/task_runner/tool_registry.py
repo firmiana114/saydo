@@ -6,8 +6,12 @@ STRING = {'type': 'string', 'minLength': 1, 'maxLength': 200}
 INT = {'type': 'integer', 'minimum': 0}
 READS = {'get_status': 'status', 'get_camera_frame': 'frame', 'get_robot_state': 'robot',
          'list_objects': 'objects', 'get_object_pose': 'pose', 'get_grasp_profiles': 'profiles'}
-ACTIONS = {'preview_grasp': 'preview_grasp', 'grasp': 'grasp', 'preview_place': 'preview_place', 'place': 'place', 'reset_arm': 'reset'}
-MOTIONS = {'grasp', 'place', 'reset_arm'}
+ACTIONS = {'preview_grasp': 'preview_grasp', 'grasp': 'grasp', 'preview_place': 'preview_place', 'place': 'place', 'reset_arm': 'reset',
+           'preview_reorient': 'preview_reorient', 'reorient': 'reorient'}
+MOTIONS = {'grasp', 'place', 'reset_arm', 'reorient'}
+REORIENT_ARGS = {'object_id': STRING, 'hold_id': STRING, 'orientation_version': INT,
+    'target_rpy_deg': {'type': 'array', 'items': {'type': 'number', 'minimum': -180, 'maximum': 180}, 'minItems': 3, 'maxItems': 3},
+    'position_mode': {'type': 'string', 'enum': ['fixed', 'adaptive']}}
 VISION = {'select_object': 'select_object', 'start_tracking': 'start_tracking', 'choose_tracking_target': 'choose_target'}
 DEFINITIONS = {
     'get_status': ('查询跟踪状态、物品、候选选择、夹持记录及放置配置版本。', {}),
@@ -24,6 +28,8 @@ DEFINITIONS = {
     'grasp': ('实际抓取并抬升，等待结束。使用已保存夹法的力度和开度，不接受覆盖。执行后查看图片。', {'object_id': STRING}),
     'preview_place': ('等待放置预览结束；使用真实查询的夹持和配置版本，不运动。', {'hold_id': STRING, 'orientation_version': INT, 'placement_revision': STRING}),
     'place': ('实际放置、释放、后撤并等待结束；保留当前朝向，使用已配置区域。不能替换过期身份或版本。', {'hold_id': STRING, 'orientation_version': INT, 'placement_revision': STRING}),
+    'preview_reorient': ('预览已夹持物品的目标朝向，不运动不松爪。target_rpy_deg=[X,Y,Z] 是物品相对Base基座的绝对角度（度），Rz·Ry·Rx；不是相对增量或TCP朝向。fixed仅固定TCP终点位置，adaptive允许移位。引用当前物品、夹持编号和朝向版本。模型坐标决定直立方向，不假设零角度就是直立。', REORIENT_ARGS),
+    'reorient': ('调整已夹持物品至相对Base的绝对目标朝向并继续夹持，等待结束。target_rpy_deg=[X,Y,Z]，单位度，Rz·Ry·Rx，不是旋转增量或TCP朝向。fixed固定TCP终点位置，adaptive允许移位。请求的物品、夹持及版本必须匹配；之后使用返回的新版本放置或继续调整。失败不自动重试。', REORIENT_ARGS),
     'reset_arm': ('实际返回观测姿态或七关节零位并等待；保持夹爪开合。zero不是编码器标定。', {'target': {'type': 'string', 'enum': ['observation', 'zero']}}),
     'stop_robot': ('软件停止机械臂和夹爪，不松爪；需要明确停止意图，不用于普通状态检查。', {}),
     'finish_task': ('结束本次任务。从工具结果的 evidence_call_id 字段复制证据编号，不要使用后端 task_id 或编造编号。succeeded 必须引用全部真实成功动作证据；answered 仅说明已提供信息；blocked 表示无法完成。summary 区分控制器事实与视觉判断。',

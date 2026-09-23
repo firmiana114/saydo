@@ -37,7 +37,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
 class RegistryTests(unittest.TestCase):
     def test_strict_schemas_and_no_request_ids(self):
         all_schemas = schemas('execute')
-        self.assertEqual(len(all_schemas), 16)
+        self.assertEqual(len(all_schemas), 18)
         for schema in all_schemas:
             self.assertTrue(schema['strict'])
             self.assertFalse(schema['parameters']['additionalProperties'])

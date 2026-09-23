@@ -101,7 +101,7 @@ class ReorientationRetryTests(unittest.TestCase):
                 self.assertIn('夹持记录已保留',self.service.status['message'])
                 self.assertEqual(self.service.held_object['hold_id'],'hold1')
                 robot.stop.assert_called_once();robot.move_gripper.assert_not_called()
-                request={'rotation':np.diag([1,-1,-1]).tolist(),**{k:self.held[k] for k in ['hold_id','object_id','model_sha256']}}
+                request={'rotation':np.diag([1,-1,-1]).tolist(),'orientation_version':self.service.held_object['orientation_version'],**{k:self.held[k] for k in ['hold_id','object_id','model_sha256']}}
                 with patch('reorientation_control.threading.Thread') as thread:
                     self.service.start_reorient(request)
                     self.assertFalse(self.service.cancelled.is_set());self.assertTrue(self.service.status['busy'])

@@ -23,10 +23,10 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             tools=await client.list_tools()
             tools=tools.tools if hasattr(tools,'tools') else tools
             names={t.name:t for t in tools}
-            self.assertEqual(len(names),16)
-            for name in ['get_camera_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place']:
+            self.assertEqual(len(names),18)
+            for name in ['get_camera_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
                 self.assertTrue(names[name].annotations.read_only_hint)
-            for name in ['grasp','place','reset_arm','stop_robot']:
+            for name in ['grasp','place','reorient','reset_arm','stop_robot']:
                 self.assertFalse(names[name].annotations.read_only_hint)
 
     async def test_image_block_and_metadata_are_native_mcp_content(self):
@@ -63,6 +63,20 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
         async with Client(create_server(backend)) as client:
             result=await client.call_tool('reset_arm',{'target':'arbitrary','request_id':'fixed-id'})
             self.assertTrue(result.is_error);self.assertEqual(backend.calls,[])
+
+    async def test_reorientation_contract_and_strict_parameters(self):
+        backend=FakeBackend()
+        args={'object_id':'bottle','hold_id':'h','orientation_version':2,'target_rpy_deg':[0,0,90],'position_mode':'adaptive','request_id':'reorient-001'}
+        async with Client(create_server(backend)) as client:
+            for name in ('preview_reorient','reorient'):
+                result=await client.call_tool(name,args)
+                self.assertFalse(result.is_error)
+                self.assertEqual(backend.calls[-1][1],{'operation':name,'request_id':args['request_id'],'arguments':{k:v for k,v in args.items() if k!='request_id'}})
+            count=len(backend.calls)
+            for override in ({'target_rpy_deg':[0,0]}, {'target_rpy_deg':[0,0,181]}, {'target_rpy_deg':[0,True,0]}, {'orientation_version':True}, {'position_mode':'anywhere'}):
+                result=await client.call_tool('reorient',{**args,**override})
+                self.assertTrue(result.is_error)
+            self.assertEqual(len(backend.calls),count)
 
 
 if __name__=='__main__':unittest.main()

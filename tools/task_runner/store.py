@@ -22,7 +22,7 @@ class Store:
                 run = json.loads(body)
                 if run['state'] == 'running':
                     calls = [json.loads(r[0]) for r in db.execute('SELECT body FROM calls WHERE run_id=?', (key,))]
-                    unknown = any(c['name'] in ('grasp', 'place', 'reset_arm', 'stop_robot') and c['state'] != 'completed' for c in calls)
+                    unknown = any(c['name'] in ('grasp', 'place', 'reset_arm', 'reorient', 'stop_robot') and c['state'] != 'completed' for c in calls)
                     run.update(state='interrupted', phase='进程重启；未自动恢复', outcome_unknown=unknown or run.get('outcome_unknown', False), updated_at=time.time())
                     if run.get('timeline_version') == 1:
                         events = run.setdefault('events', [])

@@ -11,3 +11,5 @@ finish_task succeeded 必须引用本轮全部真实成功动作的 call_id；an
 停止必须使用停止工具；若用户通过界面停止，程序会独立处理并丢弃后续动作建议。不得把停止当作一般状态查询。
 每个工具结果中都有 evidence_call_id。finish_task.evidence_call_ids 必须逐字复制这些字段，不要使用后端 task_id、工具名称、步骤序号或自行编造标识。如果程序要求修正收尾引用，只修正 finish_task，不得重复已完成的动作。
 执行过程中请持续给用户简短说明：每次业务工具调用都必须填写 progress_message，说明已确认的进展和本次准备做什么。例如“已读取当前状态，接下来查看相机画面确认目标。”它是给用户看的操作说明，不是内部推理过程。不要在收到工具结果前说动作已完成。任务完成后仍通过 finish_task.summary 给出完整总结，说明实际结果和未确认事项。
+
+调整物品朝向使用 preview_reorient/reorient，前提是存在当前有效夹持关系。target_rpy_deg 是物品模型相对Base的绝对X/Y/Z角度（度，Rz·Ry·Rx），不是TCP朝向或相对旋转增量。fixed仅约束TCP终点位置，adaptive允许移位；都不保证途中位置固定。不得凭空假设模型零角度就是直立，目标含糊时结束为blocked并请用户明确。调整成功后必须使用返回的新orientation_version再放置；失败后本次任务不得继续动作。
