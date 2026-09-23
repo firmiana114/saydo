@@ -41,6 +41,7 @@
 
 - MSI 保留官方 CLI 0.156.0，恢复自定义 Responses 提供方，按用户指定默认使用 `gpt-5.6-sol / medium`。`~/.local/bin/codex` 通过 `tools/robot_agent/codex_launcher.py` 读取项目 `.env` 的密钥、地址和代理后启动官方二进制；不复制密钥、不修改执行器配置。启动方式见 `tools/robot_agent/README.md`。
 - 保留原18个MCP工具及writes审批设置，标准项目指令继续加载。模型密钥通过专用环境变量传递，子shell自动过滤密钥变量；不恢复已删除的旧会话和隔离目录。无需重启8089或8091服务。本轮验证仅允许只读MCP工具，不下发运动。
+- 验收：Codex 以Sol/medium完成真实模型请求，成功调用 `get_status` 和 `list_objects` 后返回中文总结，全程55.52秒，退出码0。记录为 `work/codex_validation/sol_medium_readonly.json`。验证会话禁用shell/多Agent/搜索，仅开放这两个MCP工具。原执行器接口仍返回Terra/medium、execute，未停止或重启服务。
 
 ## 2026-09-23 Codex 清理重装，MCP 独立保留（历史记录）
 
