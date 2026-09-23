@@ -7,6 +7,20 @@ from install import install
 
 
 class InstallTests(unittest.TestCase):
+    def test_fresh_config_contains_only_mcp_and_keeps_external_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);home=root/'fresh-codex';token=root/'mcp/token'
+            token.parent.mkdir();token.write_text('existing-backend-token-for-test-1234567890\n');token.chmod(0o600)
+            before=token.read_bytes()
+            result=install(home,sys.executable,'http://127.0.0.1:8089',token)
+            config=(home/'config.toml').read_bytes()
+            self.assertEqual(set(tomllib.loads(config.decode())),{'mcp_servers'})
+            self.assertEqual(token.read_bytes(),before)
+            self.assertEqual(result['token_file'],str(token))
+            self.assertFalse((home/'credentials').exists())
+            install(home,sys.executable,'http://127.0.0.1:8089',token)
+            self.assertEqual((home/'config.toml').read_bytes(),config)
+
     def test_preserves_isolation_model_and_token_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);config=root/'config.toml'

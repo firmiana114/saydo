@@ -9,6 +9,14 @@
 - `config/` 子目录内的文件已改为本机维护并由 Git 忽略，仅跟踪各目录的 `.gitkeep`；首次克隆需另行提供配置，现有机器上的配置应完整保留并独立备份。
 - 更多硬件和历史验证见 `ros2_rm_ws/HANDOFF_REPORT.md`。
 
+## 2026-09-23 Codex 清理重装，MCP 独立保留
+
+- 按用户要求删除 MSI 旧 Codex CLI、专用 `saydo-agent`/`codex` 包装脚本、独立运行目录、旧 API 密钥、模型/权限/Skills 设置、会话及临时目录。检查时桌面端、VS Code Codex 扩展和对应设置已不存在；未改动本机 Mac 的 Codex 环境。下文旧 Agent 配置及验证记录仅代表当时状态。
+- MSI 从官方 npm 平台包重新安装 Codex CLI 0.156.0，下载后核对 SHA-512 完整性；入口为 `~/.local/bin/codex`，直接链接版本目录中的官方可执行文件。`codex login status` 返回未登录，未恢复模型 API Key 或原模型、推理强度、全局审批、指令隔离设置。
+- 新 `~/.codex/config.toml` 仅含 `mcp_servers.saydo_robot`。MCP 独立环境位于 `~/.local/share/saydo-mcp/venv`，原后端令牌移至 `~/.local/share/saydo-mcp/robot-backend-token`，权限 600；与 Codex 登录凭据分开。16 个工具和后端实现保留，安装器支持空白客户端配置，仅登记 MCP。
+- 未重启 8089 服务；其令牌已在启动时读入内存，迁移后认证正常。**后续启动服务必须使用新的 `--agent-token-file` 路径**，见 `tools/robot_agent/README.md`；旧进程的命令行仍显示已删除的旧路径，不能原样复制重启。
+- 验证：12 项 MCP/客户端/安装器测试通过；真实 stdio 发现 16 个工具，`get_status`、`list_objects`、`get_camera_frame` 成功，图片以原生 MCP 图片块返回。432 个设备配置、物品 JSON 数据及任务数据库的文件摘要均未变化。本轮没有机械臂或夹爪动作；新 Codex 尚未登录，未进行模型请求或模型驱动的工具调用。
+
 ## 2026-09-22 夹爪参数绑定到夹法
 
 - 每条夹法在物品目录 `grasp_profiles.json` 的 `overrides` 中保存 `force_target_raw` 与 `open_position`；执行要求两项齐全并校验范围，不沿用全局夹爪设置或运行期全局力度覆盖。新记录/新建夹法默认纸杯力度 10、其他物品 75；马克杯张开位置 200、其他物品 1000。力度同时用作目标力度/限力原始值。
