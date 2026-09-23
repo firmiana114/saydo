@@ -19,6 +19,8 @@
 - 51项执行器测试、3项固定代理测试及五页导航检查通过。真实 Terra + 隔离模拟后端已完成抓取→获取JPEG→放置→证据收尾，约27.3秒，未连接实机动作后端。
 - 现有8089后端新增3项固定代理测试；任务执行器新增默认模型、全局停止、受限Schema、证据编号和只读错误处理回归。接口及运行方法见 `tools/task_runner/README.md`。编排服务日志与进程编号仍为 `work/task_runner/server.log`、`server.pid`，不设置开机自启，启动不自动执行任务。
 
+- 部署验收：51项执行器、184项后端、12项MCP测试及9组前端检查通过。8089第5页的真实只读任务完成（49.3秒）；真实抓取预览完成（30.578秒），仅调用 preview_grasp，未产生实机运动。两份记录分别为 `work/task_runner_validation/terra_live_readonly.json`、`terra_live_preview.json`。当前为 Terra/medium、preview 模式；431个设备配置及物品JSON文件摘要未变，密钥文件保持600权限。后端重启时已改用独立MCP令牌路径，相机及水瓶跟踪恢复正常。
+
 ## 2026-09-23 Codex 清理重装，MCP 独立保留
 
 - 按用户要求删除 MSI 旧 Codex CLI、专用 `saydo-agent`/`codex` 包装脚本、独立运行目录、旧 API 密钥、模型/权限/Skills 设置、会话及临时目录。检查时桌面端、VS Code Codex 扩展和对应设置已不存在；未改动本机 Mac 的 Codex 环境。下文旧 Agent 配置及验证记录仅代表当时状态。
