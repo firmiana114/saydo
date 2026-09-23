@@ -45,3 +45,7 @@ vm.runInNewContext(sizing,{document:{getElementById:()=>frame},window:{addEventL
 resize({origin:'https://untrusted.example',source:frame.contentWindow,data:{type:'saydo-task-height',height:1000}});assert.equal(frame.style.height,undefined);
 resize({origin:'http://localhost:8089',source:frame.contentWindow,data:{type:'saydo-task-height',height:1200}});assert.equal(frame.style.height,'1200px');
 console.log('Fifth task page and same-origin frame sizing passed.');
+
+assert(!/id="grasp-stop"[^>]*disabled/.test(html),'stop must remain available while the model is thinking and the robot is idle');
+assert(html.includes("document.querySelector('#grasp-stop').disabled=taskStopPending;"));
+assert(html.includes("if(taskStopPending)return;"));
