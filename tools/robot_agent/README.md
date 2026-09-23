@@ -2,6 +2,8 @@
 
 通过标准输入/输出 MCP 将客户端连接到现有 Saydo 后端。MCP 进程只调用固定的 `/api/agent/` 接口；实际动作仍由 `GraspController`、原设备锁和运动检查执行，不接受任意机器人指令、文件路径或配置修改。
 
+项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。原 MCP 服务及16个工具保持可用，执行器无需通过 MCP 或 Codex 启动。
+
 ## 工具
 
 | 工具 | 行为 |
