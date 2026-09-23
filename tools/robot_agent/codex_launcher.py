@@ -15,7 +15,8 @@ from tools.task_runner.config import Config
 
 def disabled_skills(roots, known_paths=()):
     """Disable discovered skills without reading their instruction contents."""
-    folders = {str(Path(path).absolute()) for path in known_paths}
+    paths = {str((Path(path) if Path(path).name == 'SKILL.md'
+                  else Path(path) / 'SKILL.md').absolute()) for path in known_paths}
     visited = set()
     for root in roots:
         for directory, children, files in os.walk(root, followlinks=True):
@@ -25,11 +26,11 @@ def disabled_skills(roots, known_paths=()):
                 continue
             visited.add(resolved)
             if 'SKILL.md' in files:
-                folders.add(str(Path(directory).absolute()))
-                folders.add(str(resolved))
+                paths.add(str(Path(directory).absolute() / 'SKILL.md'))
+                paths.add(str(resolved / 'SKILL.md'))
     return 'skills.config=[' + ','.join(
         '{path=' + json.dumps(path) + ',enabled=false}'
-        for path in sorted(folders)) + ']'
+        for path in sorted(paths)) + ']'
 
 
 def main():

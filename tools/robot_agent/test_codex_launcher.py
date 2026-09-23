@@ -11,7 +11,7 @@ class SkillIsolationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / 'skills/.system/skill-creator'
             rows = tomllib.loads(disabled_skills([], [missing]))['skills']['config']
-            self.assertEqual(rows, [{'path': str(missing), 'enabled': False}])
+            self.assertEqual(rows, [{'path': str(missing / 'SKILL.md'), 'enabled': False}])
 
     def test_new_skills_are_disabled_on_the_next_launch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -21,7 +21,7 @@ class SkillIsolationTests(unittest.TestCase):
             skill.mkdir()
             (skill / 'SKILL.md').write_text('must never enter the task context')
             rows = tomllib.loads(disabled_skills([root]))['skills']['config']
-            self.assertIn({'path': str(skill.resolve()), 'enabled': False}, rows)
+            self.assertIn({'path': str(skill.resolve() / 'SKILL.md'), 'enabled': False}, rows)
 
     def test_symlinked_skills_and_cycles(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -35,7 +35,7 @@ class SkillIsolationTests(unittest.TestCase):
             (source / 'cycle').symlink_to(skills, target_is_directory=True)
             rows = tomllib.loads(disabled_skills([skills, skills]))['skills']['config']
             self.assertEqual({row['path'] for row in rows},
-                             {str(source.resolve()), str(skills / 'linked')})
+                             {str(source.resolve() / 'SKILL.md'), str(skills / 'linked/SKILL.md')})
             self.assertTrue(all(row['enabled'] is False for row in rows))
 
 
