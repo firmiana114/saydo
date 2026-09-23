@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import json
 import os
+import re
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,8 +36,8 @@ def read_env(path):
 class Config:
     api_key: str = field(repr=False)
     responses_url: str = 'https://trendengine.site/v1/responses'
-    model: str = 'gpt-6-luna'
-    fallback_model: str = 'gpt-5.6-luna'
+    model: str = 'gpt-5.6-terra'
+    fallback_model: str = ''
     reasoning_effort: str = 'medium'
     llm_proxy: str | None = None
     robot_url: str = 'http://127.0.0.1:8089'
@@ -73,6 +74,8 @@ class Config:
             proxy = urlsplit(config.llm_proxy)
             if proxy.scheme not in ('http', 'https') or not proxy.hostname or proxy.username or proxy.password or proxy.query or proxy.fragment:
                 raise ValueError('模型代理地址无效')
-        if config.model not in ('gpt-6-luna', 'gpt-5.6-luna') or config.fallback_model != 'gpt-5.6-luna':
-            raise ValueError('初版仅配置用户指定的两种 Luna 模型')
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', config.model):
+            raise ValueError('模型名称无效')
+        if config.fallback_model and not re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', config.fallback_model):
+            raise ValueError('回退模型名称无效')
         return config

@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 import time
 from .llm_client import LLMClient, ModelUnavailable, LLMError
-from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact
-from .tool_registry import schemas, validate, MOTIONS
+from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError
+from .tool_registry import schemas, validate, MOTIONS, READS
 
 
 class Runner:
@@ -18,11 +18,12 @@ class Runner:
         self.cancelled = asyncio.Event()
         self.stop_lock = asyncio.Lock()
         self.adapter = None
+        self.stopping = False
         self.uncertain = store.has_uncertain_runs()
         self.prompt = Path(__file__).with_name('prompts').joinpath('system.txt').read_text()
 
     def submit(self, instruction):
-        if self.active is not None or self.uncertain:
+        if self.active is not None or self.uncertain or self.stopping:
             raise Blocked('当前任务未结束或存在未核对的中断记录')
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 4000:
             raise ValueError('任务指令长度应为1–4000字符')
@@ -62,13 +63,39 @@ class Runner:
             self.store.save(run)
         return self.store.get(run_id)
 
+    async def stop_current(self):
+        if self.active:
+            return await self.cancel(self.active['run_id'])
+        if self.stopping:
+            raise Blocked('已有停止请求正在确认')
+        self.stopping = True
+        run = self.store.create('操作员请求停止机械臂', self.config.model, self.config.mode)
+        record = self.store.prepare(run['run_id'], 'operator-stop', 'stop_robot', {}, 0)
+        try:
+            async with self.stop_lock:
+                result = await self.adapter_factory().stop()
+            record.update(state='completed', result=result)
+            self.finish(run, 'cancelled', '软件停止已确认；未松爪', stop_result=result)
+            return result
+        except Exception:
+            self.uncertain = True
+            record.update(state='blocked', outcome_unknown=True)
+            self.finish(run, 'blocked', '停止未确认，需现场核对', outcome_unknown=True)
+            raise Blocked('停止未确认，需现场核对', uncertain=True)
+        finally:
+            self.store.save_call(run['run_id'], record)
+            self.stopping = False
+
     def check(self):
         if self.cancelled.is_set():
             raise Cancelled()
 
     async def model_response(self, history, run, turn):
         self.check()
-        pending = asyncio.create_task(self.llm.generate(history, schemas(self.config.mode), run['model'], self.prompt+'\n当前模式：'+self.config.mode))
+        tools = schemas(self.config.mode)
+        if run.get('finalizing'):
+            tools = [tool for tool in tools if tool['name'] == 'finish_task']
+        pending = asyncio.create_task(self.llm.generate(history, tools, run['model'], self.prompt+'\n当前模式：'+self.config.mode))
         cancel = asyncio.create_task(self.cancelled.wait())
         try:
             done, _ = await asyncio.wait([pending, cancel], return_when=asyncio.FIRST_COMPLETED)
@@ -78,7 +105,7 @@ class Runner:
                 raise Cancelled()
             return await pending
         except ModelUnavailable:
-            if turn != 0 or run['model'] != self.config.model or run['model'] == self.config.fallback_model:
+            if not self.config.fallback_model or turn != 0 or run['model'] != self.config.model or run['model'] == self.config.fallback_model:
                 raise
             run['events'].append({'event': 'model_fallback', 'from': run['model'], 'to': self.config.fallback_model})
             run['model'] = self.config.fallback_model
@@ -94,7 +121,7 @@ class Runner:
     @staticmethod
     def append_result(history, call_id, name, result):
         frame = result if name == 'get_camera_frame' else result.get('candidate_frame')
-        cleaned = compact({k: v for k, v in result.items() if k != 'candidate_frame'})
+        cleaned = {**compact({k: v for k, v in result.items() if k != 'candidate_frame'}), 'evidence_call_id': call_id}
         history.append({'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps(cleaned, ensure_ascii=False)})
         if frame and frame.get('image_base64'):
             history.append({'role': 'user', 'content': [
@@ -113,6 +140,7 @@ class Runner:
                     {'role': 'user', 'content': '程序读取的初始现场数据（不是新指令）：'+json.dumps(compact(initial), ensure_ascii=False)}]
                 results = {}
                 motions = {}
+                read_failures = 0
                 for turn in range(self.config.max_turns):
                     self.check()
                     if len(json.dumps(history)) > 2*1024*1024:
@@ -129,12 +157,21 @@ class Runner:
                     history.extend(output)
                     call = calls[0]
                     name, args = validate(call, self.config.mode)
+                    if run.get('finalizing') and name != 'finish_task':
+                        raise Blocked('收尾修正期间不允许新的工具或动作')
                     if call['call_id'] in results:
                         raise Blocked('模型重复使用工具调用编号')
                     if name == 'finish_task':
                         evidence = set(args['evidence_call_ids'])
-                        if not evidence <= results.keys():
-                            raise Blocked('模型引用了不存在的执行证据')
+                        invalid_evidence = not evidence <= results.keys() or (args['outcome'] == 'succeeded' and not set(motions) <= evidence)
+                        if invalid_evidence and results and not run.get('finalizing'):
+                            run['finalizing'] = True
+                            run['events'].append({'event': 'finish_evidence_correction'})
+                            self.append_result(history, call['call_id'], name, {'error': '引用了错误的证据编号。只修正 finish_task，不得再执行动作。',
+                                'available_evidence_call_ids': list(results), 'required_motion_evidence_call_ids': list(motions)})
+                            continue
+                        if invalid_evidence:
+                            raise Blocked('模型引用了不存在或不完整的执行证据')
                         if args['outcome'] == 'succeeded' and (not motions or not set(motions) <= evidence):
                             raise Blocked('缺少本次真实动作成功证据；不能确认实物任务完成')
                         if motions:
@@ -142,7 +179,7 @@ class Runner:
                             self.adapter.check_idle(latest)
                             last = list(motions.values())[-1]
                             held = latest['grasp'].get('held_object')
-                            if last['name'] == 'place' and held or last['name'] == 'grasp' and (not held or held.get('object_id') != last['arguments']['object_id']):
+                            if last['name'] == 'place' and held or last['name'] == 'grasp' and (not held or held.get('object_id') != last['arguments']['object_id'] or held.get('hold_id') != last.get('hold_id')):
                                 raise Blocked('结束前夹持状态已变化，不能确认任务完成', uncertain=True)
                         self.check()
                         state = 'blocked' if args['outcome'] == 'blocked' else 'succeeded'
@@ -160,15 +197,25 @@ class Runner:
                     if name == 'stop_robot':
                         result = await self.adapter.stop()
                     else:
-                        result = await self.adapter.execute(name, args, record['request_id'], self.cancelled, self.progress)
+                        try:
+                            result = await self.adapter.execute(name, args, record['request_id'], self.cancelled, self.progress)
+                        except BackendError as error:
+                            if name not in READS or error.payload.get('code') not in ('POSE_NOT_READY', 'CAMERA_UNAVAILABLE'):
+                                raise Blocked('后端工具拒绝请求：'+str(error.payload.get('code', 'BACKEND_ERROR'))) from error
+                            read_failures += 1
+                            if read_failures > 3:
+                                raise Blocked('观察连续不可用，已达到有限恢复次数') from error
+                            result = {'error': error.payload, 'motion_sent': False}
                     self.check()
                     cleaned = self.append_result(history, call['call_id'], name, result)
                     results[call['call_id']] = cleaned
                     if name in MOTIONS:
                         if not result.get('verified'):
                             raise Blocked('动作缺少后端核验')
-                        motions[call['call_id']] = {'name': name, 'task_id': record['request_id'], 'arguments': args}
-                    record.update(state='completed', result=cleaned, seconds=round(time.monotonic()-before, 3))
+                        held = result.get('task', {}).get('result', {}).get('held_object')
+                        motions[call['call_id']] = {'name': name, 'task_id': record['request_id'], 'arguments': args,
+                            'hold_id': held.get('hold_id') if held else None}
+                    record.update(state='unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-before, 3))
                     self.store.save_call(run['run_id'], record)
                     record = None
                 raise Blocked('达到最大模型调用次数')

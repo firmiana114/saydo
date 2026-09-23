@@ -26,7 +26,7 @@ DEFINITIONS = {
     'place': ('实际放置、释放、后撤并等待结束；保留当前朝向，使用已配置区域。不能替换过期身份或版本。', {'hold_id': STRING, 'orientation_version': INT, 'placement_revision': STRING}),
     'reset_arm': ('实际返回观测姿态或七关节零位并等待；保持夹爪开合。zero不是编码器标定。', {'target': {'type': 'string', 'enum': ['observation', 'zero']}}),
     'stop_robot': ('软件停止机械臂和夹爪，不松爪；需要明确停止意图，不用于普通状态检查。', {}),
-    'finish_task': ('结束本次任务。succeeded 必须有本轮真实成功动作且引用全部动作证据；answered 仅说明已提供信息，不能声称实物任务完成；blocked 表示无法完成。summary 区分控制器事实与视觉判断。',
+    'finish_task': ('结束本次任务。从工具结果的 evidence_call_id 字段复制证据编号，不要使用后端 task_id 或编造编号。succeeded 必须引用全部真实成功动作证据；answered 仅说明已提供信息；blocked 表示无法完成。summary 区分控制器事实与视觉判断。',
         {'outcome': {'type': 'string', 'enum': ['succeeded', 'answered', 'blocked']},
          'summary': {'type': 'string', 'minLength': 1, 'maxLength': 2000},
          'evidence_call_ids': {'type': 'array', 'items': STRING, 'maxItems': 32, 'uniqueItems': True}}),
@@ -45,7 +45,15 @@ def schemas(mode):
         excluded |= MOTIONS | {'stop_robot'}
     if mode == 'read_only':
         excluded |= set(ACTIONS) | set(VISION)
-    return [schema(n) for n in DEFINITIONS if n not in excluded]
+    def supported(value):
+        # Keep length/uniqueness checks in our local validator. Providers only
+        # implement a subset of JSON Schema for constrained generation.
+        if isinstance(value, dict):
+            return {k: supported(v) for k, v in value.items() if k not in ('minLength', 'maxLength', 'uniqueItems')}
+        if isinstance(value, list):
+            return [supported(v) for v in value]
+        return value
+    return [supported(schema(n)) for n in DEFINITIONS if n not in excluded]
 
 
 def validate(call, mode):

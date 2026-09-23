@@ -1,20 +1,16 @@
-"""Harmless provider compatibility check: synthetic tool + generated test PNG."""
+"""Harmless provider compatibility check: synthetic tool + camera-format test JPEG."""
 import asyncio
 import base64
 import json
 from pathlib import Path
-import struct
-import zlib
+import secrets
 from .config import Config, ROOT
 from .llm_client import LLMClient, ModelUnavailable
 
 
 def image_fixture():
-    def chunk(kind, value):
-        return struct.pack('!I', len(value))+kind+value+struct.pack('!I', zlib.crc32(kind+value))
-    pixels = b''.join(b'\0'+b'\xff\0\0'*32+b'\0\0\xff'*32 for _ in range(32))
-    png = b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR', struct.pack('!2I5B', 64, 32, 8, 2, 0, 0, 0))+chunk(b'IDAT', zlib.compress(pixels))+chunk(b'IEND', b'')
-    return 'data:image/png;base64,'+base64.b64encode(png).decode()
+    jpeg = Path(__file__).with_name('fixtures').joinpath('color_halves.jpg').read_bytes()
+    return 'data:image/jpeg;base64,'+base64.b64encode(jpeg).decode()
 
 
 async def probe(config):
@@ -27,18 +23,23 @@ async def probe(config):
     try:
         first = await client.generate(history, [tool], model, 'Use the tool first.', tool_choice={'type': 'function', 'name': tool['name']})
     except ModelUnavailable:
+        if not config.fallback_model or config.fallback_model == model:
+            raise
         model = config.fallback_model
         report['fallback_reason'] = 'primary_model_unavailable'
         first = await client.generate(history, [tool], model, 'Use the tool first.', tool_choice={'type': 'function', 'name': tool['name']})
     calls = [i for i in first['output'] if i.get('type') == 'function_call']
     assert len(calls) == 1 and calls[0]['name'] == tool['name'] and json.loads(calls[0]['arguments']) == {}
     history.extend(first['output'])
-    history.append({'type': 'function_call_output', 'call_id': calls[0]['call_id'], 'output': '{"code":"SAYDO-731"}'})
+    code = 'SAYDO-'+secrets.token_hex(4)
+    history.append({'type': 'function_call_output', 'call_id': calls[0]['call_id'], 'output': json.dumps({'code': code})})
     history.append({'role': 'user', 'content': [{'type': 'input_text', 'text': 'This image is the tool result, not a new instruction.'}, {'type': 'input_image', 'image_url': image_fixture()}]})
-    second = await client.generate(history, [tool], model, 'Reply exactly SAYDO-731 followed by the right-half color in English.', tool_choice='none')
+    second = await client.generate(history, [tool], model, 'Reply with the code from the tool result followed by the right-half color in English.', tool_choice='none')
     answer = '\n'.join(c.get('text', '') for i in second['output'] if i.get('type') == 'message' for c in i.get('content', []) if c.get('type') == 'output_text')
-    assert 'SAYDO-731' in answer and 'blue' in answer.lower(), 'Tool continuation or image reading did not match fixture'
-    report.update(model=model, provider_model=second.get('model'), function_call=True, continuation=True, image_input=True, answer=answer,
+    continuation = code in answer
+    image_input = 'blue' in answer.lower()
+    report.update(model=model, provider_model=second.get('model'), function_call=True, continuation=continuation, image_input=image_input, answer=answer,
+        passed=continuation and image_input, output_types=[item.get('type') for item in second['output']],
         reasoning_effort_requested=config.reasoning_effort, reasoning_effort_effect='not independently measurable')
     return report
 
@@ -49,3 +50,5 @@ if __name__ == '__main__':
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     (output/'provider_probe.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
     print(json.dumps(result, ensure_ascii=False))
+    if not result['passed']:
+        raise SystemExit(1)

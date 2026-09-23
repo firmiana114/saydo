@@ -19,7 +19,9 @@ class LLMClient:
     async def generate(self, history, tools, model, instructions, **extra):
         payload = {'model': model, 'instructions': instructions, 'input': history,
             'tools': tools, 'reasoning': {'effort': self.config.reasoning_effort},
+            'tool_choice': 'required' if tools else 'none',
             'parallel_tool_calls': False, 'store': False, 'stream': False,
+            'max_output_tokens': 4096,
             'include': ['reasoning.encrypted_content'], **extra}
         try:
             async with asyncio.timeout(self.config.llm_timeout):

@@ -62,7 +62,7 @@ class FakeAdapter:
             raise self.fail
         if name == 'grasp':
             self.state['grasp']['held_object'] = {'hold_id': 'h', 'object_id': args['object_id']}
-            return {'verified': True, 'task': {'state': 'completed'}}
+            return {'verified': True, 'task': {'state': 'completed', 'result': {'held_object': copy.deepcopy(self.state['grasp']['held_object'])}}}
         if name == 'place':
             self.state['grasp']['held_object'] = None
             return {'verified': True, 'task': {'state': 'completed'}}
@@ -78,7 +78,8 @@ class FakeAdapter:
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.config = Config(api_key='test-secret', mode='execute', state_dir=Path(self.temp.name))
+        self.config = Config(api_key='test-secret', mode='execute', state_dir=Path(self.temp.name),
+            model='gpt-6-luna', fallback_model='gpt-5.6-luna')
         self.store = Store(self.temp.name, secrets=('test-secret',))
         self.adapter = FakeAdapter()
 
@@ -236,6 +237,65 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runner.uncertain)
         self.assertEqual(self.adapter.stops, 0)
         self.assertEqual(result['state'], 'failed')
+
+    async def test_disabled_fallback_never_switches_from_terra(self):
+        self.config.model = 'gpt-5.6-terra'
+        self.config.fallback_model = ''
+        llm = FakeLLM(ModelUnavailable('unavailable'))
+        result, _ = await self.execute(llm)
+        self.assertEqual(llm.models, ['gpt-5.6-terra'])
+        self.assertEqual(result['state'], 'failed')
+
+    async def test_global_stop_cancels_active_model_decision(self):
+        llm = FakeLLM('wait')
+        runner = self.make(llm)
+        ident = runner.submit('观察')
+        await llm.started.wait()
+        await runner.stop_current()
+        await runner.worker
+        self.assertEqual(self.store.get(ident)['state'], 'cancelled')
+        self.assertEqual(self.adapter.stops, 1)
+
+    async def test_global_stop_without_run_is_durable_and_no_model_call(self):
+        llm = FakeLLM()
+        runner = self.make(llm)
+        result = await runner.stop_current()
+        self.assertTrue(result['stationary_observed'])
+        self.assertEqual(llm.histories, [])
+        self.assertEqual(self.store.recent()[0]['state'], 'cancelled')
+
+    async def test_unready_pose_is_returned_to_model_without_motion_retry(self):
+        from tools.robot_agent.client import BackendError
+        self.adapter.fail = BackendError({'code':'POSE_NOT_READY','message':'请等待跟踪'})
+        llm = FakeLLM(call('get_object_pose'), end('answered',['call-1']))
+        result, _ = await self.execute(llm)
+        self.assertEqual(result['state'], 'succeeded')
+        self.assertEqual(result['calls'][0]['state'], 'unavailable')
+        self.assertIn('POSE_NOT_READY', json.dumps(llm.histories[1]))
+
+    async def test_changed_hold_identity_cannot_claim_success(self):
+        original = self.adapter.status
+        async def changed():
+            state = await original()
+            state['grasp']['held_object']['hold_id'] = 'different-hold'
+            return state
+        self.adapter.status = changed
+        result, _ = await self.execute(FakeLLM(call('grasp', {'object_id':'b'}, 'g'), end('succeeded',['g'])))
+        self.assertEqual(result['state'], 'blocked')
+
+    async def test_bad_final_evidence_gets_one_non_motion_correction(self):
+        llm = FakeLLM(call('grasp', {'object_id':'b'}, 'g'), end('succeeded',['backend-task-id']), end('succeeded',['g']))
+        result, _ = await self.execute(llm)
+        self.assertEqual(result['state'], 'succeeded')
+        self.assertEqual(len(self.adapter.sent), 1)
+        self.assertIn('evidence_call_id', json.dumps(llm.histories[1]))
+        self.assertIn('required_motion_evidence_call_ids', json.dumps(llm.histories[2]))
+
+    async def test_final_correction_cannot_dispatch_another_motion(self):
+        llm = FakeLLM(call('grasp', {'object_id':'b'}, 'g'), end('succeeded',['bad']), call('reset_arm', {'target':'zero'}, 'r'))
+        result, _ = await self.execute(llm)
+        self.assertEqual(result['state'], 'blocked')
+        self.assertEqual(len(self.adapter.sent), 1)
 
 
 class StoreTests(unittest.TestCase):

@@ -24,7 +24,7 @@ def make_handler(runner, store, loop, host, port):
             self.send_header('Content-Type', mime)
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'")
+            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'")
             self.send_header('Content-Length', str(len(raw)))
             self.end_headers()
             try:
@@ -48,6 +48,7 @@ def make_handler(runner, store, loop, host, port):
                 if self.path == '/api/task-runs':
                     return self.reply(200, {'runs': store.recent(), 'mode': runner.config.mode,
                         'model': runner.config.model, 'fallback_model': runner.config.fallback_model,
+                        'stopping': runner.stopping,
                         'blocked_by_uncertainty': runner.uncertain})
                 if self.path.startswith('/api/task-runs/') and self.path.count('/') == 3:
                     return self.reply(200, store.get(self.path.rsplit('/', 1)[1]))
@@ -68,6 +69,9 @@ def make_handler(runner, store, loop, host, port):
                 if not 0 < size <= 20000:
                     raise ValueError('请求大小无效')
                 data = json.loads(self.rfile.read(size))
+                if self.path == '/api/task-runs/stop' and data == {}:
+                    result = asyncio.run_coroutine_threadsafe(runner.stop_current(), loop).result(70)
+                    return self.reply(200, result)
                 if self.path == '/api/task-runs' and isinstance(data, dict) and set(data) == {'instruction'}:
                     async def submit():
                         return runner.submit(data['instruction'])
@@ -101,9 +105,9 @@ def main():
     store = Store(config.state_dir, secrets=(config.api_key, config.token_file.read_text().strip()))
     loop = asyncio.new_event_loop()
     runner = Runner(config, store)
+    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(runner, store, loop, '127.0.0.1', args.port))
     thread = threading.Thread(target=loop.run_forever)
     thread.start()
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(runner, store, loop, '127.0.0.1', args.port))
     server.daemon_threads = True
     def shutdown(*unused):
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -121,6 +125,8 @@ def main():
                     runner.cancelled.set()
                 if runner.worker:
                     await asyncio.wait_for(asyncio.shield(runner.worker), timeout=75)
+            async with runner.stop_lock:
+                pass
         try:
             asyncio.run_coroutine_threadsafe(finish(), loop).result(80)
         finally:

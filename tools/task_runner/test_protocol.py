@@ -63,3 +63,20 @@ class RegistryTests(unittest.TestCase):
             path.chmod(0o644)
             with self.assertRaises(ValueError):
                 read_env(path)
+
+    def test_fresh_env_defaults_to_terra_without_hidden_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'.env'
+            path.write_text('SAYDO_LLM_API_KEY="test"\n');path.chmod(0o600)
+            config = Config.load(path)
+            self.assertEqual(config.model, 'gpt-5.6-terra')
+            self.assertEqual(config.fallback_model, '')
+
+    def test_provider_schema_subset_keeps_local_length_and_uniqueness_checks(self):
+        definitions = json.dumps(schemas('execute'))
+        self.assertNotIn('uniqueItems', definitions)
+        self.assertNotIn('minLength', definitions)
+        for args in [{'outcome':'answered','summary':'ok','evidence_call_ids':['same','same']},
+                     {'outcome':'answered','summary':'','evidence_call_ids':[]}]:
+            with self.assertRaises(ValueError):
+                validate({'type':'function_call','name':'finish_task','call_id':'f','arguments':json.dumps(args)},'execute')

@@ -27,6 +27,7 @@ from grasp_control import GraspController
 from live_events import EventLog
 from camera_checks import select_camera
 from agent_api import AgentAPI, AgentError
+from task_runner_proxy import TaskRunnerProxy
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -670,6 +671,7 @@ def main():
         pass
     tracker = Tracker(args)
     agent_api = AgentAPI(tracker, args.agent_token_file) if args.agent_token_file else None
+    task_runner = TaskRunnerProxy()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *unused):
@@ -681,6 +683,9 @@ def main():
             self.send_response(status)
             self.send_header('Content-Type', mime)
             self.send_header('Cache-Control', 'no-store')
+            if self.path.startswith('/task-runner/'):
+                self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'")
+                self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             try:
@@ -690,6 +695,12 @@ def main():
 
         def do_GET(self):
             path = self.path.split('?')[0]
+            if task_runner.matches(self.path):
+                try:
+                    self.reply(*task_runner.request('GET', self.path))
+                except ValueError as error:
+                    self.reply(400, {'error': str(error)})
+                return
             if path.startswith('/api/agent/'):
                 if agent_api is None:
                     self.reply(404, {'error': {'code': 'AGENT_DISABLED', 'message': 'Agent 接口未启用'}})
@@ -778,9 +789,18 @@ def main():
                 return
             try:
                 size = int(self.headers.get('Content-Length', 0))
-                if not 0 <= size <= 4096:
+                task_request = task_runner.matches(self.path)
+                if task_request and self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('Task requests require application/json')
+                if not 0 <= size <= (20000 if task_request else 4096):
                     raise ValueError('Invalid request size')
                 value = json.loads(self.rfile.read(size) or b'{}')
+                if task_request:
+                    response = task_runner.request('POST', self.path, value)
+                    if self.path == '/api/task-runs/stop' and response[0] >= 500:
+                        tracker.grasp.abort()
+                    self.reply(*response)
+                    return
                 if self.path.startswith('/api/agent/'):
                     result = agent_api.post(self.path, value)
                 elif self.path == '/api/freeze':
