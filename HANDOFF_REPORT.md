@@ -42,6 +42,8 @@
 - MSI 保留官方 CLI 0.156.0，恢复自定义 Responses 提供方，按用户指定默认使用 `gpt-5.6-sol / medium`。`~/.local/bin/codex` 通过 `tools/robot_agent/codex_launcher.py` 读取项目 `.env` 的密钥、地址和代理后启动官方二进制；不复制密钥、不修改执行器配置。启动方式见 `tools/robot_agent/README.md`。
 - 保留原18个MCP工具及writes审批设置，密钥仍通过专用环境变量传递。后续按用户要求限制为MCP验证入口：从独立 `~/.local/share/saydo-codex/workspace` 启动，持久只读沙箱，拒绝沙箱升级/请求额外权限，关闭终端、子Agent、插件、Apps、浏览器/计算机操作和项目指令加载。MCP审批独立保留，不影响执行器execute模式。已有Codex会话需退出重开；账户所有者主动覆盖配置仍可改变限制。
 - 验收：Codex 以Sol/medium完成真实模型请求，成功调用 `get_status` 和 `list_objects` 后返回中文总结，全程55.52秒，退出码0。记录为 `work/codex_validation/sol_medium_readonly.json`。验证会话禁用shell/多Agent/搜索，仅开放这两个MCP工具。原执行器接口仍返回Terra/medium、execute，未停止或重启服务。
+- 权限加固验收：本地模拟Responses返回实际 `functions.exec → apply_patch` 调用，尝试新增项目根目录哨兵文件；Codex明确返回 `writing is blocked by read-only sandbox; rejected by user approval settings`，文件未生成。真实发送的工具定义中没有终端执行及子Agent工具，内置apply_patch仍可见但被权限拒绝；记录 `work/codex_validation/write_denial.json`。`--strict-config` 通过；本版本图像开关是 `features.view_image`，不采用被忽略的 `tools.view_image`。
+- 用户进一步要求防止开发指令污染：入口固定独立 `CODEX_HOME=~/.local/share/saydo-codex/codex-home`，不继承外部CODEX_HOME；通过 `model_instructions_file` 使用 `tools/robot_agent/agent_instructions.md` 替换内置编程助手提示词。关闭AGENTS/备用文档、主机Skills发现、已知内置Skills、记忆、插件及Hooks，不迁入原会话。项目开发文档保留原样，任务模型仍为Sol/medium。
 
 ## 2026-09-23 Codex 清理重装，MCP 独立保留（历史记录）
 

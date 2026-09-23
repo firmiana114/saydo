@@ -78,7 +78,9 @@ python tools/foundationpose/live_tracker.py --host 127.0.0.1 --port 8089 --auto-
 
 MSI 已恢复 `codex` 入口，默认 `gpt-5.6-sol / medium`。入口链接到本目录 `codex_launcher.py`，再启动 `~/.local/lib/codex/0.156.0/bin/codex` 官方 CLI；从项目权限600的 `.env` 读取模型密钥、Responses地址和模型代理，仅在当前进程环境传递密钥，不写入仓库、命令参数或 `auth.json`。自定义提供方使用 API Key，无需 ChatGPT 登录。CLI 升级时需同步更新启动脚本中的官方二进制路径。
 
-在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器切换至 `~/.local/share/saydo-codex/workspace`，不在源码目录启动；`~/.codex/config.toml` 保存提供方、默认模型及原18个MCP工具登记。
+在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器固定使用 `~/.local/share/saydo-codex/codex-home` 作为 `CODEX_HOME`，配置文件、会话与普通 `~/.codex` 分开；切换至同级 `workspace`，不在源码目录启动。专用配置保存提供方、默认模型及原18个MCP工具登记。
+
+`model_instructions_file` 指向本目录 `agent_instructions.md`，替换内置编程助手提示词，只保留机械臂任务规则。关闭AGENTS及其备用文件加载、主机Skills自动发现、已知内置Skills、记忆导入、插件和Hooks；不读取旧开发会话。项目本身的 `AGENTS.md`、开发Skills和其他coding agent内容继续保留给正常开发使用，不为隔离任务入口而删除。升级CLI后应重新核对实际模型上下文与新增内置Skills。
 
 该入口用于MCP验证：持久配置为只读沙箱，关闭终端执行、子Agent、插件、Apps、浏览器/计算机操作及项目指令加载；沙箱升级和请求写入权限被拒绝，MCP原有写操作审批单独保留。文件编辑工具即使仍出现在本版本工具定义中，也必须被只读权限拒绝，不能靠提示词代替权限检查。不要用 `--yolo`、`--sandbox`、其他配置目录或配置覆盖绕过限制；这些是当前入口的运行限制，不是对机器账户所有者的系统权限隔离。已有会话需退出后重新启动。非交互验证用 `codex exec --skip-git-repo-check "任务"`。
 

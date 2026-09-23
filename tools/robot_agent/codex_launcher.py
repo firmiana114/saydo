@@ -19,6 +19,12 @@ def main():
         if not binary.is_file():
             raise ValueError('未找到 MSI Codex CLI 0.156.0 的官方可执行文件')
         env = os.environ.copy()
+        # Keep user-level instructions, skills, memories and coding sessions out
+        # of the dedicated robot operator, even when CODEX_HOME was inherited.
+        agent_home = Path.home() / '.local/share/saydo-codex/codex-home'
+        if not (agent_home / 'config.toml').is_file():
+            raise ValueError('缺少任务专用 Codex 配置')
+        env['CODEX_HOME'] = str(agent_home)
         env['SAYDO_CODEX_API_KEY'] = config.api_key
         if config.llm_proxy:
             for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
