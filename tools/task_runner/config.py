@@ -7,6 +7,8 @@ import re
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
+UI_MODELS = ('gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra')
+UI_REASONING_EFFORTS = ('low', 'medium', 'high')
 
 
 def read_env(path):

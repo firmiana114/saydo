@@ -16,9 +16,9 @@ class LLMClient:
     def __init__(self, config):
         self.config = config
 
-    async def generate(self, history, tools, model, instructions, **extra):
+    async def generate(self, history, tools, model, instructions, *, reasoning_effort=None, **extra):
         payload = {'model': model, 'instructions': instructions, 'input': history,
-            'tools': tools, 'reasoning': {'effort': self.config.reasoning_effort},
+            'tools': tools, 'reasoning': {'effort': reasoning_effort if reasoning_effort is not None else self.config.reasoning_effort},
             'tool_choice': 'required' if tools else 'none',
             'parallel_tool_calls': False, 'store': False, 'stream': False,
             'max_output_tokens': 4096,

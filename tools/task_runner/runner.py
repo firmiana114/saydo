@@ -6,6 +6,7 @@ import time
 from .llm_client import LLMClient, ModelUnavailable, LLMError
 from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError
 from .tool_registry import schemas, validate, MOTIONS, READS
+from .config import UI_MODELS, UI_REASONING_EFFORTS
 
 
 class Runner:
@@ -22,12 +23,19 @@ class Runner:
         self.uncertain = store.has_uncertain_runs()
         self.prompt = Path(__file__).with_name('prompts').joinpath('system.txt').read_text()
 
-    def submit(self, instruction):
+    def submit(self, instruction, model=None, reasoning_effort=None):
         if self.active is not None or self.uncertain or self.stopping:
             raise Blocked('当前任务未结束或存在未核对的中断记录')
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 4000:
             raise ValueError('任务指令长度应为1–4000字符')
-        run = self.store.create(instruction.strip(), self.config.model, self.config.mode)
+        if model is not None and model not in UI_MODELS:
+            raise ValueError('不支持的模型选择')
+        if reasoning_effort is not None and reasoning_effort not in UI_REASONING_EFFORTS:
+            raise ValueError('不支持的推理强度')
+        chosen_model = self.config.model if model is None else model
+        effort = self.config.reasoning_effort if reasoning_effort is None else reasoning_effort
+        run = self.store.create(instruction.strip(), chosen_model, self.config.mode, effort)
+        run.update(requested_model=chosen_model, fallback_model=self.config.fallback_model if model is None else '')
         self.active = run
         self.emit(run, 'phase', text='任务已接收，正在读取初始状态。')
         self.cancelled = asyncio.Event()
@@ -78,7 +86,7 @@ class Runner:
         if self.stopping:
             raise Blocked('已有停止请求正在确认')
         self.stopping = True
-        run = self.store.create('操作员请求停止机械臂', self.config.model, self.config.mode)
+        run = self.store.create('操作员请求停止机械臂', self.config.model, self.config.mode, self.config.reasoning_effort)
         record = self.store.prepare(run['run_id'], 'operator-stop', 'stop_robot', {}, 0)
         before = time.monotonic()
         self.emit(run, 'tool_started', name='stop_robot', call_id='operator-stop')
@@ -108,10 +116,11 @@ class Runner:
         try:
             return await self.model_call(history, run, turn)
         except ModelUnavailable:
-            if not self.config.fallback_model or turn != 0 or run['model'] != self.config.model or run['model'] == self.config.fallback_model:
+            fallback = run.get('fallback_model', '')
+            if not fallback or turn != 0 or run['model'] != run['requested_model'] or run['model'] == fallback:
                 raise
-            self.emit(run, 'model_fallback', **{'from': run['model'], 'to': self.config.fallback_model})
-            run['model'] = self.config.fallback_model
+            self.emit(run, 'model_fallback', **{'from': run['model'], 'to': fallback})
+            run['model'] = fallback
             return await self.model_call(history, run, turn)
 
     async def model_call(self, history, run, turn):
@@ -120,11 +129,13 @@ class Runner:
         if run.get('finalizing'):
             tools = [tool for tool in tools if tool['name'] == 'finish_task']
         model = run['model']
+        effort = run['reasoning_effort']
         invocation = 1 + sum(e['event'] == 'llm_started' for e in run['events'])
-        self.emit(run, 'llm_started', invocation=invocation, turn=turn+1, model=model)
+        self.emit(run, 'llm_started', invocation=invocation, turn=turn+1, model=model, reasoning_effort=effort)
         before = time.monotonic()
         outcome = 'failed'
-        pending = asyncio.create_task(self.llm.generate(history, tools, model, self.prompt+'\n当前模式：'+self.config.mode))
+        pending = asyncio.create_task(self.llm.generate(history, tools, model, self.prompt+'\n当前模式：'+self.config.mode,
+            reasoning_effort=effort))
         cancel = asyncio.create_task(self.cancelled.wait())
         try:
             done, _ = await asyncio.wait([pending, cancel], return_when=asyncio.FIRST_COMPLETED)
@@ -148,6 +159,7 @@ class Runner:
             cancel.cancel()
             await asyncio.gather(cancel, return_exceptions=True)
             self.emit(run, 'llm', invocation=invocation, turn=turn+1, model=model,
+                reasoning_effort=effort,
                 seconds=round(time.monotonic()-before, 3), outcome=outcome)
 
     @staticmethod

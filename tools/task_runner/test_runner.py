@@ -27,11 +27,13 @@ class FakeLLM:
         self.responses = list(responses)
         self.histories = []
         self.models = []
+        self.efforts = []
         self.started = asyncio.Event()
 
-    async def generate(self, history, tools, model, instructions):
+    async def generate(self, history, tools, model, instructions, *, reasoning_effort=None):
         self.histories.append(copy.deepcopy(history))
         self.models.append(model)
+        self.efforts.append(reasoning_effort)
         self.started.set()
         result = self.responses.pop(0)
         if isinstance(result, Exception):

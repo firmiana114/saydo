@@ -32,6 +32,9 @@
 
 - 姿态工具部署验收：190项后端、65项执行器、13项MCP测试和10组前端检查通过。真实MCP发现18个工具，新工具各有6个必填参数，预览/执行读写属性正确；状态及JPEG画面读取成功。报告为 `work/task_runner_validation/reorientation_mcp_readonly.json`。重启前确认无任务且无夹持记录，434个设备配置及物品JSON摘要未变；保持Terra/medium、execute。未执行实机姿态动作。
 
+- 第5页新增五种指定GPT模型与low/medium/high推理强度选择，浏览器记住偏好，运行期间禁用切换；提交时快照保存配置，每轮请求和时间线使用任务自己的强度。显式模型选择不自动回退；旧客户端只传instruction时保留服务器默认行为。界面不读取/改写密钥或.env，主服务默认仍为Terra/medium、execute。
+- 最近任务和执行进度加入独立滚动区域，进度仅在底部跟随新内容，上翻查看时保持位置；历史轮询保留DOM与滚动位置。所有页面资源沿用原app.js路由打包，不需重启8089后端。
+
 ## 2026-09-23 Codex 清理重装，MCP 独立保留
 
 - 按用户要求删除 MSI 旧 Codex CLI、专用 `saydo-agent`/`codex` 包装脚本、独立运行目录、旧 API 密钥、模型/权限/Skills 设置、会话及临时目录。检查时桌面端、VS Code Codex 扩展和对应设置已不存在；未改动本机 Mac 的 Codex 环境。下文旧 Agent 配置及验证记录仅代表当时状态。

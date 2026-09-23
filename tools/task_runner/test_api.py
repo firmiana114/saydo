@@ -69,3 +69,25 @@ class APITests(unittest.TestCase):
             status, _ = self.request('POST', '/api/task-runs', {'instruction': 'move'}, headers)
             self.assertEqual(status, 403)
         self.assertEqual(self.store.recent(), [])
+
+    def test_model_options_and_selected_run_metadata(self):
+        from .config import UI_MODELS, UI_REASONING_EFFORTS
+        status,body=self.request('GET','/api/task-runs');data=json.loads(body)
+        self.assertEqual(data['llm_options']['models'],list(UI_MODELS))
+        self.assertEqual(data['llm_options']['reasoning_efforts'],list(UI_REASONING_EFFORTS))
+        self.assertNotIn('private-test-key',body.decode())
+        status,body=self.request('POST','/api/task-runs',{'instruction':'查询','model':'gpt-5.6-sol','reasoning_effort':'high'})
+        self.assertEqual(status,202);ident=json.loads(body)['run_id']
+        for _ in range(100):
+            run=json.loads(self.request('GET','/api/task-runs/'+ident)[1])
+            if run['state']!='running':break
+            time.sleep(.01)
+        self.assertEqual((run['model'],run['reasoning_effort']),('gpt-5.6-sol','high'))
+        self.assertEqual(self.runner.llm.efforts,['high','high'])
+
+    def test_model_request_rejects_unknown_values_and_configuration_overrides(self):
+        for options in ({'model':'gpt-6-luna'},{'reasoning_effort':'invalid'},{'model':None},
+                        {'reasoning_effort':False},{'api_key':'override'},{'mode':'execute'}):
+            status,_=self.request('POST','/api/task-runs',{'instruction':'查询',**options})
+            self.assertIn(status,(400,404))
+        self.assertEqual(self.store.recent(),[])

@@ -51,8 +51,9 @@ class Store:
             text = text.replace(secret, '[REDACTED]')
         return text
 
-    def create(self, instruction, model, mode):
+    def create(self, instruction, model, mode, reasoning_effort=None):
         run = {'run_id': uuid.uuid4().hex, 'instruction': instruction, 'model': model, 'mode': mode,
+               'reasoning_effort': reasoning_effort,
                'state': 'running', 'phase': '读取初始状态', 'created_at': time.time(), 'updated_at': time.time(),
                'timeline_version': 1, 'events': []}
         with self.connect() as db:

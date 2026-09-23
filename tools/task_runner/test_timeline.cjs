@@ -35,3 +35,8 @@ render(container,live,108);const preservedNote=container.children[2];const pendi
 render(container,live,109);assert.strictEqual(container.children[2],preservedNote);assert.strictEqual(container.children.at(-1),pendingRow);
 assert(container.children.at(-1).children[1].textContent.includes('4.0 秒'));
 console.log('Live counters update in place without replacing prior commentary.');
+const scroller={id:'progress-scroll',scrollHeight:1000,clientHeight:200,scrollTop:0};container.parentElement=scroller;
+const scrolling={...run,run_id:'scroll'};render(container,scrolling,200);assert.equal(scroller.scrollTop,1000,'new selection follows latest content');
+scroller.scrollTop=250;scroller.scrollHeight=1100;render(container,{...scrolling,events:[...events,{seq:10,event:'phase',text:'new status'}]},201);assert.equal(scroller.scrollTop,250,'reading earlier content must not jump');
+scroller.scrollTop=900;scroller.scrollHeight=1100;render(container,{...scrolling,events:[...events,{seq:10,event:'phase',text:'updated status'}]},202);assert.equal(scroller.scrollTop,1100,'near-bottom readers follow new content');
+console.log('Progress scrolling passed: follow at bottom, preserve manual scroll, reset on task selection.');

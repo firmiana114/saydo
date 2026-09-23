@@ -8,7 +8,7 @@ from pathlib import Path
 import signal
 import threading
 from urllib.parse import urlsplit
-from .config import Config, ROOT
+from .config import Config, ROOT, UI_MODELS, UI_REASONING_EFFORTS
 from .runner import Runner
 from .store import Store
 
@@ -46,11 +46,13 @@ def make_handler(runner, store, loop, host, port):
                     mime = 'text/html; charset=utf-8' if name.endswith('html') else 'application/javascript; charset=utf-8'
                     body = Path(__file__).with_name(name).read_bytes()
                     if name == 'app.js':
-                        body = Path(__file__).with_name('timeline.js').read_bytes()+b'\n'+body
+                        body = Path(__file__).with_name('timeline.js').read_bytes()+b'\n'+Path(__file__).with_name('model_picker.js').read_bytes()+b'\n'+body
                     return self.reply(200, body, mime)
                 if self.path == '/api/task-runs':
                     return self.reply(200, {'runs': store.recent(), 'mode': runner.config.mode,
                         'model': runner.config.model, 'fallback_model': runner.config.fallback_model,
+                        'reasoning_effort': runner.config.reasoning_effort,
+                        'llm_options': {'models': UI_MODELS, 'reasoning_efforts': UI_REASONING_EFFORTS},
                         'stopping': runner.stopping,
                         'blocked_by_uncertainty': runner.uncertain})
                 if self.path.startswith('/api/task-runs/') and self.path.count('/') == 3:
@@ -75,9 +77,13 @@ def make_handler(runner, store, loop, host, port):
                 if self.path == '/api/task-runs/stop' and data == {}:
                     result = asyncio.run_coroutine_threadsafe(runner.stop_current(), loop).result(70)
                     return self.reply(200, result)
-                if self.path == '/api/task-runs' and isinstance(data, dict) and set(data) == {'instruction'}:
+                if (self.path == '/api/task-runs' and isinstance(data, dict) and 'instruction' in data
+                        and set(data) <= {'instruction', 'model', 'reasoning_effort'}):
+                    options = {k: data[k] for k in ('model', 'reasoning_effort') if k in data}
+                    if any(not isinstance(value, str) for value in options.values()):
+                        raise ValueError('模型及推理强度必须为字符串')
                     async def submit():
-                        return runner.submit(data['instruction'])
+                        return runner.submit(data['instruction'], **options)
                     run_id = asyncio.run_coroutine_threadsafe(submit(), loop).result(5)
                     return self.reply(202, {'run_id': run_id})
                 if self.path.startswith('/api/task-runs/') and self.path.endswith('/cancel') and self.path.count('/') == 4 and data == {}:
