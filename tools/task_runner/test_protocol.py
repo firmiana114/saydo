@@ -71,6 +71,7 @@ class RegistryTests(unittest.TestCase):
             config = Config.load(path)
             self.assertEqual(config.model, 'gpt-5.6-terra')
             self.assertEqual(config.fallback_model, '')
+            self.assertEqual(config.mode, 'execute')
 
     def test_provider_schema_subset_keeps_local_length_and_uniqueness_checks(self):
         definitions = json.dumps(schemas('execute'))

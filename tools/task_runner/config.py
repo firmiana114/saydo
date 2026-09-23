@@ -42,7 +42,7 @@ class Config:
     llm_proxy: str | None = None
     robot_url: str = 'http://127.0.0.1:8089'
     token_file: Path = field(default_factory=lambda: Path.home()/'.local/share/saydo-mcp/robot-backend-token')
-    mode: str = 'preview'
+    mode: str = 'execute'
     state_dir: Path = ROOT/'work/task_runner'
     max_turns: int = 20
     run_timeout: float = 600
@@ -64,7 +64,7 @@ class Config:
             llm_proxy=get('LLM_PROXY', '') or None,
             robot_url=get('ROBOT_URL', cls.robot_url),
             token_file=Path(get('ROBOT_TOKEN_FILE', str(Path.home()/'.local/share/saydo-mcp/robot-backend-token'))).expanduser(),
-            mode=get('RUNNER_MODE', 'preview'), state_dir=Path(get('RUNNER_STATE_DIR', str(cls.state_dir))).expanduser())
+            mode=get('RUNNER_MODE', cls.mode), state_dir=Path(get('RUNNER_STATE_DIR', str(cls.state_dir))).expanduser())
         url = urlsplit(config.responses_url)
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment or not url.path.endswith('/responses'):
             raise ValueError('模型地址必须是无嵌入凭据的 HTTPS Responses 完整地址')
