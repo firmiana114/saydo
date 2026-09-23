@@ -12,6 +12,25 @@ sys.path.insert(0, str(ROOT))
 from tools.task_runner.config import Config
 
 
+def disabled_skills(roots):
+    """Disable discovered skills without reading their instruction contents."""
+    folders = set()
+    visited = set()
+    for root in roots:
+        for directory, children, files in os.walk(root, followlinks=True):
+            resolved = Path(directory).resolve()
+            if resolved in visited:
+                children[:] = []
+                continue
+            visited.add(resolved)
+            if 'SKILL.md' in files:
+                folders.add(str(Path(directory).absolute()))
+                folders.add(str(resolved))
+    return 'skills.config=[' + ','.join(
+        '{path=' + json.dumps(path) + ',enabled=false}'
+        for path in sorted(folders)) + ']'
+
+
 def main():
     try:
         config = Config.load(ROOT / '.env')
@@ -39,7 +58,14 @@ def main():
         workspace = Path.home() / '.local/share/saydo-codex/workspace'
         workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chdir(workspace)
-        args = [str(binary), '-c', 'model_providers.trendengine.base_url=' + json.dumps(base_url), *sys.argv[1:]]
+        # The host-discovery flag does not suppress repository-local Skills.
+        # Refresh explicit disables at every launch, including symlinked Skills.
+        skill_roots = [agent_home / 'skills', Path.home() / '.agents/skills',
+                       Path('/etc/codex/skills')]
+        for parent in (workspace, *workspace.parents):
+            skill_roots.extend([parent / '.agents/skills', parent / '.codex/skills'])
+        args = [str(binary), '-c', 'model_providers.trendengine.base_url=' + json.dumps(base_url),
+                '-c', disabled_skills(skill_roots), *sys.argv[1:]]
         os.execve(binary, args, env)
     except (OSError, ValueError):
         # Never print parser errors that could contain credential file contents.
