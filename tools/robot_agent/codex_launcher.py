@@ -68,9 +68,12 @@ def main():
         for parent in (workspace, *workspace.parents):
             skill_roots.extend([parent / '.agents/skills', parent / '.codex/skills'])
         args = [str(binary), '-c', 'model_providers.trendengine.base_url=' + json.dumps(base_url),
-                '-c', disabled_skills(skill_roots,
-                    (row['path'] for row in agent_config.get('skills', {}).get('config', []))),
                 *sys.argv[1:]]
+        # Subcommand -c flags replace root -c flags in CLI 0.156.0. Apply the
+        # Skills restriction in the final command scope, even with exec/debug -c.
+        insertion = args.index('--') if '--' in args else len(args)
+        args[insertion:insertion] = ['-c', disabled_skills(skill_roots,
+            (row['path'] for row in agent_config.get('skills', {}).get('config', [])))]
         os.execve(binary, args, env)
     except (OSError, ValueError):
         # Never print parser errors that could contain credential file contents.
