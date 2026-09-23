@@ -28,6 +28,11 @@ def main():
         hosts = ['127.0.0.1', 'localhost', urlsplit(config.robot_url).hostname or '']
         env['NO_PROXY'] = env['no_proxy'] = ','.join(filter(None, [bypass, *hosts]))
         base_url = config.responses_url.removesuffix('/responses')
+        # Start outside the source tree so project instructions and config layers
+        # cannot turn the robot-validation session into a repository coding task.
+        workspace = Path.home() / '.local/share/saydo-codex/workspace'
+        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chdir(workspace)
         args = [str(binary), '-c', 'model_providers.trendengine.base_url=' + json.dumps(base_url), *sys.argv[1:]]
         os.execve(binary, args, env)
     except (OSError, ValueError):
