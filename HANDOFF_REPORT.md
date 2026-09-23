@@ -40,13 +40,15 @@
 ## 2026-09-23 Codex 恢复，与任务执行器并存
 
 - MSI 保留官方 CLI 0.156.0，恢复自定义 Responses 提供方，按用户指定默认使用 `gpt-5.6-sol / medium`。`~/.local/bin/codex` 通过 `tools/robot_agent/codex_launcher.py` 读取项目 `.env` 的密钥、地址和代理后启动官方二进制；不复制密钥、不修改执行器配置。启动方式见 `tools/robot_agent/README.md`。
-- 保留原18个MCP工具及writes审批设置，密钥仍通过专用环境变量传递。后续按用户要求限制为MCP验证入口：从独立 `~/.local/share/saydo-codex/workspace` 启动，持久只读沙箱，拒绝沙箱升级/请求额外权限，关闭终端、子Agent、插件、Apps、浏览器/计算机操作和项目指令加载。MCP审批独立保留，不影响执行器execute模式。已有Codex会话需退出重开；账户所有者主动覆盖配置仍可改变限制。
+- 保留原18个MCP工具，密钥仍通过专用环境变量传递。后续按用户要求限制为MCP验证入口：从独立 `~/.local/share/saydo-codex/workspace` 启动，持久只读沙箱，拒绝沙箱升级/请求额外权限，关闭终端、子Agent、插件、Apps、浏览器/计算机操作和项目指令加载。MCP审批独立设置，不影响执行器execute模式。已有Codex会话需退出重开；账户所有者主动覆盖配置仍可改变限制。
 - 验收：Codex 以Sol/medium完成真实模型请求，成功调用 `get_status` 和 `list_objects` 后返回中文总结，全程55.52秒，退出码0。记录为 `work/codex_validation/sol_medium_readonly.json`。验证会话禁用shell/多Agent/搜索，仅开放这两个MCP工具。原执行器接口仍返回Terra/medium、execute，未停止或重启服务。
 - 权限加固验收：本地模拟Responses返回实际 `functions.exec → apply_patch` 调用，尝试新增项目根目录哨兵文件；Codex明确返回 `writing is blocked by read-only sandbox; rejected by user approval settings`，文件未生成。真实发送的工具定义中没有终端执行及子Agent工具，内置apply_patch仍可见但被权限拒绝；记录 `work/codex_validation/write_denial.json`。`--strict-config` 通过；本版本图像开关是 `features.view_image`，不采用被忽略的 `tools.view_image`。
 - 用户进一步要求防止开发指令污染：入口固定独立 `CODEX_HOME=~/.local/share/saydo-codex/codex-home`，不继承外部CODEX_HOME；通过 `model_instructions_file` 使用 `tools/robot_agent/agent_instructions.md` 替换内置编程助手提示词。关闭AGENTS/备用文档、主机Skills发现、已知内置Skills、记忆、插件及Hooks，不迁入原会话。项目开发文档保留原样，任务模型仍为Sol/medium。
 - 隔离验收通过：真实请求上下文没有项目AGENTS、测试AGENTS.override、临时本地开发Skill或Skills目录清单，内置coding角色已替换为任务操作规则；继承的外部CODEX_HOME被固定入口覆盖。模拟模型响应驱动真实 `list_objects` 成功，并强制调用编辑工具验证只读拒绝；18个MCP工具完整，终端及子Agent工具不存在。报告 `work/codex_validation/instruction_isolation.json`，16项MCP/客户端/安装器/启动器测试通过（含3项新回归）。本轮没有运动、没有重启8089/8091，执行器仍为Terra/medium、execute。
 - 版本注意：0.156.0关闭主机Skill发现仍会扫描当前目录Skill；启动器每次按 `SKILL.md` 文件路径刷新显式禁用列表（兼容符号链接与首次内置Skill解包）。子命令的 `-c` 会覆盖外层 `-c`，因此禁用列表放在最终命令参数作用域，避免调整模型强度时丢失。修改配置不清除已经运行的旧会话上下文，必须退出旧会话再启动 `codex`。
 - 最终隔离入口以真实Sol/medium成功调用 `list_objects` 并返回中文物品列表，55.91秒、退出码0，无工具或模型错误；报告 `work/codex_validation/isolated_live_model.json`。此前包含大体积状态结果的一轮真实请求150秒超时，未将该次超时记为配置验收成功。
+- 按用户最新要求取消手动审批：专用配置改为 `approval_policy="never"` 和 `mcp_servers.saydo_robot.default_tools_approval_mode="approve"`，原停止工具的approve覆盖保留。其余权限、模型和上下文隔离未变；never不会赋予只读沙箱写入权限。重新启动Codex会话后生效。
+- 自动审批验收：沿用真实MCP服务工具定义，临时以FakeBackend替代实机客户端，并用模拟模型响应下发grasp；stdin关闭时写工具成功到达模拟任务接口，无人工交互。同时强制apply_patch仍明确被只读权限拒绝，未产生项目文件。`--strict-config`通过；报告 `work/codex_validation/automatic_approval.json`。未连接实机动作后端，未重启8089/8091。
 
 ## 2026-09-23 Codex 清理重装，MCP 独立保留（历史记录）
 
