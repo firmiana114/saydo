@@ -7,6 +7,7 @@ import numpy as np
 
 from grasp_geometry import controller_pose, transform, minimum_table_clearance
 from reorientation_geometry import pose_waypoint
+from pose_symmetry import object_bounds
 
 
 DEFAULTS = {
@@ -53,6 +54,10 @@ def object_vertices(tcp, held, vertices):
     if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
         raise ValueError('物品模型顶点无效')
     obj = transform(tcp) @ np.linalg.inv(transform(held['object_T_tcp']))
+    if held.get('pose_mode') == '5d':
+        # All consumers use coordinate extrema; the exact sweep bounds avoid
+        # letting an arbitrary spin of the reconstructed mesh change clearance.
+        return np.array(object_bounds(obj, points, '5d'))
     return points @ obj[:3, :3].T + obj[:3, 3]
 
 
@@ -227,6 +232,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             continue
         obj = controller_pose(release['controller_pose']) @ np.linalg.inv(transform(held['object_T_tcp']))
         return {
+            'pose_mode': held.get('pose_mode', '6d'),
             'waypoints': targets, 'validation_points': samples, 'current_arm': arm,
             'base_T_object_target': obj.tolist(), 'object_T_tcp': held['object_T_tcp'],
             'target_tcp_position_m': release['position_m'], 'table_z_m': table,

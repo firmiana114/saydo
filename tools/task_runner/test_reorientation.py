@@ -46,6 +46,17 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('status',await self.adapter.initial())
         self.assertTrue(all(v is None for _,v in self.backend.requests))
 
+    async def test_5d_feedback_ignores_spin_but_rejects_axis_error_or_mode_change(self):
+        held={'object_id':'b','hold_id':'h','orientation_version':1,'current_object_rotation':I,'pose_mode':'5d'}
+        task={'result':{'held_object':copy.deepcopy(held),'reorientation_plan':{
+            'base_T_object_target':[row+[0] for row in Z]+[[0,0,0,1]],'pose_mode':'5d','orientation_tolerance_deg':1}}}
+        status={'grasp':{'held_object':copy.deepcopy(held)}}
+        RobotAdapter.verify_reorientation('reorient',ARGS,task,status)
+        status['grasp']['held_object']['current_object_rotation']=[[1,0,0],[0,0,-1],[0,1,0]]
+        with self.assertRaises(Blocked):RobotAdapter.verify_reorientation('reorient',ARGS,task,status)
+        status['grasp']['held_object'].update(current_object_rotation=I,pose_mode='6d')
+        with self.assertRaises(Blocked):RobotAdapter.verify_reorientation('reorient',ARGS,task,status)
+
     async def test_execute_waits_verifies_angle_version_and_keeps_parameters(self):
         result=await self.adapter.execute('reorient',ARGS,'reorient-1',asyncio.Event(),lambda _:None)
         self.assertTrue(result['verified'])

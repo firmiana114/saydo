@@ -4,6 +4,8 @@
 
 项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。原 MCP 服务及18个工具保持可用，执行器无需通过 MCP 或 Codex 启动。
 
+模型选择可启用5D位姿：状态、模型、位姿及夹法接口返回 `pose_mode`，持物记录也保留该模式。5D的矩阵只有位置和Z轴有约束，绕物品自身Z轴的转角自由；抓取中心位于该轴，后端搜索符合已保存接近夹角的方位。`preview_reorient` / `reorient` 的 `target_rpy_deg` 接口保持兼容，但5D只约束该旋转对应的Z轴指向，后端搜索绕轴等价姿态。详见 [5D位姿说明](../foundationpose/README.md#绕物品-z-轴对称的-5d-位姿)。
+
 ## 工具
 
 | 工具 | 行为 |

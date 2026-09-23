@@ -111,6 +111,7 @@ class AgentAPI:
         result = self.tracker.snapshot()
         return {'session_id': self.session_id, 'tracking': {k: result.get(k) for k in [
             'state', 'error', 'object_id', 'object_name', 'model_ready', 'auto_detection_supported',
+            'pose_mode', 'pose_mode_revision', 'pose_semantics',
             'camera_age_s', 'pose_age_s', 'quality', 'bottle_candidates', 'selection_id']},
             'grasp': self.agent_controller_state(result['grasp']), 'active_task_id': self.active,
             'task_recording_error': self.recording_error}
@@ -143,11 +144,14 @@ class AgentAPI:
             except ValueError as error:
                 raise AgentError('POSE_NOT_READY', str(error)) from error
             return {'object_id': observation['object_id'], 'object_name': observation.get('object_name'),
+                    'pose_mode': observation.get('pose_mode','6d'),
+                    'axis_z_camera': [row[2] for row in observation['pose'][:3]],
+                    'spin_observable': observation.get('pose_mode','6d') != '5d',
                     'camera_T_object': observation['pose'], 'coordinate_frame': 'color_optical_frame',
                     'translation_unit': 'metre', 'captured_at': observation['time'],
                     'age_s': time.time()-observation['time'], 'generation': observation['generation'],
                     'model_sha256': observation.get('model_sha256'), 'grasp_observation_ready': True,
-                    'note': '不是基座坐标；执行抓取时后端重新获取新鲜观测并完成坐标换算。'}
+                    'note': '不是基座坐标；执行抓取时后端重新获取新鲜观测并完成坐标换算。5D模式下矩阵仅代表位置和Z轴，绕物品Z轴角度不可观测、不应作为约束。'}
 
     def robot_state(self):
         robot = self.robot()

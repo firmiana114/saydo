@@ -146,6 +146,7 @@ class ReorientationViewer{
     if(this.dragMode==='object-ring'||this.dragMode==='base-ring'){
       const frame=ReorientationRings.basis(this.rotation,this.dragMode),length=Math.max(.035,Math.min(.09,this.radius*.8)),strokes=[],labels=[];
       for(let axis=0;axis<3;axis++){
+        if(this.model?.pose_mode==='5d'&&this.dragMode==='object-ring'&&axis===2)continue;
         const normal=frame.map(row=>row[axis]),u=frame.map(row=>row[(axis+1)%3]),v=frame.map(row=>row[(axis+2)%3]),points=[],vectors=[];
         for(let k=0;k<=64;k++){const theta=k*Math.PI/32,relative=u.map((value,i)=>(value*Math.cos(theta)+v[i]*Math.sin(theta))*length);vectors.push(relative);points.push(project(relative.map((value,i)=>value+this.translation[i])));}
         this.ringHandles.push({axis,normal,points});
@@ -163,6 +164,7 @@ class ReorientationViewer{
       const origin=project(offset);
       const axes=[];
       for(let i=0;i<3;i++)for(const sign of [-1,1]){const axis=[0,0,0];axis[i]=.05*sign*(sign<0?.45:1);const vector=ReorientationMath.apply(this.rotation,axis);
+        if(this.model?.pose_mode==='5d'&&i!==2)continue;
         axes.push({i,sign,vector,end:project(vector.map((v,k)=>v+offset[k])),cue:AxisDepthCue.describe(vector,this.basis[2])});}
       axes.sort((a,b)=>a.cue.value-b.cue.value);
       for(const {i,sign,end,cue} of axes){const minor=sign<0;
@@ -195,6 +197,8 @@ class ReorientationPanel{
     this.preview=document.querySelector('#reorient-preview');this.execute=document.querySelector('#reorient');this.restore=document.querySelector('#reorientation-restore');
     this.positionMode=document.querySelector('#reorientation-position-mode');
     this.inputs=['x','y','z'].map(axis=>document.querySelector('#reorientation-'+axis));
+    this.axisInputs=['tilt','heading'].map(name=>document.querySelector('#reorientation-axis-'+name));
+    for(const input of this.axisInputs)input.oninput=()=>{if(this.disabled)return;if(!this.anglesValid()){this.preview.disabled=true;this.execute.disabled=true;return;}this.viewer.rotation=ReorientationMath.euler(0,Number(this.axisInputs[0].value),Number(this.axisInputs[1].value));this.changed(false,true);};
     this.cameraControl=document.querySelector('#reorientation-camera-control');
     try{this.viewer=new ReorientationViewer(document.querySelector('#reorientation-view'),document.querySelector('#reorientation-overlay'),this.cameraControl);}catch(e){this.info.textContent=e.message;return;}
     for(const input of this.inputs)input.oninput=()=>{if(this.disabled)return;if(!this.anglesValid()){this.preview.disabled=true;this.execute.disabled=true;this.feedback.textContent='请填写三个有效角度，每项在 −180 到 180 度之间。';return;}this.viewer.rotation=ReorientationMath.euler(...this.inputs.map(x=>Number(x.value)));this.changed();};
@@ -216,7 +220,7 @@ class ReorientationPanel{
       canvas.setPointerCapture(e.pointerId);canvas.classList.add('dragging');
     };
     const release=()=>{const reset=anchor?.ring&&anchor.edited;anchor=null;canvas.classList.remove('dragging');if(reset){this.viewer.translation=[0,0,0];this.viewer.draw();}};this.cancelDrag=release;
-    this.dragMode.onchange=()=>{release();this.viewer.dragMode=this.dragMode.value;this.viewer.draw();};
+    this.dragMode.onchange=()=>{release();if(this.fiveD&&this.dragMode.value==='object-ring'&&this.selectedRingAxis===2)this.selectedRingAxis=0;this.viewer.dragMode=this.dragMode.value;this.viewer.draw();};
     canvas.onpointermove=e=>{
       if(!anchor||e.pointerId!==anchor.id)return;if(this.disabled){release();return;}let delta;
       if(anchor.ring){
@@ -255,13 +259,15 @@ class ReorientationPanel{
     };
     this.preview.onclick=()=>this.request(true);this.execute.onclick=()=>this.request(false);
   }
-  syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});}
-  anglesValid(){return this.inputs.every(x=>x.value!==''&&x.checkValidity());}
-  changed(keepPreviewPosition=false){this.poseDirty=true;if(!keepPreviewPosition)this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent='目标已调整；预览可查看位移和终点离桌高度，执行时重新检查。';}
+  syncAngles(){ReorientationMath.angles(this.viewer.rotation).forEach((v,k)=>{this.inputs[k].value=v.toFixed(1);});if(this.fiveD&&this.axisInputs){const z=this.viewer.rotation.map(row=>row[2]);this.axisInputs[0].value=(Math.acos(Math.max(-1,Math.min(1,z[2])))*180/Math.PI).toFixed(2);this.axisInputs[1].value=(Math.atan2(z[1],z[0])*180/Math.PI).toFixed(2);}}
+  anglesValid(){return (this.fiveD?this.axisInputs:this.inputs).every(x=>x.value!==''&&x.checkValidity());}
+  changed(keepPreviewPosition=false,preserveAxisInputs=false){this.poseDirty=true;if(this.fiveD){const z=this.viewer.rotation.map(row=>row[2]);this.viewer.rotation=ReorientationMath.euler(0,Math.acos(Math.max(-1,Math.min(1,z[2])))*180/Math.PI,Math.atan2(z[1],z[0])*180/Math.PI);if(!preserveAxisInputs)this.syncAngles();}if(!keepPreviewPosition)this.viewer.translation=[0,0,0];this.viewer.draw();this.feedback.textContent='目标已调整；预览可查看位移和终点离桌高度，执行时重新检查。';}
   async load(id,key){
     this.key=key;this.loading=true;const generation=++this.generation;this.info.textContent='正在加载物品模型…';
     try{const response=await fetch('/api/reorient/model?object_id='+encodeURIComponent(id)),model=await response.json();if(!response.ok)throw Error(model.error);if(generation!==this.generation)return;
-      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(model.holding?'金色标记为目标 TCP；预览仅显示目标位姿和端点位移。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'拖动左下角基座坐标可旋转观察视角，不改变目标姿态。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
+      this.fiveD=model.pose_mode==='5d';document.querySelector('#reorientation-full-angles').hidden=this.fiveD;document.querySelector('#reorientation-axis-angles').hidden=!this.fiveD;
+      if(this.fiveD)this.selectedRingAxis=0;
+      this.viewer.setModel(model);this.poseDirty=false;this.syncAngles();this.info.textContent='模型：'+model.object_name+'。'+(this.fiveD?'5D：仅约束Z轴指向，绕轴转角自由。':'')+(model.holding?'金色标记为目标 TCP；预览仅显示目标位姿和端点位移。':'尚未抓取，暂以模型原点预览；抓取后使用真实夹持中心。')+'拖动左下角基座坐标可旋转观察视角，不改变目标姿态。'+(model.appearance?.error?' 纹理不可用：'+model.appearance.error:'');
       this.feedback.textContent=model.holding?'已关联本次抓取，可以预览或调整姿态。':'可先旋转查看；成功抓取后加载该次抓取朝向，才能执行姿态调整。';
     }catch(e){if(generation===this.generation){this.viewer.model=null;this.info.textContent='模型加载失败：'+e.message;}}
     finally{if(generation===this.generation)this.loading=false;}
@@ -269,12 +275,13 @@ class ReorientationPanel{
   update(state,otherPending){
     if(!this.viewer)return;
     const g=state.grasp||{};this.held=g.held_object;this.motionEnabled=g.motion_enabled;
-    const id=this.held?.object_id||state.object_id,key=[id,this.held?.hold_id||'',this.held?.model_sha256||state.model_sha256,this.held?.orientation_version||0].join(':');
+    const id=this.held?.object_id||state.object_id,key=[id,this.held?.hold_id||'',this.held?.model_sha256||state.model_sha256,this.held?.orientation_version||0].concat(state.pose_mode_revision||this.held?.pose_mode?[this.held?.pose_mode||state.pose_mode||'6d',state.pose_mode_revision||'']:[]).join(':');
     if(id&&key!==this.key)this.load(id,key);
     this.disabled=!!g.busy||otherPending||this.pending||this.loading||!this.viewer.model;
     if(this.disabled)this.cancelDrag();this.dragMode.disabled=this.disabled;this.viewReset.disabled=!this.viewer.model;this.cameraControl.disabled=!this.viewer.model;this.viewer.canvas.setAttribute('aria-disabled',String(this.disabled));
     this.positionMode.disabled=this.disabled;
     this.inputs.forEach(x=>x.disabled=this.disabled);this.restore.disabled=this.disabled;
+    if(this.axisInputs)this.axisInputs.forEach(x=>x.disabled=this.disabled||!this.fiveD);
     const ready=!this.disabled&&this.anglesValid()&&this.held&&this.viewer.model?.object_id===this.held.object_id&&this.viewer.model?.model_sha256===this.held.model_sha256;
     this.preview.disabled=!ready;this.execute.disabled=!ready||!g.motion_enabled;
     if(g.operation==='reorient'&&g.busy)this.feedback.textContent=g.message;

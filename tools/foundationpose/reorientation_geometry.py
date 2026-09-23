@@ -11,6 +11,7 @@ import numpy as np
 from grasp_geometry import transform, controller_pose, pose_values, minimum_table_clearance
 from object_catalog import select_object
 from motion_validation import check_waypoints as endpoint_reachability
+from pose_symmetry import object_bounds, orientation_variants
 
 
 @lru_cache(maxsize=8)
@@ -30,7 +31,8 @@ def model_geometry(models_root, object_id):
     item = select_object(models_root, object_id)
     path = Path(item['mesh']);stat = path.stat()
     return {**_mesh_geometry(str(path), stat.st_mtime_ns, stat.st_size),
-            'object_id': item['id'], 'object_name': item['name'], 'units': 'metres'}
+            'object_id': item['id'], 'object_name': item['name'], 'units': 'metres',
+            'pose_mode': item.get('pose_mode', '6d'), 'pose_mode_revision': item.get('pose_mode_revision')}
 
 
 def checked_rotation(value):
@@ -77,15 +79,15 @@ def validate_object_pose(tcp, held, vertices, config, adaptive):
     if points.ndim!=2 or points.shape[1]!=3 or not len(points) or not np.isfinite(points).all():
         raise ValueError('物品模型顶点无效')
     obj=tcp@np.linalg.inv(attachment)
-    world=points@obj[:3,:3].T+obj[:3,3]
+    lower, upper = object_bounds(obj, points, held.get('pose_mode', '6d'))
     if not adaptive:
         low,high=np.asarray(config['workspace_min_m']),np.asarray(config['workspace_max_m'])
         xyz=tcp[:3,3]
         if np.any(xyz<low) or np.any(xyz>high) or xyz[2]<config['table_z_m']+minimum_table_clearance(config):
             raise ValueError('固定模式工具端点超出工作区或离桌距离不足')
-        if np.any(world<low-1e-8) or np.any(world>high+1e-8):
+        if np.any(lower<low-1e-8) or np.any(upper>high+1e-8):
             raise ValueError('固定模式物品端点超出工作区')
-    if world[:,2].min()<config['table_z_m']-1e-6:
+    if lower[2]<config['table_z_m']-1e-6:
         raise ValueError('物品模型在端点碰到桌面')
 
 
@@ -174,18 +176,21 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
     # Include feedback tolerance and one controller position unit so final measured Z can be strictly above 10 cm.
     minimum_z=np.ceil((table+.10+settings['position_tolerance_m']+1e-6)*1e6)/1e6
     offsets=position_offsets(current[:3,3],minimum_z,settings['search_step_m']) if position_mode=='adaptive' else [np.zeros(3)]
-    for offset in offsets:
+    rotations = orientation_variants(rotation, held, current)
+    single_fixed = position_mode == 'fixed' and held.get('pose_mode', '6d') != '5d'
+    for offset, candidate_rotation in ((offset, candidate) for offset in offsets for candidate in rotations):
         cancelled()
         if time.monotonic()>=deadline:
             raise TimeoutError('姿态位置搜索达到时间预算，未找到可执行方案，未发送运动')
         attempted+=1
-        attempt={'candidate_index':attempted,'offset_m':offset.tolist()};attempts.append(attempt)
+        attempt={'candidate_index':attempted,'offset_m':offset.tolist(),
+                 'candidate_rotation':candidate_rotation.tolist()};attempts.append(attempt)
         if len(attempts)>128:del attempts[64]  # Keep the first and latest 64 diagnostics, regardless of search duration.
         try:
-            plan=adaptive_candidate(held,vertices,rotation,arm,config,settings,offset,adaptive=position_mode=='adaptive')
+            plan=adaptive_candidate(held,vertices,candidate_rotation,arm,config,settings,offset,adaptive=position_mode=='adaptive')
         except ValueError as error:
             attempt['reason']=str(error)
-            if position_mode=='fixed':raise
+            if single_fixed:raise
             continue
         remaining=deadline-time.monotonic()
         if remaining<=0:raise TimeoutError('姿态位置搜索达到时间预算，未找到可执行方案，未发送运动')
@@ -194,7 +199,7 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
         except subprocess.TimeoutExpired:
             attempt['reason']='单个候选逆解检查超时'
             cancelled()
-            if position_mode=='fixed':raise TimeoutError('原地姿态检查超时，未发送运动')
+            if single_fixed:raise TimeoutError('原地姿态检查超时，未发送运动')
             continue
         cancelled()
         if time.monotonic()>deadline:raise TimeoutError('姿态位置搜索达到时间预算，未找到可执行方案，未发送运动')
@@ -203,6 +208,9 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
                        reason=None if valid else detail.get('reason',str(detail)[-700:]))
         if valid:
             plan.update(reachability_check=detail,current_arm=arm,position_mode=position_mode,
+                        pose_mode=held.get('pose_mode','6d'),
+                        requested_axis_z=np.asarray(rotation)[:,2].tolist(),
+                        orientation_goal='object_z_axis' if held.get('pose_mode')=='5d' else 'full_rotation',
                         search_attempts=attempts,search_attempt_count=attempted,search_attempts_truncated=attempted>len(attempts),
                         validation='endpoints_ik_fk_only_controller_joint_path_not_checked',intermediate_path_checked=False)
             return plan

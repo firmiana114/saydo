@@ -21,6 +21,8 @@ from camera_checks import camera_binding, check_camera_observation
 from reorientation_control import ReorientationMixin
 from placement_control import PlacementMixin
 from grasp_profiles_control import GraspProfilesMixin
+from pose_symmetry import effective_profile
+from object_catalog import select_object
 from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
 
@@ -388,13 +390,17 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                           'overrides': gripper_parameters,
                           'tool_response': tool['controller_readback']['tool_response_raw'],
                           'flange_T_camera': handeye['flange_T_color_optical_camera'], 'recorded_at': time.time()}
+                if observation.get('pose_mode') == '5d':
+                    record['profile_5d'] = effective_profile(record, '5d')
                 entry = self.grasp_library().append_taught(observation['object_id'], record)
                 report['grasp_id'] = entry['id']
                 report['record'] = record
                 message = '已新增并选用当前物品的夹法，保存朝向' + ('及夹持位置' if use_current_point else '；夹持位置采用记录时的文件配置')
                 message += f"；夹爪力度 {gripper_parameters['force_target_raw']}，抓取张开位置 {gripper_parameters['open_position']}。"
+                if observation.get('pose_mode') == '5d':
+                    message += '；5D夹法仅使用Z轴高度与接近夹角，中心X/Y已投影到0，绕轴方位由规划选择。'
                 self.update(state='taught', message=message, plan=None, grasp_library_changed_at=time.time())
-                return {'message': message, 'profile': profile, 'grasp_id':entry['id'],
+                return {'message': message, 'profile': effective_profile(record, observation.get('pose_mode','6d')), 'grasp_id':entry['id'],
                         'gripper_parameters': gripper_parameters, 'motion_sent': False}
         except Exception as error:
             report['error'] = str(error)
@@ -530,10 +536,15 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             report['camera_calibration'] = handeye.get('runtime_camera_binding')
             report['gripper_base'] = base
             base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
+            if observation.get('pose_mode_revision') is not None:
+                current_model = select_object(self.tracker.models_root, observation['object_id'])
+                if current_model['pose_mode_revision'] != observation['pose_mode_revision']:
+                    raise ValueError('模型位姿设置已变化，请重新跟踪后抓取')
             plan, profile, config = self.select_grasp_candidate(config, observation, tool, handeye, base_object, arm, report)
             grip = config['gripper']
             report['effective_gripper_config'] = dict(grip)
             plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
+                        pose_mode=observation.get('pose_mode','6d'), pose_mode_revision=observation.get('pose_mode_revision'),
                         model_sha256=observation.get('model_sha256'),
                         camera_calibration=handeye.get('runtime_camera_binding'),
                         object_name=observation.get('object_name'),
@@ -563,7 +574,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             self.execute(plan, config, report)
             if self.status['state']=='completed' and plan['grasp_id']!='config':
                 try:
-                    library.mark_success(observation['object_id'],plan['grasp_id'],plan['grasp_library_revision'])
+                    library.mark_success(observation['object_id'],plan['grasp_id'],plan['grasp_library_revision'],plan.get('pose_mode','6d'))
                     self.update(grasp_library_changed_at=time.time())
                 except (OSError, ValueError) as error:
                     report['grasp_history_error'] = str(error)

@@ -28,6 +28,13 @@ uncertain motion. A failed or unknown motion requires stopping the sequence and
 reporting the evidence, not changing safety checks or blindly retrying.
 
 Use current object_id, hold_id, orientation_version and configuration revisions.
+Check pose_mode in observations and holding records. For 5d objects, only position
+and the directed object Z axis are constrained; the matrix X/Y axes and spin
+around object Z are representatives. The backend searches grasp azimuths at the
+saved approach angle and free object-Z spins for reorientation. target_rpy_deg
+still encodes a representative orientation: its Z direction is the 5d goal.
+Rotating around Base Z can change a tilted object's axis; do not discard Base
+yaw indiscriminately. Other objects retain full 6d orientation requirements.
 Respect coordinate frames, units, model-axis definitions and parameter bindings.
 Reorientation angles are absolute object orientation in the robot Base frame,
 not a relative rotation or TCP target. A natural-language goal may permit many

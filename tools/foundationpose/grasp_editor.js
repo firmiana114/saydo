@@ -1,6 +1,7 @@
 /* Editing is object-relative; camera orbit never changes the saved grasp pose. */
 'use strict';
 const GraspEditorMath={
+  axisRotation(degrees){const a=degrees*Math.PI/180,s=Math.sin(a),c=Math.cos(a);return [[0,-c,s],[1,0,0],[0,s,c]];},
   add:(a,b)=>a.map((v,i)=>v+b[i]),sub:(a,b)=>a.map((v,i)=>v-b[i]),scale:(a,n)=>a.map(v=>v*n),
   segmentDistance(p,a,b){const d=this.sub(b,a),n=ReorientationMath.dot(d,d),t=n?Math.max(0,Math.min(1,ReorientationMath.dot(this.sub(p,a),d)/n)):0;return Math.hypot(...this.sub(p,this.add(a,this.scale(d,t))));},
   ray(pixel,width,height,basis,scale,pivot){
@@ -84,6 +85,7 @@ class GraspEditorPanel{
     this.send=send;this.pending=false;this.loading=false;this.locked=true;this.objectId=null;this.generation=0;this.dirty=false;this.activeId=null;
     const q=id=>document.querySelector('#grasp-editor-'+id);this.q=q;this.feedback=q('feedback');this.list=q('list');
     this.pointInputs=['px','py','pz'].map(q);this.angleInputs=['rx','ry','rz'].map(q);
+    this.approachAngle=q('approach-angle');this.approachAngle.oninput=()=>this.readFields();
     this.fields=[q('name'),q('enabled'),q('priority'),...this.pointInputs,...this.angleInputs,q('distance'),q('opening'),q('force')];
     try{this.viewer=new GraspEditorViewer(q('view'),q('overlay'),q('camera'));}catch(error){this.feedback.textContent=error.message;return;}
     this.mode=q('mode');this.mode.onchange=()=>this.redraw();
@@ -100,7 +102,8 @@ class GraspEditorPanel{
     try{
       const fetchJSON=async path=>{const r=await fetch(path);const data=await r.json();if(!r.ok)throw Error(data.error);return data;};
       const [data,model]=await Promise.all([fetchJSON('/api/grasp/profiles?object_id='+encodeURIComponent(id)),fetchJSON('/api/grasp/editor-model?object_id='+encodeURIComponent(id))]);
-      if(generation!==this.generation)return;this.data=data;this.changedAt=data.changed_at;this.model=model;this.viewer.setModel(model);this.populate();
+      if(generation!==this.generation)return;this.data=data;this.changedAt=data.changed_at;this.model=model;this.fiveD=data.pose_mode==='5d';this.viewer.setModel(model);this.populate();
+      this.q('full-rotation').hidden=this.fiveD;this.q('axis-controls').hidden=!this.fiveD;
       if(data.grasps.length)this.selectEntry(data.selected_id||data.grasps[0].id);else this.newEntry();
     }catch(error){if(generation===this.generation){this.data=null;this.feedback.textContent=error.message;}}
     finally{if(generation===this.generation)this.loading=false;}
@@ -110,12 +113,14 @@ class GraspEditorPanel{
     const selected=this.data.grasps.find(g=>g.id===this.data.selected_id);
     this.q('selection').textContent='抓取使用：'+(this.data.selection_mode==='auto'?'自动筛选已启用夹法':selected?.name||'未选择');
     this.q('info').textContent=this.data.object_name+' · 坐标与角度均相对于物品模型';
+    if(this.fiveD)this.q('info').textContent+=' · 5D：Z轴夹角与轴上抓取中心，自由绕轴选方位';
   }
   newEntry(){
     if(!this.model||!this.data)return;this.activeId=null;
     const low=this.model.point_min_m,high=this.model.point_max_m;
     this.draft={name:'新夹法',enabled:true,priority:0,profile:{grasp_point_object_m:[0,0,0].map((v,i)=>Math.max(low[i],Math.min(high[i],v))),object_R_tcp:ReorientationMath.identity()},overrides:{force_target_raw:this.data.defaults.force_target_raw,open_position:this.data.defaults.open_position}};
-    this.dirty=true;this.writeFields();this.feedback.textContent='新夹法尚未保存。拖动箭头/圆环，或输入坐标和角度。';
+    if(this.fiveD){this.draft.profile.grasp_point_object_m[0]=0;this.draft.profile.grasp_point_object_m[1]=0;this.draft.profile.approach_angle_deg=90;this.draft.profile.object_R_tcp=GraspEditorMath.axisRotation(90);}
+    this.dirty=true;this.writeFields();this.feedback.textContent=this.fiveD?'新5D夹法尚未保存，请设置Z轴高度和接近夹角。':'新夹法尚未保存。拖动箭头/圆环，或输入坐标和角度。';
   }
   selectEntry(id){
     const entry=this.data?.grasps.find(g=>g.id===id);if(!entry)return;
@@ -126,6 +131,7 @@ class GraspEditorPanel{
     const d=this.draft;this.q('name').value=d.name;this.q('enabled').checked=d.enabled;this.q('priority').value=d.priority;
     this.pointInputs.forEach((el,i)=>{el.value=(d.profile.grasp_point_object_m[i]*1000).toFixed(2);el.min=this.model.point_min_m[i]*1000;el.max=this.model.point_max_m[i]*1000;});
     ReorientationMath.angles(d.profile.object_R_tcp).forEach((v,i)=>this.angleInputs[i].value=v.toFixed(2));
+    if(this.fiveD)this.approachAngle.value=d.profile.approach_angle_deg;
     for(const [id,key,factor] of [['distance','pregrasp_distance_m',1000],['opening','open_position',1],['force','force_target_raw',1]]){
       this.q(id).value=d.overrides?.[key]==null?(id==='distance'?'':this.data.defaults[key]*factor):d.overrides[key]*factor;
       this.q(id).placeholder=id==='distance'?'沿用 '+this.data.defaults[key]*factor:'随夹法保存';
@@ -139,20 +145,23 @@ class GraspEditorPanel{
     catch(error){this.feedback.textContent=error.message;}
   }
   formValue(){
-    if(!this.q('name').value.trim()||this.fields.filter(e=>e.type!=='checkbox'&&e.value!=='').some(e=>!e.checkValidity()))throw Error('请检查名称、坐标、角度和参数范围。');
-    if([...this.pointInputs,...this.angleInputs,this.q('priority')].some(e=>e.value.trim()===''||!Number.isFinite(Number(e.value))))throw Error('坐标、角度和优先级不能为空。');
+    const active=e=>!this.fiveD||(!this.angleInputs.includes(e)&&!this.pointInputs.slice(0,2).includes(e));
+    if(!this.q('name').value.trim()||this.fields.filter(e=>active(e)&&e.type!=='checkbox'&&e.value!=='').some(e=>!e.checkValidity()))throw Error('请检查名称、坐标、角度和参数范围。');
+    if([...this.pointInputs,...this.angleInputs,this.q('priority')].filter(active).some(e=>e.value.trim()===''||!Number.isFinite(Number(e.value))))throw Error('坐标、角度和优先级不能为空。');
     if([this.q('opening'),this.q('force')].some(e=>e.value.trim()===''||!Number.isInteger(Number(e.value))))throw Error('夹爪力度和抓取张开位置必须为整数且不能为空。');
     const overrides={};for(const [id,key,factor] of [['distance','pregrasp_distance_m',.001],['opening','open_position',1],['force','force_target_raw',1]])if(this.q(id).value.trim()!=='')overrides[key]=Number(this.q(id).value)*factor;
     const old=this.draft?.profile,angles=old?ReorientationMath.angles(old.object_R_tcp):[];
     const point=old&&this.pointInputs.every((e,i)=>e.value===(old.grasp_point_object_m[i]*1000).toFixed(2))?old.grasp_point_object_m.slice():this.pointInputs.map(e=>Number(e.value)/1000);
     const rotation=old&&this.angleInputs.every((e,i)=>e.value===angles[i].toFixed(2))?old.object_R_tcp.map(row=>row.slice()):ReorientationMath.euler(...this.angleInputs.map(e=>Number(e.value)));
-    return {name:this.q('name').value.trim(),enabled:this.q('enabled').checked,priority:Number(this.q('priority').value),profile:{grasp_point_object_m:point,object_R_tcp:rotation},overrides};
+    let profile={grasp_point_object_m:point,object_R_tcp:rotation};
+    if(this.fiveD){const value=Number(this.approachAngle.value);if(this.approachAngle.value.trim()===''||!Number.isFinite(value)||value<0||value>180)throw Error('Z轴夹角须为0–180度');profile={grasp_point_object_m:[0,0,point[2]],approach_angle_deg:value,object_R_tcp:GraspEditorMath.axisRotation(value)};}
+    return {name:this.q('name').value.trim(),enabled:this.q('enabled').checked,priority:Number(this.q('priority').value),profile,overrides};
   }
   redraw(){if(this.draft&&this.viewer)this.viewer.setGrasp(this.draft.profile,this.draft.overrides?.pregrasp_distance_m??this.data.defaults.pregrasp_distance_m,this.mode.value);}
   async save(){if(this.pending||this.locked||!this.data)return;let grasp;try{grasp=this.formValue();}catch(error){this.feedback.textContent=error.message;return;}await this.mutate('save',{grasp,model_sha256:this.data.model_sha256});}
   async mutate(action,extra={}){
     if(this.pending||this.locked||!this.data)return;if(this.dirty&&['duplicate','select'].includes(action)){this.feedback.textContent='请先保存草稿或重新载入，再复制或更改抓取选择。';return;}this.pending=true;
-    try{const data=await this.send('/api/grasp/profiles',{object_id:this.objectId,revision:this.data.revision,id:this.activeId,action,...extra});
+    try{const data=await this.send('/api/grasp/profiles',{object_id:this.objectId,revision:this.data.revision,pose_mode:this.data.pose_mode||'6d',pose_mode_revision:this.data.pose_mode_revision,id:this.activeId,action,...extra});
       this.data=data;this.changedAt=data.changed_at;this.q('results').textContent='';this.populate();const id=action==='delete'?(data.selected_id||data.grasps[0]?.id):(data.saved_id||this.activeId);
       if(id)this.selectEntry(id);else this.newEntry();this.feedback.textContent='已保存。'+(action==='select'?'抓取选择已更新。':'本次未发送运动。');
     }catch(error){this.feedback.textContent=error.message;}finally{this.pending=false;}
@@ -160,6 +169,7 @@ class GraspEditorPanel{
   update(state,otherPending=false){
     if(!this.viewer)return;const id=state.object_id,g=state.grasp||{};
     if(id&&id!==this.objectId){this.changedAt=g.grasp_library_changed_at;this.load(id);}
+    if(id===this.objectId&&this.data&&state.pose_mode&&(state.pose_mode!==this.data.pose_mode||state.pose_mode_revision!==this.data.pose_mode_revision)&&!this.loading&&!this.pending){this.dirty=false;this.load(id);}
     if(g.grasp_library_changed_at&&g.grasp_library_changed_at!==this.changedAt&&!this.loading&&!this.pending&&!this.dirty){this.changedAt=g.grasp_library_changed_at;this.load(id);}
     if(this.data){
       const oldDistance=this.data.defaults.pregrasp_distance_m;
@@ -169,6 +179,8 @@ class GraspEditorPanel{
     }
     this.locked=!!g.busy||otherPending||this.pending||this.loading||!this.data;
     for(const field of [...this.fields,this.list,this.mode])field.disabled=this.locked;
+    if(this.approachAngle)this.approachAngle.disabled=this.locked||!this.fiveD;
+    if(this.fiveD){this.pointInputs[0].disabled=true;this.pointInputs[1].disabled=true;this.angleInputs.forEach(e=>e.disabled=true);this.mode.disabled=true;}
     for(const id of ['new','save','reload'])this.q(id).disabled=this.locked;
     this.q('auto').disabled=this.locked||this.dirty;
     this.q('delete').disabled=this.locked||!this.activeId;this.q('duplicate').disabled=this.locked||!this.activeId||this.dirty;
@@ -185,6 +197,7 @@ class GraspEditorPanel{
     const point=(el,e)=>{const r=el.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
     const changed=()=>{this.dirty=true;this.writeFields();this.feedback.textContent='夹法已调整，尚未保存。';};
     canvas.onpointerdown=e=>{
+      if(this.fiveD){this.feedback.textContent='5D夹法请用Z高度和夹角输入；左下角可旋转观察视角。';return;}
       if(this.locked||!this.draft||e.button!==0||drag||orbit)return;e.preventDefault();const p=point(canvas,e);
       if(this.mode.value==='pick'){const hit=V.surface(viewer.ray(p),this.model.vertices,this.model.faces);if(hit){this.draft.profile.grasp_point_object_m=hit;changed();}else this.feedback.textContent='没有点中模型表面。';return;}
       const choices=viewer.handles.map(h=>({h,d:h.ring?Math.min(...h.ring.slice(1).map((b,i)=>V.segmentDistance(p,h.ring[i],b))):V.segmentDistance(p,h.a,h.b)})).sort((a,b)=>a.d-b.d);

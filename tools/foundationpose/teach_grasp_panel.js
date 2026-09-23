@@ -12,10 +12,12 @@
     update(state,otherPending=false){
       this.state=state;const id=state.object_id,g=state.grasp||{};
       const defaults=g.grasp_configuration?.teaching_defaults;
+      const modeChanged=state.pose_mode!==this.poseMode;this.poseMode=state.pose_mode;
       if(id!==this.objectId){
         this.objectId=id;this.force.value=defaults?.force_target_raw??'';this.opening.value=defaults?.open_position??'';
         this.feedback.textContent=id?'参数随新夹法保存；记录不发送运动。':'先选择物品。';
       }
+      if(modeChanged&&id)this.feedback.textContent=state.pose_mode==='5d'?'5D示教记录轴上高度和接近夹角；抓取中心X/Y投影为0，方位由规划选择。':'参数随新夹法保存；记录不发送运动。';
       const disabled=!id||!!g.busy||!!g.stopping||this.pending||otherPending;
       this.force.disabled=this.opening.disabled=this.point.disabled=disabled;
       this.button.disabled=disabled||state.state!=='tracking'||!state.quality?.good;

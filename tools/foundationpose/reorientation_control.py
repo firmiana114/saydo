@@ -14,6 +14,7 @@ from grasp_geometry import controller_pose, transform, rotation_error, contact_r
 from grasp_robot import RobotClient
 from motion_validation import wait_for_pose
 from reorientation_visual import model_appearance
+from pose_symmetry import object_bounds
 from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request
 
 
@@ -22,8 +23,14 @@ class ReorientationMixin:
         if self.held_object is None:
             return None
         held = self.held_object
-        return {k: copy.deepcopy(held[k]) for k in ['hold_id','object_id','object_name','model_sha256',
-                'base_T_object_at_grasp','object_T_tcp','current_object_rotation','orientation_version'] if k in held}
+        result = {k: copy.deepcopy(held[k]) for k in ['hold_id','object_id','object_name','model_sha256',
+                'base_T_object_at_grasp','object_T_tcp','current_object_rotation','orientation_version',
+                'pose_mode','pose_mode_revision'] if k in held}
+        if held.get('pose_mode') == '5d':
+            result['spin_observable'] = False
+            if held.get('current_object_rotation') is not None:
+                result['current_axis_z'] = np.asarray(held['current_object_rotation'])[:,2].tolist()
+        return result
 
     def capture_attachment(self, plan, report):
         if not plan.get('object_id') or not plan.get('model_sha256'):
@@ -31,6 +38,7 @@ class ReorientationMixin:
         reached = self.arm_state()
         base_tcp = controller_pose(reached['pose'])
         held = {'hold_id':uuid.uuid4().hex, 'object_id':plan['object_id'], 'object_name':plan.get('object_name'),
+                'pose_mode':plan.get('pose_mode','6d'), 'pose_mode_revision':plan.get('pose_mode_revision'),
                 'model_sha256':plan['model_sha256'], 'base_T_object_at_grasp':plan['base_T_object'],
                 'object_T_tcp':(np.linalg.inv(transform(plan['base_T_object'])) @ base_tcp).tolist(),
                 'tool_response':plan['tool_response'],
@@ -259,6 +267,8 @@ class ReorientationMixin:
             mesh=model_geometry(self.tracker.models_root,held['object_id'])
             if mesh['model_sha256']!=held['model_sha256']:
                 raise ValueError('物品模型已变化，不能沿用抓取关系调整姿态')
+            if mesh.get('pose_mode','6d') != held.get('pose_mode','6d'):
+                raise ValueError('物品位姿模式已变化，不能沿用旧夹持记录')
             checker=(self.root/config['ik_checker']).resolve()
             if not checker.is_file():raise ValueError('缺少姿态调整航点可达性检查程序')
             report['active_stage']='检查姿态路径及最终离桌高度'
@@ -323,7 +333,7 @@ class ReorientationMixin:
                 pose = controller_pose(actual['pose'])
                 # A controller-planned joint move may curve in Cartesian space and change orientation in transit.
                 obj=pose@attachment_inv
-                bottom=float((points@obj[:3,:3].T+obj[:3,3])[:,2].min())
+                bottom=float(object_bounds(obj, points, held.get('pose_mode','6d'))[0][2])
                 report['minimum_observed_object_z_m']=min(report.get('minimum_observed_object_z_m',bottom),bottom)
                 if bottom<config['table_z_m']-1e-6:
                     raise ValueError('运动反馈中的物品模型低于配置桌面，停止运动')

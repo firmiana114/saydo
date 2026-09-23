@@ -168,6 +168,9 @@ class RobotAdapter:
             return
         try:
             plan = task['result']['reorientation_plan']
+            pose_mode = held.get('pose_mode', '6d')
+            if pose_mode not in ('5d','6d') or pose_mode != current.get('pose_mode','6d') or pose_mode != plan.get('pose_mode','6d'):
+                raise ValueError('pose mode mismatch')
             target = [row[:3] for row in plan['base_T_object_target'][:3]]
             tolerance = plan['orientation_tolerance_deg']
             if type(tolerance) not in (int, float) or not math.isfinite(tolerance) or not .1 <= tolerance <= 3:
@@ -182,7 +185,8 @@ class RobotAdapter:
                 if abs(determinant-1) > 1e-3:
                     raise ValueError('improper rotation')
             for actual in (held['current_object_rotation'], current['current_object_rotation']):
-                cosine = (sum(actual[i][j]*target[i][j] for i in range(3) for j in range(3))-1)/2
+                cosine = (sum(actual[i][2]*target[i][2] for i in range(3)) if pose_mode=='5d'
+                          else (sum(actual[i][j]*target[i][j] for i in range(3) for j in range(3))-1)/2)
                 if math.degrees(math.acos(max(-1., min(1., cosine)))) > tolerance+1e-6:
                     raise ValueError('target orientation not reached')
         except (KeyError, TypeError, ValueError, IndexError) as error:

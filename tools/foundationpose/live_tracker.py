@@ -22,7 +22,8 @@ import cv2
 import numpy as np
 
 from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
-from object_catalog import scan_objects, select_object, inferred_class
+from object_catalog import scan_objects, select_object, inferred_class, save_pose_mode
+from pose_symmetry import canonical_pose, object_rotation_error, pose_fields
 from grasp_control import GraspController
 from live_events import EventLog
 from camera_checks import select_camera
@@ -60,6 +61,7 @@ class Tracker:
         self.last_heartbeat = 0.
         self.state['output'] = str(self.output)
         self.state.update(model_sha256=hashlib.sha256(args.mesh.read_bytes()).hexdigest(), object_id=self.object_info['id'], object_name=self.object_info['name'],
+                          pose_mode=self.object_info.get('pose_mode', '6d'), pose_mode_revision=self.object_info.get('pose_mode_revision'),
                           detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
         self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
         if getattr(args, 'resume_reorientation_report', None):
@@ -248,6 +250,23 @@ class Tracker:
                               pending_object_name=info['name'], quality={}, bottle_candidates=[], pose_frame_at=None,
                               model_extents_m=None, auto_detection_supported=False)
 
+    def set_pose_mode(self, value):
+        if not isinstance(value, dict) or set(value) != {'id', 'pose_mode', 'revision'}:
+            raise ValueError('请提交物品、位姿模式和当前模型设置版本')
+        with self.lock, self.grasp.lock:
+            if self.grasp.status['busy'] or self.grasp.status.get('stopping') or self.grasp.held_object is not None:
+                raise ValueError('任务进行中或仍持有物品，不能改变位姿模式')
+            directory = self.grasp.root/'work/grasp';directory.mkdir(parents=True, exist_ok=True)
+            with (directory/'robot.lock').open('a') as device_lock:
+                fcntl.flock(device_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                row = save_pose_mode(self.models_root, value['id'], value['pose_mode'], value['revision'])
+                self.grasp.status.update(plan=None, reorientation_plan=None, placement_plan=None,
+                                         grasp_library_changed_at=time.time())
+                if self.state.get('object_id') == row['id']:
+                    self.switch_object(row['id'])
+                self.event('pose_mode_changed', object_id=row['id'], pose_mode=row['pose_mode'])
+                return {'object': row, 'motion_sent': False}
+
     def snapshot(self):
         with self.lock:
             result = dict(self.state)
@@ -256,6 +275,7 @@ class Tracker:
             result['pose_age_s'] = now - result['pose_frame_at'] if result.get('pose_frame_at') is not None else None
             if result['state'] != 'tracking' or result['pose_age_s'] is None or result['pose_age_s'] > 2 or not result.get('quality', {}).get('good'):
                 result['camera_T_object'] = None
+                result['pose_semantics'] = None
             result['grasp'] = self.grasp.snapshot()
             return result
 
@@ -273,11 +293,13 @@ class Tracker:
             if np.max(np.linalg.norm(points - points[-1], axis=1)) > .005:
                 raise ValueError('目标位姿仍在变化，请先保持静止')
             rotations = np.array([r['pose'] for r in rows])[:, :3, :3]
-            angles = np.arccos(np.clip((np.einsum('nij,ij->n', rotations, rotations[-1]) - 1) / 2, -1, 1))
+            mode = s.get('pose_mode', '6d')
+            angles = [object_rotation_error(rotation, rotations[-1], mode) for rotation in rotations]
             if np.max(angles) > np.deg2rad(15):
                 raise ValueError('目标朝向不稳定，请等待稳定跟踪')
             return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
                     'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K'),
+                    'pose_mode': mode, 'pose_mode_revision': s.get('pose_mode_revision'),
                     'model_sha256': s.get('model_sha256'), 'camera': s.get('pose_camera')}
 
     def image(self):
@@ -411,6 +433,7 @@ class Tracker:
                                 detector_class = info['detector_class']
                                 detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
                                 self.state.update(state='ready', model_ready=True, model_sha256=hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest(), model=info['mesh'], object_id=info['id'],
+                                    pose_mode=info.get('pose_mode', '6d'), pose_mode_revision=info.get('pose_mode_revision'),
                                     object_name=info['name'], pending_object_name=None, detector_class=detector_class,
                                     auto_detection_supported=detector_label is not None, model_extents_m=mesh.extents.tolist(),
                                     initialization_seconds=None, catchup_seconds=None, catchup_frames=0,
@@ -557,7 +580,9 @@ class Tracker:
                         duration = time.perf_counter() - started
                         failures = 0 if quality['good'] else failures + 1
                         lost = not quality['good'] and (bool(command) or failures >= 3)
-                        overlay = draw_posed_3d_box(frame['K'], img=rgb.copy(), ob_in_cam=pose @ np.linalg.inv(origin), bbox=bbox)
+                        pose_mode = self.state.get('pose_mode', '6d')
+                        overlay = (rgb.copy() if pose_mode=='5d' else
+                                   draw_posed_3d_box(frame['K'], img=rgb.copy(), ob_in_cam=pose @ np.linalg.inv(origin), bbox=bbox))
                         visible = rendered > 0
                         overlay[visible] = (.75 * overlay[visible] + .25 * np.array([0, 200, 255])).astype(np.uint8)
                         axis_points = np.vstack([np.zeros(3), np.eye(3) * .05])
@@ -565,8 +590,15 @@ class Tracker:
                         if quality['good'] and np.all(axis_depths > .001):
                             # Draw the actual mesh frame returned as camera_T_object,
                             # not the separately rotated oriented-bounding-box frame.
-                            overlay = draw_xyz_axis(overlay, ob_in_cam=pose, scale=.05, K=frame['K'], thickness=3, is_input_rgb=True)
+                            if pose_mode=='5d':
+                                start = project_3d_to_2d(np.array([0.,0.,0.,1.]), frame['K'], pose)
+                                end = project_3d_to_2d(np.array([0.,0.,.05,1.]), frame['K'], pose)
+                                cv2.line(overlay, tuple(map(int,start)), tuple(map(int,end)), (0,100,255), 3)
+                            else:
+                                overlay = draw_xyz_axis(overlay, ob_in_cam=pose, scale=.05, K=frame['K'], thickness=3, is_input_rgb=True)
                             for axis, name, color in [(0, 'X', (255, 0, 0)), (1, 'Y', (0, 255, 0)), (2, 'Z', (0, 100, 255))]:
+                                if pose_mode=='5d' and axis!=2:
+                                    continue
                                 endpoint = np.array([0., 0., 0., 1.])
                                 endpoint[axis] = .05
                                 u, v = project_3d_to_2d(endpoint, frame['K'], pose)
@@ -580,7 +612,10 @@ class Tracker:
                         with self.lock:
                             if generation != self.generation:
                                 continue
-                            self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
+                            mode = self.state.get('pose_mode', '6d')
+                            published = canonical_pose(pose, mode)
+                            self.state.update(state='lost' if lost else 'tracking', camera_T_object=published.tolist() if quality['good'] else None,
+                                pose_semantics=pose_fields(published, mode),
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
                                 pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), pose_camera=frame.get('camera'), error=None)
                             if command:
@@ -588,7 +623,7 @@ class Tracker:
                                                   catchup_seconds=catchup_seconds)
                             self.state['registered_frames' if command else 'tracked_frames'] += 1
                             if quality['good'] and not lost:
-                                self.pose_history.append({'pose': pose.tolist(), 'time': frame['time'], 'generation': generation})
+                                self.pose_history.append({'pose': published.tolist(), 'time': frame['time'], 'generation': generation})
                             if lost:
                                 self.mark_lost('深度或位姿匹配不可靠，等待重新识别')
                             self.frozen = None
@@ -808,6 +843,8 @@ def main():
                 elif self.path == '/api/object':
                     tracker.switch_object(value['id'])
                     result = {'accepted': True}
+                elif self.path == '/api/object/pose-mode':
+                    result = tracker.set_pose_mode(value)
                 elif self.path == '/api/automatic':
                     tracker.automatic()
                     result = {'accepted': True}

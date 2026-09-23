@@ -200,12 +200,15 @@ class GraspLibrary:
         self.write_object(object_id, value, before)
         return entry
 
-    def mark_success(self, object_id, grasp_id, expected_revision):
+    def mark_success(self, object_id, grasp_id, expected_revision, pose_mode='6d'):
         value = self.object(object_id)
         if revision(value) != expected_revision:
             raise ValueError('夹法已变化，未将旧任务结果标记到新版本')
         entry = next((g for g in value['grasps'] if g['id']==grasp_id), None)
         if entry is None:
             return
-        entry.update(tested_successfully=True, last_success_at=time.time())
+        if pose_mode == '5d':
+            entry.update(tested_successfully_5d=True, last_success_at_5d=time.time())
+        else:
+            entry.update(tested_successfully=True, last_success_at=time.time())
         self.write_object(object_id, value, expected_revision)

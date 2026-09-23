@@ -133,6 +133,8 @@ class PlacementMixin:
             mesh = model_geometry(self.tracker.models_root, held['object_id'])
             if mesh['model_sha256'] != held['model_sha256']:
                 raise ValueError('物品模型已变化，不能沿用夹持关系放置')
+            if mesh.get('pose_mode','6d') != held.get('pose_mode','6d'):
+                raise ValueError('物品位姿模式已变化，不能沿用旧夹持记录放置')
             checker = (self.root / config['ik_checker']).resolve()
             if not checker.is_file():
                 raise ValueError('缺少支持正解回验的离线检查器')
