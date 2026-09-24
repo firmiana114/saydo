@@ -4,7 +4,7 @@ const html=fs.readFileSync(__dirname+'/live_tracker.html','utf8');
 const source=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const elements=new Map();
 function el(id){
-  if(!elements.has(id))elements.set(id,{disabled:false,value:'',style:{},textContent:'',getContext(){return {};}});
+  if(!elements.has(id))elements.set(id,{disabled:false,value:'',style:{},textContent:'',getContext(){return {};},addEventListener(){}});
   return elements.get(id);
 }
 let state={state:'paused',grasp:{busy:false,motion_enabled:true,reset_available:true,zero_reset_available:true}};
