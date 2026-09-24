@@ -16,7 +16,7 @@ def reconcile(store, backend, run_id, confirmed_not_submitted=False):
         raise ValueError('后端忙碌、停止未确认或记录故障，不能解除阻断')
     checks = []
     for call in run['calls']:
-        if call['name'] not in ('grasp', 'place', 'reset_arm', 'reorient'):
+        if call['name'] not in ('grasp', 'place', 'reset_arm', 'reorient', 'execute_plan'):
             continue
         try:
             task = backend.request('/api/agent/tasks/'+call['request_id'])

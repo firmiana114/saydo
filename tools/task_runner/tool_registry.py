@@ -1,14 +1,15 @@
 """Fixed function allowlist, separate from low-level device control."""
 import json
 from jsonschema import Draft202012Validator
+from tools.robot_agent.motion_contract import GOAL_SCHEMA, VECTOR
 
 STRING = {'type': 'string', 'minLength': 1, 'maxLength': 200}
 INT = {'type': 'integer', 'minimum': 0}
 READS = {'get_status': 'status', 'get_camera_frame': 'frame', 'get_robot_state': 'robot',
-         'list_objects': 'objects', 'get_object_pose': 'pose', 'get_grasp_profiles': 'profiles'}
+         'list_objects': 'objects', 'get_object_pose': 'pose', 'get_grasp_profiles': 'profiles', 'get_object_geometry':'object-geometry', 'get_task_diagnostics':'task-diagnostics'}
 ACTIONS = {'preview_grasp': 'preview_grasp', 'grasp': 'grasp', 'preview_place': 'preview_place', 'place': 'place', 'reset_arm': 'reset',
-           'preview_reorient': 'preview_reorient', 'reorient': 'reorient'}
-MOTIONS = {'grasp', 'place', 'reset_arm', 'reorient'}
+           'preview_reorient': 'preview_reorient', 'reorient': 'reorient', 'plan_held_object_motion':'plan_held_object_motion', 'plan_release':'plan_release', 'execute_plan':'execute_plan'}
+MOTIONS = {'grasp', 'place', 'reset_arm', 'reorient', 'execute_plan'}
 REORIENT_ARGS = {'object_id': STRING, 'hold_id': STRING, 'orientation_version': INT,
     'target_rpy_deg': {'type': 'array', 'items': {'type': 'number', 'minimum': -180, 'maximum': 180}, 'minItems': 3, 'maxItems': 3},
     'position_mode': {'type': 'string', 'enum': ['fixed', 'adaptive']}}
@@ -32,6 +33,14 @@ DEFINITIONS = {
     'reorient': ('调整已夹持物品至相对Base的绝对目标朝向并继续夹持，等待结束。target_rpy_deg=[X,Y,Z]，单位度，Rz·Ry·Rx，不是旋转增量或TCP朝向。5D物品仅约束目标Z轴指向，由后端自由搜索绕轴方位。fixed固定TCP终点位置，adaptive允许移位。请求的物品、夹持及版本必须匹配；之后使用返回的新版本放置或继续调整。失败不自动重试。', REORIENT_ARGS),
     'reset_arm': ('实际返回观测姿态或七关节零位并等待；保持夹爪开合。zero不是编码器标定。', {'target': {'type': 'string', 'enum': ['observation', 'zero']}}),
     'stop_robot': ('软件停止机械臂和夹爪，不松爪；需要明确停止意图，不用于普通状态检查。', {}),
+    'get_object_geometry': ('读取物品模型坐标下包围盒、参考点和5D/6D模式；不是场景定位或接触标定。', {'object_id': STRING}),
+    'get_task_diagnostics': ('读取本次后端任务关联的规划/执行诊断；旧任务缺少日志关联时返回已有结果，不猜测。', {'task_id': STRING}),
+    'plan_held_object_motion': ('规划已夹持物品的位置/朝向，无运动。goal位置指物品参考点，坐标系在规划时冻结；朝向为该坐标系下物品绝对RPY度数，不是TCP。null分量保持前一路点值；fixed保持参考点端点，adaptive仅允许未指定位置的姿态目标移位。最多8中间点，默认15度旋转分步；linear为TCP直线子段，joint中间路径及环境/夹指碰撞未完整检查。5D仅约束有方向Z轴且参考点X/Y为0。返回方案编号后用execute_plan，5分钟有效，配置/起点/夹持改变需重规划。',
+        {'object_id':STRING,'hold_id':STRING,'orientation_version':INT,'goal':GOAL_SCHEMA}),
+    'plan_release': ('规划在当前物品位姿(goal=null)或目标位姿释放并退出，不运动。retreat_vector_base_m为松爪后TCP在Base的位移向量，长度最多0.3m，零向量不退出。只能fixed位置策略。execute_plan将松开夹爪；目标是释放前物品位姿，不保证释放后稳定停留，不提供完整支撑/夹指/环境碰撞验证。',
+        {'object_id':STRING,'hold_id':STRING,'orientation_version':INT,'goal':{**GOAL_SCHEMA,'type':['object','null']},
+         'retreat_vector_base_m':{**VECTOR,'items':{'type':'number','minimum':-.3,'maximum':.3}}}),
+    'execute_plan': ('执行已规划且不可修改的方案。release类型会松爪，须符合用户释放意图；只接受plan_id，不接受替换坐标。方案一次使用，绑定当前夹持/模型/标定/配置及起点。成功持物移动后版本加1；失败不得自动续跑或换编号重放。', {'plan_id':STRING}),
     'finish_task': ('结束本次任务。从工具结果的 evidence_call_id 字段复制证据编号，不要使用后端 task_id 或编造编号。succeeded 必须引用全部真实成功动作证据；answered 仅说明已提供信息；blocked 表示无法完成。summary 区分控制器事实与视觉判断。',
         {'outcome': {'type': 'string', 'enum': ['succeeded', 'answered', 'blocked']},
          'summary': {'type': 'string', 'minLength': 1, 'maxLength': 2000},

@@ -60,7 +60,7 @@ class MotionSpeedMixin:
                             raise ValueError('配置同时被修改，未保存速度')
                         temporary.replace(self.config_path)
                     report['saved']=True
-                    self.status.update(plan=None,reorientation_plan=None,placement_plan=None)
+                    self.status.update(plan=None,reorientation_plan=None,placement_plan=None,object_motion_plan=None)
             except Exception as error:
                 report.update(error=str(error),error_type=type(error).__name__)
                 raise

@@ -71,8 +71,9 @@ class RobotAdapter:
             raise Cancelled()
         if name in READS:
             path = '/api/agent/'+READS[name]
-            if name == 'get_grasp_profiles':
+            if name in ('get_grasp_profiles','get_object_geometry'):
                 path += '?object_id='+quote(args['object_id'], safe='')
+            if name=='get_task_diagnostics':path+='?task_id='+quote(args['task_id'],safe='')
             return await self.request(path, cancelled=cancelled)
         if name in VISION:
             await self.request('/api/agent/vision', {'operation': VISION[name], 'arguments': args}, cancelled)
@@ -106,7 +107,7 @@ class RobotAdapter:
             raise ValueError('不支持的工具')
         state = await self.status()
         self.check_idle(state)
-        if name in ('preview_reorient', 'reorient'):
+        if name in ('preview_reorient', 'reorient','plan_held_object_motion','plan_release'):
             held = state.get('grasp', {}).get('held_object')
             if not held or any(held.get(k) != args[k] for k in ('object_id', 'hold_id', 'orientation_version')):
                 raise Blocked('物品、夹持关系或朝向版本已变化；先读取状态并重新规划')
@@ -142,8 +143,13 @@ class RobotAdapter:
         self.motion_inflight = False
         if result.get('state') == 'interrupted' or result.get('outcome_unknown'):
             raise Blocked('后端报告结果未知，需人工核对', uncertain=True)
-        expected = 'completed' if name in MOTIONS else {'preview_grasp':'preview', 'preview_place':'placement_preview', 'preview_reorient':'reorient_preview'}[name]
+        expected = 'completed' if name in MOTIONS else {'preview_grasp':'preview', 'preview_place':'placement_preview', 'preview_reorient':'reorient_preview','plan_held_object_motion':'object_motion_planned','plan_release':'object_motion_planned'}[name]
         if result.get('state') != expected:
+            if name in ('plan_held_object_motion','plan_release') and result.get('state') in ('failed','rejected'):
+                latest=await self.status()
+                return {'task':result,'status':latest,'verified':False,
+                        'error':{'code':'PLAN_FAILED','message':str(result.get('error') or result.get('result',{}).get('error') or result.get('state'))},
+                        'motion_sent':False,'note':'只读规划失败，可查看诊断并在用户目标范围内重新规划；没有执行运动。'}
             raise Blocked('后端任务未成功：'+str(result.get('state')))
         latest = await self.status()
         if name == 'grasp':
@@ -155,8 +161,44 @@ class RobotAdapter:
             raise Blocked('放置结束但夹持记录未清除', uncertain=True)
         if name in ('preview_reorient', 'reorient'):
             self.verify_reorientation(name, args, result, latest)
+        if name=='execute_plan':
+            self.verify_object_execution(args,result,latest)
         return {'task': result, 'status': latest, 'verified': name in MOTIONS,
                 'verification_scope': 'controller_feedback_only; not independent contact/slip/visual verification'}
+
+    @staticmethod
+    def verify_object_execution(args,task,status):
+        try:
+            payload=task['result'];plan=payload['object_motion_plan'];result=payload['execution_result']
+            if result['plan_id']!=args['plan_id'] or plan['plan_id']!=args['plan_id'] or not result['target_verified']:raise ValueError('plan mismatch')
+            if result['kind']!=plan['kind']:raise ValueError('kind mismatch')
+            if (not math.isfinite(result['reference_position_error_m']) or not 0<=result['reference_position_error_m']<=plan['position_tolerance_m']
+                    or not math.isfinite(result['orientation_error_deg']) or not 0<=result['orientation_error_deg']<=plan['orientation_tolerance_deg']):raise ValueError('target error')
+            def pose(value):
+                if (not isinstance(value,list) or len(value)!=4 or any(not isinstance(row,list) or len(row)!=4 for row in value)
+                        or any(type(x) not in (int,float) or not math.isfinite(x) for row in value for x in row)
+                        or any(abs(value[3][i]-(1 if i==3 else 0))>1e-6 for i in range(4))):raise ValueError('invalid pose')
+                if any(abs(sum(value[i][k]*value[j][k] for k in range(3))-(i==j))>1e-3 for i in range(3) for j in range(3)):raise ValueError('invalid rotation')
+                det=sum(value[0][i]*(value[1][(i+1)%3]*value[2][(i+2)%3]-value[1][(i+2)%3]*value[2][(i+1)%3]) for i in range(3))
+                if abs(det-1)>1e-3:raise ValueError('improper rotation')
+                return value
+            actual=pose(result['actual_object_pose_before_release']);target=pose(plan['base_T_object_target']);point=plan['reference_point_object_m']
+            if not isinstance(point,list) or len(point)!=3 or any(type(x) not in (int,float) or not math.isfinite(x) for x in point):raise ValueError('invalid reference point')
+            if not .0001<=plan['position_tolerance_m']<=.002 or not .1<=plan['orientation_tolerance_deg']<=2:raise ValueError('invalid tolerance')
+            position_error=math.sqrt(sum((actual[i][3]+sum(actual[i][k]*point[k] for k in range(3))-target[i][3]-sum(target[i][k]*point[k] for k in range(3)))**2 for i in range(3)))
+            if plan.get('pose_mode') not in ('5d','6d'):raise ValueError('invalid pose mode')
+            cosine=sum(actual[i][2]*target[i][2] for i in range(3)) if plan['pose_mode']=='5d' else (sum(actual[i][j]*target[i][j] for i in range(3) for j in range(3))-1)/2
+            angle_error=math.degrees(math.acos(max(-1.,min(1.,cosine))))
+            if position_error>plan['position_tolerance_m'] or angle_error>plan['orientation_tolerance_deg']:raise ValueError('measured object pose not at target')
+            held=payload.get('held_object');current=status['grasp'].get('held_object')
+            if plan['kind']=='release':
+                if not result['release_confirmed'] or not result['retreat_confirmed'] or held is not None or current is not None:raise ValueError('release unconfirmed')
+            elif plan['kind']=='held_object_motion':
+                for value in (held,current):
+                    if not value or value['hold_id']!=plan['hold']['hold_id'] or value['object_id']!=plan['hold']['object_id'] or value['orientation_version']!=plan['hold']['orientation_version']+1:raise ValueError('hold/version mismatch')
+            else:raise ValueError('unknown plan kind')
+        except (KeyError,TypeError,ValueError,IndexError) as error:
+            raise Blocked('通用方案的目标到位、夹持版本或释放结果未核验通过',uncertain=True) from error
 
     @staticmethod
     def verify_reorientation(name, args, task, status):

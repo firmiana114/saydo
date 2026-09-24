@@ -2,7 +2,7 @@
 
 通过标准输入/输出 MCP 将客户端连接到现有 Saydo 后端。MCP 进程只调用固定的 `/api/agent/` 接口；实际动作仍由 `GraspController`、原设备锁和运动检查执行，不接受任意机器人指令、文件路径或配置修改。
 
-项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。MCP服务现提供19个工具，执行器无需通过 MCP 或 Codex 启动。
+项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。MCP服务现提供24个工具，执行器无需通过 MCP 或 Codex 启动。
 
 模型选择可启用5D位姿：状态、模型、位姿及夹法接口返回 `pose_mode`，持物记录也保留该模式。5D的矩阵只有位置和Z轴有约束，绕物品自身Z轴的转角自由；抓取中心位于该轴，后端搜索符合已保存接近夹角的方位。`preview_reorient` / `reorient` 的 `target_rpy_deg` 接口保持兼容，但5D只约束该旋转对应的Z轴指向，后端搜索绕轴等价姿态。详见 [5D位姿说明](../foundationpose/README.md#绕物品-z-轴对称的-5d-位姿)。
 
@@ -22,12 +22,21 @@
 | `place` | 使用已保存的桌面矩形和实际持物朝向，执行转移、下降、释放、后撤、退出；校验夹持/朝向/放置配置版本 |
 | `preview_reorient` / `reorient` | 已夹持物品的绝对朝向预览/执行；固定TCP终点或自适应移位，继续夹持；成功执行后返回新的朝向版本 |
 | `reset_arm` | `observation` 返回记录的观测姿态；`zero` 返回七关节零位（不是编码器标定）；保持夹爪开合 |
+| `get_object_geometry` | 模型坐标范围、原点/Z轴端点、5D/6D模式及模型摘要 |
+| `plan_held_object_motion` | 指定物品参考点、位置/朝向、坐标系、中间路点，生成只读持物方案 |
+| `plan_release` | 规划到目标后松爪及可选退出；goal=null表示当前位置释放 |
+| `execute_plan` | 核验并执行服务器保存的plan_id，单次消费，不接受临时路径覆盖 |
+| `get_task_diagnostics` | 任务结果及精确关联的新运动诊断报告 |
 | `get_task` | 按请求编号查询持久化任务，直到 `terminal=true` |
 | `stop_robot` | 取消任务，并发送机械臂和夹爪软件停止，即使当前没有 Saydo 任务；不松爪；分别确认指令应答和采样停稳 |
 
 停止工具是软件停止，不替代现场急停。停止后至少三次关节样本、覆盖 100 毫秒、每轴变化不超过 0.03°，且夹爪速度为零、当前动作任务退出，才报告 `stationary_observed=true`。未确认时锁住新的动作入口，返回 `STOP_UNCONFIRMED`，需现场核对；停止工具本身可以再次调用。停止不会自动恢复旧的夹持记录。
 
 `start_tracking` 的框为当前 640×360 图像的 `[x0,y0,x1,y1]`。先用 `select_object` 后等待 `get_status.tracking.model_ready`；自动检测默认使用Terra/low及物品提示词，必须结合图像确认实例，不能将另一只杯子当作目标模型。多个候选时使用 `get_tracking_candidates_frame`，以返回的selection_id和当前候选序号选择；不要用最新相机帧替代候选原图。当前未实现多实例长期身份跟踪。
+
+## 通用持物运动
+
+推荐链路为抓取 → plan_held_object_motion → execute_plan → plan_release → execute_plan。支持只旋转、只平移、完整物品位姿和分阶段路点；不再依赖旧place的固定矩形区域。参数、版本更新、坐标含义、执行限制及示例见 [通用持物运动说明](../foundationpose/OBJECT_MOTION.md)。新目标以物品参考点为准，与下面旧姿态接口固定TCP终点的语义不同。
 
 ## 姿态调整参数
 

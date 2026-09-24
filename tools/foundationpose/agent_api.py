@@ -21,6 +21,9 @@ import numpy as np
 from grasp_robot import RobotClient
 from object_catalog import scan_objects
 from reorientation_geometry import rotation_from_rpy_deg, checked_position_request
+from grasp_geometry import controller_pose, transform
+from tools.robot_agent.motion_contract import checked_goal, identity, vector
+from object_motion_control import public_object_plan
 
 
 class AgentError(ValueError):
@@ -48,6 +51,7 @@ class AgentAPI:
         self.database = self.directory / 'tasks.sqlite'
         self.active = None
         self.recording_error = None
+        self.grasp.agent_recording_error = None
         self.stop_lock = threading.Lock()
         with closing(self.connect()) as db, db:
             db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, body TEXT NOT NULL)')
@@ -95,6 +99,9 @@ class AgentAPI:
             task = self.get_task(self.active)
             terminal = not status.get('busy', False)
             result = {k: status.get(k) for k in ['state', 'busy', 'operation', 'message', 'error', 'plan', 'placement_plan', 'gripper_contact', 'reset_target_kind']}
+            if task['operation'] in ('plan_held_object_motion','plan_release','execute_plan'):
+                result.update({k:status.get(k) for k in ('execution_result','diagnostics_ref')})
+                result['object_motion_plan']=public_object_plan(status.get('object_motion_plan'))
             if task['operation'] in ('reorient', 'preview_reorient'):
                 result['reorientation_plan'] = status.get('reorientation_plan')
             result['held_object'] = self.grasp.held_snapshot()
@@ -106,6 +113,7 @@ class AgentAPI:
                 self.active = None
         except Exception as error:
             self.recording_error = type(error).__name__
+            self.grasp.agent_recording_error = self.recording_error
 
     def status(self):
         result = self.tracker.snapshot()
@@ -120,7 +128,9 @@ class AgentAPI:
     @staticmethod
     def agent_controller_state(state):
         # Old UI compatibility fields are not the parameters used by bound grasps.
-        return {key: value for key, value in state.items() if key not in ('force_config', 'open_position_config')}
+        result={key: value for key, value in state.items() if key not in ('force_config', 'open_position_config')}
+        if 'object_motion_plan' in result:result['object_motion_plan']=public_object_plan(result['object_motion_plan'])
+        return result
 
     def frame(self, selection=False):
         with self.tracker.lock:
@@ -162,7 +172,13 @@ class AgentAPI:
         robot = self.robot()
         arm = robot.query('get_current_arm_state')['arm_state']
         raw = np.asarray(arm['pose'], dtype=float)
-        return {'observed_at': time.time(), 'motion_sent': False,
+        held=self.grasp.held_snapshot();held_pose=None
+        if held is not None and held.get('object_T_tcp') is not None:
+            pose=controller_pose(arm['pose'])@np.linalg.inv(transform(held['object_T_tcp']))
+            held_pose={'object_id':held['object_id'],'hold_id':held['hold_id'],'orientation_version':held.get('orientation_version',0),
+                       'base_T_object':pose.tolist(),'pose_mode':held.get('pose_mode','6d'),
+                       'source':'robot_feedback_and_saved_rigid_attachment_not_visual_verification'}
+        return {'observed_at': time.time(), 'motion_sent': False, 'held_object_pose':held_pose,
                 'joint_deg': (np.asarray(arm['joint'], dtype=float)/1000).tolist(),
                 'tcp_position_m': (raw[:3]/1e6).tolist(), 'tcp_rpy_rad': (raw[3:]/1000).tolist(),
                 'arm_errors': arm.get('err'),
@@ -204,7 +220,10 @@ class AgentAPI:
                    'preview_place': {'hold_id', 'orientation_version', 'placement_revision'},
                    'reorient': {'object_id', 'hold_id', 'orientation_version', 'target_rpy_deg', 'position_mode'},
                    'preview_reorient': {'object_id', 'hold_id', 'orientation_version', 'target_rpy_deg', 'position_mode'},
-                   'reset': {'target'}}
+                   'reset': {'target'},
+                   'plan_held_object_motion': {'object_id','hold_id','orientation_version','goal'},
+                   'plan_release': {'object_id','hold_id','orientation_version','goal','retreat_vector_base_m'},
+                   'execute_plan': {'plan_id'}}
         if operation not in schemas or not isinstance(args, dict) or set(args) != schemas[operation]:
             raise AgentError('INVALID_ARGUMENTS', '未知的动作或参数。')
         if operation in ('grasp', 'preview_grasp') and (not isinstance(args['object_id'], str) or not args['object_id'].strip()):
@@ -222,6 +241,13 @@ class AgentAPI:
                 checked_position_request(args['position_mode'])
             except ValueError as error:
                 raise AgentError('INVALID_ARGUMENTS', str(error)) from error
+        if operation in ('plan_held_object_motion','plan_release'):
+            try:
+                identity(args);checked_goal(args['goal'],operation=='plan_release')
+                if operation=='plan_release':vector(args['retreat_vector_base_m'],'retreat_vector_base_m',.3)
+            except ValueError as error:raise AgentError('INVALID_ARGUMENTS',str(error)) from error
+        if operation=='execute_plan' and (not isinstance(args['plan_id'],str) or not re.fullmatch('[a-f0-9]{32}',args['plan_id'])):
+            raise AgentError('INVALID_ARGUMENTS','plan_id必须来自本后端的规划结果')
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True, allow_nan=False).encode()).hexdigest()
         with self.tracker.lock, self.grasp.lock:
             with closing(self.connect()) as db:
@@ -234,7 +260,7 @@ class AgentAPI:
                 raise AgentError('TASK_STATE_UNCERTAIN', '先处理任务记录故障，再开始动作。')
             if self.grasp.status['busy'] or self.grasp.status.get('stopping') or self.active:
                 raise AgentError('BUSY', '已有任务正在处理或停止状态尚未确认。')
-            if operation in ('grasp', 'place', 'reset', 'reorient') and self.grasp.mode != 'execute':
+            if operation in ('grasp', 'place', 'reset', 'reorient','execute_plan') and self.grasp.mode != 'execute':
                 raise AgentError('EXECUTION_DISABLED', '服务处于预览模式，执行工具不可发送动作。')
             task = {'task_id': task_id, 'operation': operation, 'arguments': args, 'session_id': self.session_id,
                     'state': 'starting', 'terminal': False, 'created_at': time.time(), 'updated_at': time.time()}
@@ -246,6 +272,10 @@ class AgentAPI:
                     self.grasp.start(preview=operation == 'preview_grasp', expected_object_id=args['object_id'])
                 elif operation == 'reset':
                     self.grasp.start_reset(args['target'])
+                elif operation in ('plan_held_object_motion','plan_release'):
+                    self.grasp.start_object_plan(args,release=operation=='plan_release',request_id=task_id)
+                elif operation=='execute_plan':
+                    self.grasp.start_execute_object_plan(args['plan_id'],task_id)
                 elif operation in ('reorient', 'preview_reorient'):
                     held = self.grasp.held_snapshot()
                     if (held is None or args['hold_id'] != held['hold_id'] or args['object_id'] != held['object_id']
@@ -319,6 +349,15 @@ class AgentAPI:
         if path == '/api/agent/robot':return self.robot_state()
         if path == '/api/agent/objects':return {'objects': scan_objects(self.tracker.models_root)}
         if path == '/api/agent/profiles':return self.grasp.grasp_profiles(params.get('object_id', [''])[0])
+        if path == '/api/agent/object-geometry':return self.grasp.object_geometry_info(params.get('object_id',[''])[0])
+        if path == '/api/agent/task-diagnostics':
+            task=self.get_task(params.get('task_id',[''])[0]);ref=(task.get('result') or {}).get('diagnostics_ref')
+            if not ref:return {'task':task,'diagnostics_available':False,'note':'该任务没有关联的新诊断文件；已有结果及错误见task。'}
+            if ref.get('directory')!='object_motion_jobs' or not re.fullmatch(r'[0-9]+_[a-f0-9]{6}\.json',ref.get('file','')):
+                raise AgentError('DIAGNOSTICS_INVALID','诊断引用无效')
+            path=self.grasp.root/'work/grasp/object_motion_jobs'/ref['file']
+            if path.is_symlink() or path.stat().st_size>2*1024*1024:raise AgentError('DIAGNOSTICS_INVALID','诊断文件无效或过大')
+            return {'task_id':task['task_id'],'diagnostics_available':True,'diagnostics':json.loads(path.read_text())}
         if path.startswith('/api/agent/tasks/'):
             return self.get_task(path.rsplit('/', 1)[1])
         raise AgentError('NOT_FOUND', '未知的 Agent 接口。')

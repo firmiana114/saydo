@@ -63,7 +63,7 @@ def parse_kinematics(result, arm, waypoints):
         solutions=np.asarray([[float(x) for x in row[3:]] for row in ik])
         if not np.isfinite(solutions).all():return fail('逆解关节角不是有限数值')
         differences=np.abs(np.diff(np.vstack([np.asarray(arm['joint'])/1000,solutions]),axis=0))
-        detail.update(verified=True,max_joint_step_deg=float(differences.max()),joint_travel_deg=float(differences.sum()))
+        detail.update(verified=True,joint_solutions_deg=solutions.tolist(),max_joint_step_deg=float(differences.max()),joint_travel_deg=float(differences.sum()))
         return True,detail
     except (ValueError,TypeError,IndexError,KeyError) as error:
         return fail('离线正解回验数据无效：'+str(error))

@@ -23,7 +23,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             tools=await client.list_tools()
             tools=tools.tools if hasattr(tools,'tools') else tools
             names={t.name:t for t in tools}
-            self.assertEqual(len(names),19)
+            self.assertEqual(len(names),24)
             for name in ['get_camera_frame','get_tracking_candidates_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
                 self.assertTrue(names[name].annotations.read_only_hint)
             for name in ['grasp','place','reorient','reset_arm','stop_robot']:
@@ -84,6 +84,27 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
                 result=await client.call_tool('reorient',{**args,**override})
                 self.assertTrue(result.is_error)
             self.assertEqual(len(backend.calls),count)
+
+
+    async def test_general_object_planning_execution_and_read_tools(self):
+        backend=FakeBackend()
+        async with Client(create_server(backend)) as client:
+            args={'object_id':'bottle','hold_id':'h','orientation_version':0,'goal':{'target_position_m':[.3,0,.2]},'request_id':'plan-001'}
+            result=await client.call_tool('plan_held_object_motion',args);self.assertFalse(result.is_error)
+            self.assertEqual(backend.calls[-1][1]['operation'],'plan_held_object_motion')
+            self.assertEqual(backend.calls[-1][1]['arguments']['goal']['max_rotation_step_deg'],15)
+            n=len(backend.calls)
+            for bad in [{'goal':{'target_position_m':[True,0,0]}},{'goal':{'target_rpy_deg':[0,0,181]}},{'goal':{'path_mode':'unsafe'}},{'orientation_version':True}]:
+                self.assertTrue((await client.call_tool('plan_held_object_motion',{**args,**bad})).is_error)
+            self.assertEqual(len(backend.calls),n)
+            self.assertFalse((await client.call_tool('plan_release',{**args,'goal':None,'retreat_vector_base_m':[0,0,.05]})).is_error)
+            self.assertIsNone(backend.calls[-1][1]['arguments']['goal'])
+            self.assertFalse((await client.call_tool('execute_plan',{'plan_id':'f'*32,'request_id':'execute-001'})).is_error)
+            self.assertEqual(backend.calls[-1][1]['arguments'],{'plan_id':'f'*32})
+            await client.call_tool('get_object_geometry',{'object_id':'cup'})
+            self.assertEqual(backend.calls[-1][0],'/api/agent/object-geometry?object_id=cup')
+            await client.call_tool('get_task_diagnostics',{'task_id':'execute-001'})
+            self.assertEqual(backend.calls[-1][0],'/api/agent/task-diagnostics?task_id=execute-001')
 
 
 if __name__=='__main__':unittest.main()

@@ -235,6 +235,12 @@ class Runner:
                             if last['name'] == 'reorient' and (not held or held.get('object_id') != last['arguments']['object_id']
                                     or held.get('hold_id') != last.get('hold_id') or held.get('orientation_version') != last.get('orientation_version')):
                                 raise Blocked('结束前姿态版本或夹持关系已变化', uncertain=True)
+                            if last['name']=='execute_plan':
+                                if last.get('plan_kind')=='release' and held is not None:
+                                    raise Blocked('结束前释放状态已变化',uncertain=True)
+                                if last.get('plan_kind')=='held_object_motion' and (not held or held.get('hold_id')!=last.get('hold_id') or held.get('orientation_version')!=last.get('orientation_version')):
+                                    raise Blocked('结束前持物运动版本已变化',uncertain=True)
+
                         self.check()
                         state = 'blocked' if args['outcome'] == 'blocked' else 'succeeded'
                         self.finish(run, state, args['summary'], completion_kind=args['outcome'],
@@ -270,7 +276,8 @@ class Runner:
                         held = result.get('task', {}).get('result', {}).get('held_object')
                         motions[call['call_id']] = {'name': name, 'task_id': record['request_id'], 'arguments': args,
                             'hold_id': held.get('hold_id') if held else None,
-                            'orientation_version': held.get('orientation_version') if held else None}
+                            'orientation_version': held.get('orientation_version') if held else None,
+                            'plan_kind':result.get('task',{}).get('result',{}).get('execution_result',{}).get('kind') if name=='execute_plan' else None}
                     record.update(state='unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-tool_started, 3))
                     self.store.save_call(run['run_id'], record)
                     self.emit(run, 'tool_finished', name=name, call_id=call['call_id'], state=record['state'], seconds=record['seconds'])

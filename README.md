@@ -12,6 +12,7 @@
 
 ## 当前目录与状态
 
+- 通用持物工具支持指定物品位置/朝向、分段调姿、夹持移动、松爪和退出，供MCP及SayDo执行器使用。接口与验证边界见 [通用持物运动](tools/foundationpose/OBJECT_MOTION.md)。
 - 自然语言任务执行器位于 `tools/task_runner/`，通过 LLM API 调用既有后端，集成于8089工作台第5页，提供串行工具调用、取消与运行记录。安装、模式和验证边界见 [任务执行器说明](tools/task_runner/README.md)。
 
 - `ros2_rm_ws/`：睿尔曼 ROS 2 工作区，包括源码、原有编译产物、MSI 的 Jazzy 编译产物和验证记录。
