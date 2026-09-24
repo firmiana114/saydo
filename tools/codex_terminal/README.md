@@ -7,7 +7,7 @@
 将本模块及 `tools/foundationpose/` 的配套修改部署至同一份项目后，在 MSI 项目根目录使用 Python 3.11 或更新版本运行：
 
 ```sh
-python3 -m tools.codex_terminal.api
+work/task_runner_env/bin/python -m tools.codex_terminal.api
 ```
 
 这是常驻前台服务，默认只监听 `127.0.0.1:8092`。8089 的固定代理转发 `/codex-terminal/` 页面及 `/api/codex-terminal/` 接口。若修改 `--port`，需同时调整代理端口；正常部署使用默认端口即可。8089 后端需加载此次修改，新服务可单独停止或启动，不需要为每次连接重启8089。
@@ -15,6 +15,21 @@ python3 -m tools.codex_terminal.api
 首次启动会生成 `work/codex_terminal/access_token`（权限600）。在 MSI 自己的终端读取该文件，将访问码填入第六页，点击「启动 / 连接」。不要把它放入 URL、源码、日志或共享截图。它与 LLM API key、MCP 后端令牌各自独立；API key 仍由原启动器从 `.env` 加载。
 
 访问码只存在浏览器当前页面内存；刷新后需重新输入，断线后可重连已有会话。页面不将它保存到浏览器存储。8089 若使用普通 HTTP，应通过可信网络或 SSH 转发访问，避免访问码被网络窃听；本服务不配置公网入口。
+
+## 已部署服务与维护
+
+MSI当前部署使用项目内的 `work/task_runner_env/bin/python`，8092仅监听回环地址；8089加载了第六页代理和现有MCP认证路由。进程编号记录在 `work/codex_terminal/server.pid`，本次启动日志和验证记录在 `work/codex_terminal_validation/`。现有服务已运行，不要重复启动。
+
+需要在结束所有终端会话后手动重新启动时，在MSI项目根目录运行：
+
+```sh
+nohup work/task_runner_env/bin/python -m tools.codex_terminal.api > work/codex_terminal/server.log 2>&1 &
+echo $! > work/codex_terminal/server.pid
+```
+
+停止前先确认没有该会话发起的机器人任务，再核对PID对应 `tools.codex_terminal.api`，发送SIGTERM；服务会结束其CLI会话。服务不会自动恢复会话或重放任务，也未配置系统开机自启。不要为重连终端重启8089或终止视觉跟踪。
+
+访问码可在自己终端中通过 `ssh msi 'cat /home/pc/saydo/work/codex_terminal/access_token'` 读取，填入第六页后点击“启动 / 连接”。不要把访问码粘贴到任务对话或截图中。
 
 ## 使用及运行前提
 
@@ -37,4 +52,4 @@ node tools/foundationpose/test_workspace_tabs.cjs
 node --check tools/codex_terminal/app.js
 ```
 
-后端测试使用无硬件 Python 回显程序，验证真实伪终端输入、中文、输入重试去重、缩放、重连、退出与子进程清理、输出截断、访问码权限和HTTP代理白名单。前端终端依赖已固定版本并随仓库提供，无须在 MSI 安装 Node/npm，也不从 CDN 加载脚本。
+后端8项测试使用无硬件Python程序，验证控制终端及前台进程组、真实伪终端输入、中文、输入重试去重、缩放、重连、退出与子进程清理、输出截断、访问码权限和HTTP代理白名单。前端终端依赖已固定版本并随仓库提供，无须在 MSI 安装 Node/npm，也不从 CDN 加载脚本。

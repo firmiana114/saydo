@@ -10,6 +10,8 @@ import re
 import select
 import signal
 import struct
+import subprocess
+import sys
 import termios
 import threading
 import time
@@ -48,18 +50,25 @@ class TerminalSession:
         self.inputs = OrderedDict()
         env = os.environ.copy()
         env.update(TERM='xterm-256color', COLORTERM='truecolor')
-        # Resolve everything before forking; the child only establishes its TTY
-        # and execs the fixed program. No shell or user-supplied argv is involved.
-        pid, fd = pty.fork()
-        if pid == 0:
-            try:
-                os.chdir(cwd)
-                fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
-                os.execve(command[0], command, env)
-            except BaseException:
-                os.write(2, '无法启动 Codex，请检查服务器上的专用入口。\r\n'.encode())
-                os._exit(127)
-        self.pid, self.fd = pid, fd
+        # HTTP handlers run in threads. Do not execute Python after forkpty
+        # in that process: inherited interpreter locks can deadlock the child.
+        # A fresh interpreter claims the controlling TTY, then execs the fixed
+        # launcher. No preexec_fn, shell, or browser-controlled command.
+        fd, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
+            bootstrap = ("import fcntl,os,sys,termios; "
+                         "fcntl.ioctl(0,termios.TIOCSCTTY,0); "
+                         "os.execve(sys.argv[1],sys.argv[1:],os.environ)")
+            self.process = subprocess.Popen([sys.executable, '-c', bootstrap, *command],
+                cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
+                start_new_session=True, close_fds=True)
+        except BaseException:
+            os.close(fd)
+            raise
+        finally:
+            os.close(slave)
+        self.pid, self.fd = self.process.pid, fd
         os.set_blocking(fd, False)
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -69,8 +78,8 @@ class TerminalSession:
         try:
             while True:
                 if status is None:
-                    exited, result = os.waitpid(self.pid, os.WNOHANG)
-                    if exited:
+                    result = self.process.poll()
+                    if result is not None:
                         status = result
                         # MCP children may retain the PTY after the CLI exits.
                         # Reap our CLI and close only its remaining process group.
@@ -103,9 +112,9 @@ class TerminalSession:
             # EOF can precede process exit; do not expose a new session while
             # the old one is still shutting down or leave a zombie process.
             if status is None:
-                _, status = os.waitpid(self.pid, 0)
+                status = self.process.wait()
             with self.lock:
-                self.exit_code = os.waitstatus_to_exitcode(status)
+                self.exit_code = status
                 self.running = False
             with self.input_lock:
                 os.close(self.fd)

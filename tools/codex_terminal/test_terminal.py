@@ -82,6 +82,16 @@ class TerminalTests(unittest.TestCase):
         with self.assertRaises(TerminalError):self.manager.connect(request_id,80,24)
         self.assertTrue(new.close()['closed'])
 
+    def test_child_has_controlling_tty_and_correct_foreground_group(self):
+        code = ('import os; fd=os.open("/dev/tty",os.O_RDWR); '
+                'print("CONTROL_OK" if os.tcgetpgrp(fd)==os.getpgrp() else "BAD",flush=True)')
+        session=TerminalSession([sys.executable,'-c',code],os.getcwd(),80,24)
+        try:
+            wait_for(lambda:not session.running)
+            self.assertEqual(session.exit_code,0)
+            self.assertIn(b'CONTROL_OK',base64.b64decode(session.output(0)['data']))
+        finally:session.close()
+
     def test_exited_parent_with_child_holding_tty(self):
         code='import os,time; pid=os.fork(); time.sleep(30) if pid==0 else None'
         session=TerminalSession([sys.executable,'-c',code],os.getcwd(),80,24)
