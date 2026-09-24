@@ -173,6 +173,8 @@ class PlacementControlTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.config, self.settings, self.held, self.vertices, self.arm = fixture()
+        self.config.setdefault('arm_speed_percent',25)
+        self.settings.update(transfer_speed_percent=self.config['arm_speed_percent'],descent_speed_percent=self.config['arm_speed_percent'])
         self.path = self.root / 'trial.json';self.path.write_text(json.dumps(self.config))
         (self.root / 'config/grasp').mkdir(parents=True)
         (self.root / 'config/grasp/placement.json').write_text(json.dumps(self.settings))

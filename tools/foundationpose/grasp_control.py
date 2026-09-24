@@ -23,11 +23,12 @@ from placement_control import PlacementMixin
 from grasp_profiles_control import GraspProfilesMixin
 from pose_symmetry import effective_profile
 from gripper_diagnostics import CloseDiagnostics, contact_failure_message, feedback_summary, record_failure_before_stop
+from motion_speed import MotionSpeedMixin, checked_speed
 from object_catalog import select_object
 from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
 
-class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
+class GraspController(MotionSpeedMixin, ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()
@@ -50,6 +51,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             except (ValueError, TypeError, KeyError, AttributeError):
                 reset_available = False
             return {**self.status, 'force_config': self.force_config(),
+                    'motion_speed_config': self.motion_speed_configuration(),
                     'grasp_configuration': self.grasp_configuration(config),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
                     'reset_available': reset_available, 'zero_reset_available': True, 'held_object': self.held_snapshot(),
@@ -110,8 +112,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             target = [0]*7 if target_kind == 'zero' else return_joint_target(config)
             if target is None:
                 raise ValueError('尚未配置机械臂复位目标，无法复位')
-            if type(config['arm_speed_percent']) is not int or not 1 <= config['arm_speed_percent'] <= 100:
-                raise ValueError('机械臂速度必须为 1–100 的整数百分比')
+            config['arm_speed_percent'] = checked_speed(config['arm_speed_percent'])
             self.cancelled.clear()
             self.actuated = False
             self.robot = None
@@ -503,6 +504,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         try:
             with self.lock:
                 config = json.loads(self.config_path.read_text())
+                config['arm_speed_percent'] = checked_speed(config['arm_speed_percent'])
             report['effective_gripper_config'] = dict(config['gripper'])
             report['config_sha256'] = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
             if mode == 'execute':

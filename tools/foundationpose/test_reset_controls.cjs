@@ -17,7 +17,7 @@ const sandbox={document:{querySelector:el},setInterval(){},setTimeout(){},consol
     return new Promise(resolve=>{resolvePost=()=>resolve({ok:true,json:async()=>({message:'模拟复位'})});});
   },
 };
-vm.createContext(sandbox);vm.runInContext(fs.readFileSync(__dirname+'/teach_grasp_panel.js','utf8'),sandbox);vm.runInContext(source,sandbox);
+vm.createContext(sandbox);vm.runInContext(fs.readFileSync(__dirname+'/teach_grasp_panel.js','utf8'),sandbox);vm.runInContext(fs.readFileSync(__dirname+'/arm_speed_panel.js','utf8'),sandbox);vm.runInContext(source,sandbox);
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 async function update(){await tick();await vm.runInContext('update()',sandbox);await tick();}
 async function main(){

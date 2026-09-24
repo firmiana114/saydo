@@ -1,5 +1,6 @@
 """Table placement shares the grasp task/device locks and never moves in preview."""
 import copy
+from motion_speed import placement_speed_settings
 import fcntl
 import hashlib
 import json
@@ -33,8 +34,9 @@ class PlacementMixin:
     def placement_configuration(self):
         try:
             value = json.loads(self.placement_path.read_text()) if self.placement_path.exists() else {}
-            settings = placement_settings(value, require_region=False)
-            table = json.loads(self.config_path.read_text())['table_z_m']
+            config = json.loads(self.config_path.read_text())
+            settings = placement_settings(placement_speed_settings(config, value), require_region=False)
+            table = config['table_z_m']
             if type(table) not in (int, float) or not np.isfinite(table):
                 raise ValueError('桌面高度无效')
             return {'settings': settings, 'revision': settings_revision(settings), 'table_z_m': table,
@@ -53,7 +55,9 @@ class PlacementMixin:
             with (directory / 'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 original = self.placement_path.read_text() if self.placement_path.exists() else None
-                old = placement_settings(json.loads(original) if original is not None else {}, require_region=False)
+                config = json.loads(self.config_path.read_text())
+                old = placement_settings(placement_speed_settings(config,
+                    json.loads(original) if original is not None else {}), require_region=False)
                 if value['revision'] != settings_revision(old):
                     raise ValueError('放置设置已变化，请重新载入后保存')
                 settings = placement_settings({**old, **{k: value[k] for k in ('region_xy_m', 'release_gap_m')}})
@@ -124,6 +128,8 @@ class PlacementMixin:
             robot_lock = (directory.parent / 'robot.lock').open('a')
             fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             raw = self.config_path.read_bytes();config = json.loads(raw)
+            settings = placement_settings(placement_speed_settings(config, settings))
+            report.update(settings=settings, settings_revision=settings_revision(settings))
             report['config_sha256'] = hashlib.sha256(raw).hexdigest()
             self.placement_config_unchanged(report)
             config = held_clearance_config(config, held)

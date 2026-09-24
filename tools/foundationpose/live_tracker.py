@@ -822,6 +822,8 @@ def main():
                 self.reply(200, Path(__file__).with_name('grasp_editor.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path == '/teach_grasp_panel.js':
                 self.reply(200, Path(__file__).with_name('teach_grasp_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/arm_speed_panel.js':
+                self.reply(200, Path(__file__).with_name('arm_speed_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path in ('/api/grasp/profiles', '/api/grasp/editor-model'):
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -940,6 +942,10 @@ def main():
                     result = tracker.grasp.set_open_position(value['value'])
                 elif self.path == '/api/arm/reset':
                     result = tracker.grasp.start_reset()
+                elif self.path == '/api/arm/speed':
+                    if set(value) != {'value', 'revision'}:
+                        raise ValueError('请提交速度百分比和当前配置版本')
+                    result = tracker.grasp.set_arm_speed(value['value'], value['revision'])
                 elif self.path == '/api/arm/reset-zero':
                     result = tracker.grasp.start_reset('zero')
                 elif self.path == '/api/reorient/preview':

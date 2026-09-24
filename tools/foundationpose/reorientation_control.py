@@ -1,5 +1,6 @@
 """Fixed-TCP object orientation shares task locks and preserves successful holds."""
 import copy
+from motion_speed import reorientation_speed_settings
 import fcntl
 import json
 import threading
@@ -260,7 +261,8 @@ class ReorientationMixin:
             robot_lock=(directory.parent/'robot.lock').open('a')
             fcntl.flock(robot_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             config=held_clearance_config(json.loads(self.config_path.read_text()), held)
-            settings=reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
+            settings=reorientation_settings(reorientation_speed_settings(config,
+                json.loads((self.root/'config/grasp/reorientation.json').read_text())))
             report['settings']=settings
             self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=mode=='execute')
             self.robot.motion_log=report.setdefault('motion_events',[])
