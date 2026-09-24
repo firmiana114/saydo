@@ -155,11 +155,13 @@ python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --
 
 此时使用 `http://192.168.101.65:8089/`。服务只绑定指定网卡地址；该地址变化时需相应调整启动参数。
 
-可优先点击“自动识别并跟踪”，或启动时传入 `--auto-start`：Torchvision 官方 SSDLite320 MobileNetV3 COCO 权重检测 bottle 类别，检测框交给 SAM 生成像素掩码，再调用官方 FoundationPose。权重缓存于 `work/foundationpose_setup/torch_hub`。这是外部初始化适配器，不是 FoundationPose 自带物体检测；不识别品牌。只自动选择明显占主导的前景瓶子，多个大小接近的候选需要点击目标；没有可靠候选时提示重试，保留手动框选。默认丢失后进入 recovering 状态，立即使用最新帧自动重新检测和初始化（默认恢复等待 0 秒）；无目标时继续等待，多个相近候选仍点选确认。自动检测不核验品牌，画面中应保留目标水瓶。暂停、手动选框和多候选选择期间不会自动恢复；可用 `--no-auto-recover` 禁用，`--recovery-interval` 可设置非负的额外等待秒数；不会并行启动多个恢复任务，也不会反复处理同一张失败帧。
+可点击“自动识别并跟踪”，或启动时传入 `--auto-start`。默认使用Terra/low按当前物品提示词返回检测框，接SAM及官方FoundationPose；多个候选需要点击目标。LLM自动恢复最多重试2次，间隔至少5秒；`--no-auto-recover` 可禁用恢复，`--recovery-interval` 可增加间隔。暂停、手动选框和候选选择期间不自动恢复。
+
+显式使用 `--detector ssdlite` 时保留Torchvision官方SSDLite320 MobileNetV3 COCO类别检测，权重缓存于 `work/foundationpose_setup/torch_hub`。该旧分支不核验品牌，仍按类别筛选、候选大小挑选和原恢复间隔运行。
 
 预览使用 `/stream.mjpg` 连续传输最新结果，JPEG 质量为 75、限制发送缓存，替代原 400 ms 单张图片轮询。采集主动排空旧帧，使用可映射到系统时钟的设备时间戳记录帧年龄；CPU 推理线程数限制为 2、OpenCV 为 1，避免过度并行。页面的“服务端结果年龄”不包含浏览器显示和网络传输时间。
 
-默认读取 D435i 彩色 1280×720/15 fps、深度 640×360/15 fps，对齐到彩色后缩至 640×360，内参同步缩放、深度按设备比例转米。相机线程持续取帧，正常跟踪只取最新帧；最多保留 180 帧短时缓存供恢复追帧，不无限积压视频；输出记录相机原生帧号。启动通过现有预览的 pause API 释放相机，不执行设备重置。
+默认读取 D435i 彩色 1280×720/15 fps、深度 640×360/15 fps，对齐到彩色后缩至 640×360，内参同步缩放、深度按设备比例转米。相机线程持续取帧，正常跟踪只取最新帧；LLM分支最多保留300帧、间隔至少0.1秒的短时缓存供恢复追帧（SSDLite分支仍为180帧），不无限积压视频；输出记录相机原生帧号。启动通过现有预览的 pause API 释放相机，不执行设备重置。
 
 `GET /api/status` 给出状态和相机光学坐标系下的 `camera_T_object`（米）。过期、深度不足或不可靠时位姿为 null。深度残差/像素数/步间位移等只是启发式检查，不能证明透明物体跟踪准确；`pose_accepted_for_robot_control` 始终为 false。网页保留与估计对应的画面，过期时明确标示。仅同源浏览器可以发送控制 POST。
 
@@ -298,7 +300,7 @@ python tools/foundationpose/evaluate_mesh.py \
 
 点击“切换物品”，列表实时读取 `work/object_models` 的直接子目录，隐藏目录与压缩包不参与。默认选择 `model/model.obj`、`model.obj`，也支持对应 GLB；不自动选择毫米版 `model_mm.obj`。缺少模型的目录显示原因并禁用。遥控器目录已从已有重建结果补入模型，原采集文件保留。
 
-切换会取消旧初始化/追帧并清除旧位姿与覆盖图；GPU 推理线程使用官方 FoundationPose 构造新物体实例，复用原 scorer/refiner 网络及渲染上下文。新模型加载完成后页面更新名称、米制包围盒尺寸和自动检测类别。使用 `--auto-start` 启动时，支持检测的模型加载后自动初始化；其他模型手动框选。模型切换写入本次运行目录的 `model_changes.jsonl`，每条姿态记录包含当前 object_id。
+切换会取消旧初始化/追帧并清除旧位姿与覆盖图；GPU 推理线程使用官方 FoundationPose 构造新物体实例，复用原 scorer/refiner 网络及渲染上下文。新模型加载完成后页面更新名称、米制包围盒尺寸及当前识别提示词。使用 `--auto-start` 启动时，模型加载后自动初始化。模型切换写入本次运行目录的 `model_changes.jsonl`，每条姿态记录包含当前 object_id。
 
 每个物品可添加 `tracking.json`：
 
@@ -306,7 +308,7 @@ python tools/foundationpose/evaluate_mesh.py \
 {"name":"马克杯（iPhone）","mesh":"model/model.obj","units":"metres","detector_class":"cup"}
 ```
 
-`detector_class` 使用 Torchvision COCO 类别名称，例如 bottle、cup、remote；null 或不支持的类别采用手动框选，丢失后也不自动检测错误类别。已有水瓶、杯子、遥控器目录在无配置时可按目录名识别类别；新物品建议显式配置。`--models-root` 可指定列表根目录，`--detector-class` 仅覆盖命令行初始模型的类别。
+`detector_class` 仅用于显式SSDLite分支，使用 Torchvision COCO 类别名称，例如 bottle、cup、remote；null 或不支持的类别采用手动框选，丢失后也不自动检测错误类别。已有水瓶、杯子、遥控器目录在无配置时可按目录名识别类别；新物品建议显式配置。`--models-root` 可指定列表根目录，`--detector-class` 仅覆盖命令行初始模型的类别。
 
 接口：`GET /api/objects` 列出目录，`POST /api/object` 携带 `{"id":"目录名"}` 请求切换。只接受列表内、路径位于该物品目录的模型；不接受任意文件路径。
 
