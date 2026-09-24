@@ -180,5 +180,11 @@ class FiveDLibraryTests(unittest.TestCase):
         request=self.request(grasp=self.entry());self.mesh.update(pose_mode='5d',pose_mode_revision='v2')
         with self.assertRaisesRegex(ValueError,'位姿模式'):self.service.edit_grasp_profiles(request)
 
+    def test_failed_free_azimuth_summary_identifies_the_last_candidate(self):
+        self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
+        self.service.verify_motion_targets=Mock(side_effect=ValueError('endpoint unavailable'))
+        with self.assertRaisesRegex(ValueError,'已检查48个，以下为最后一个候选的原因'):
+            self.service.select_grasp_candidate(*args)
+
 
 if __name__=='__main__':unittest.main()

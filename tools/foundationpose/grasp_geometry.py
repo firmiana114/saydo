@@ -128,12 +128,27 @@ def workspace_blockers(plan, config):
         if p.shape != (3,) or not np.isfinite(p).all():
             reasons.append(f'{name}：位置不是有效的三个有限数值')
             continue
+        clearance = p[2] - config['table_z_m']
+        relative_to_table = (f'TCP位于桌面上方 {clearance*1000:.3f} 毫米' if clearance > 0 else
+                             f'TCP位于桌面下方 {-clearance*1000:.3f} 毫米' if clearance < 0 else
+                             'TCP与配置桌面等高')
         for i, axis in enumerate('XYZ'):
             if p[i] < low[i] or p[i] > high[i]:
-                reasons.append(f'{name}：{axis}={p[i]*1000:.3f} 毫米，超出允许范围 [{low[i]*1000:.3f}, {high[i]*1000:.3f}] 毫米')
-        clearance = p[2] - config['table_z_m']
+                below = p[i] < low[i]
+                excess = low[i]-p[i] if below else p[i]-high[i]
+                reason = (f'{name}：{axis}={p[i]*1000:.3f} 毫米，违反基座工作区{axis}限制：'
+                          f'{"低于下限" if below else "高于上限"} {excess*1000:.3f} 毫米'
+                          f'（允许范围 [{low[i]*1000:.3f}, {high[i]*1000:.3f}] 毫米）')
+                if axis == 'Z':
+                    reason += f'；{relative_to_table}（桌面基座Z={config["table_z_m"]*1000:.3f} 毫米）'
+                    if clearance >= 0:
+                        reason += '，此项失败是工作区越界，不是TCP低于桌面'
+                reasons.append(reason)
         if clearance < minimum:
-            reasons.append(f'{name}：工具参考点距配置桌面 {clearance*1000:.3f} 毫米，要求至少 {minimum*1000:.3f} 毫米，差 {(minimum-clearance)*1000:.3f} 毫米（Z={p[2]*1000:.3f}，桌面 Z={config["table_z_m"]*1000:.3f} 毫米）')
+            reasons.append(f'{name}：违反TCP最小离桌距离限制；{relative_to_table}；'
+                           f'TCP距配置桌面 {clearance*1000:.3f} 毫米，要求至少 {minimum*1000:.3f} 毫米，'
+                           f'差 {(minimum-clearance)*1000:.3f} 毫米'
+                           f'（TCP基座Z={p[2]*1000:.3f}，桌面基座Z={config["table_z_m"]*1000:.3f} 毫米）')
     return reasons
 
 

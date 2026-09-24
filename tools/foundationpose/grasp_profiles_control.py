@@ -248,7 +248,7 @@ class GraspProfilesMixin:
                     except (ValueError, RuntimeError, TimeoutError, OSError, subprocess.TimeoutExpired) as error:
                         self.check_cancel();trial.update(passed=False,reason=str(error))
                 if plan is None:
-                    raise ValueError('自由方位候选均未通过：'+attempts[-1]['reason'] if mode=='5d' else attempts[-1]['reason'])
+                    raise ValueError(f'自由方位候选均未通过（已检查{len(attempts)}个，以下为最后一个候选的原因）：'+attempts[-1]['reason'] if mode=='5d' else attempts[-1]['reason'])
                 plan['pose_mode'] = mode
                 travel = detail.get('joint_travel_deg',float(np.rad2deg(rotation_error(controller_pose(arm['pose'])[:3,:3],plan['target_rotation']))))
                 row.update(passed=True,joint_travel_deg=travel)
