@@ -49,7 +49,7 @@ class Config:
     max_turns: int = 20
     run_timeout: float = 600
     action_timeout: float = 120
-    vision_timeout: float = 45
+    vision_timeout: float = 90
     llm_timeout: float = 90
     poll_interval: float = .5
 

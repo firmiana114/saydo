@@ -2,7 +2,7 @@
 
 通过标准输入/输出 MCP 将客户端连接到现有 Saydo 后端。MCP 进程只调用固定的 `/api/agent/` 接口；实际动作仍由 `GraspController`、原设备锁和运动检查执行，不接受任意机器人指令、文件路径或配置修改。
 
-项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。原 MCP 服务及18个工具保持可用，执行器无需通过 MCP 或 Codex 启动。
+项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。MCP服务现提供19个工具，执行器无需通过 MCP 或 Codex 启动。
 
 模型选择可启用5D位姿：状态、模型、位姿及夹法接口返回 `pose_mode`，持物记录也保留该模式。5D的矩阵只有位置和Z轴有约束，绕物品自身Z轴的转角自由；抓取中心位于该轴，后端搜索符合已保存接近夹角的方位。`preview_reorient` / `reorient` 的 `target_rpy_deg` 接口保持兼容，但5D只约束该旋转对应的Z轴指向，后端搜索绕轴等价姿态。详见 [5D位姿说明](../foundationpose/README.md#绕物品-z-轴对称的-5d-位姿)。
 
@@ -12,6 +12,7 @@
 | --- | --- |
 | `get_status` | 跟踪准备状态、执行模式、夹持记录/版本、放置参数、活动任务编号 |
 | `get_camera_frame` | 最新原始彩色画面，附采图时间、序号和尺寸；拒绝超过一秒的画面；返回原生 MCP 图片块 |
+| `get_tracking_candidates_frame` | 与当前候选框匹配的冻结原图和selection_id，30秒后拒绝；选择目标前使用 |
 | `get_object_pose` | 稳定且新鲜的物品位姿；**相机光学坐标系、米制**，不是基座坐标；不满足原抓取观测条件时明确失败 |
 | `get_robot_state` | 实际七关节角度（度）、TCP 位置（米）/RPY（弧度）、工具/工作坐标、错误与夹爪反馈；不使能、不清错 |
 | `list_objects` / `get_grasp_profiles` | 模型目录及已保存夹法；模型 ID 不等于场景中独立实例 ID |
@@ -26,7 +27,7 @@
 
 停止工具是软件停止，不替代现场急停。停止后至少三次关节样本、覆盖 100 毫秒、每轴变化不超过 0.03°，且夹爪速度为零、当前动作任务退出，才报告 `stationary_observed=true`。未确认时锁住新的动作入口，返回 `STOP_UNCONFIRMED`，需现场核对；停止工具本身可以再次调用。停止不会自动恢复旧的夹持记录。
 
-`start_tracking` 的框为当前 640×360 图像的 `[x0,y0,x1,y1]`。先用 `select_object` 后等待 `get_status.tracking.model_ready`；自动检测只识别类别，必须结合图像确认实例，不能将另一只杯子当作目标模型。当前未实现多实例长期身份跟踪。
+`start_tracking` 的框为当前 640×360 图像的 `[x0,y0,x1,y1]`。先用 `select_object` 后等待 `get_status.tracking.model_ready`；自动检测默认使用Terra/low及物品提示词，必须结合图像确认实例，不能将另一只杯子当作目标模型。多个候选时使用 `get_tracking_candidates_frame`，以返回的selection_id和当前候选序号选择；不要用最新相机帧替代候选原图。当前未实现多实例长期身份跟踪。
 
 ## 姿态调整参数
 
@@ -80,7 +81,7 @@ python tools/foundationpose/live_tracker.py --host 127.0.0.1 --port 8089 --auto-
 
 MSI 已恢复 `codex` 入口，默认 `gpt-5.6-sol / medium`。入口链接到本目录 `codex_launcher.py`，再启动 `~/.local/lib/codex/0.156.0/bin/codex` 官方 CLI；从项目权限600的 `.env` 读取模型密钥、Responses地址和模型代理，仅在当前进程环境传递密钥，不写入仓库、命令参数或 `auth.json`。自定义提供方使用 API Key，无需 ChatGPT 登录。CLI 升级时需同步更新启动脚本中的官方二进制路径。
 
-在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器固定使用 `~/.local/share/saydo-codex/codex-home` 作为 `CODEX_HOME`，配置文件、会话与普通 `~/.codex` 分开；切换至同级 `workspace`，不在源码目录启动。专用配置保存提供方、默认模型及原18个MCP工具登记。
+在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器固定使用 `~/.local/share/saydo-codex/codex-home` 作为 `CODEX_HOME`，配置文件、会话与普通 `~/.codex` 分开；切换至同级 `workspace`，不在源码目录启动。专用配置保存提供方、默认模型及MCP服务登记，工具目录由服务提供。
 
 `model_instructions_file` 指向本目录 `agent_instructions.md`，替换内置编程助手提示词，只保留机械臂任务规则。关闭AGENTS及其备用文件加载、主机Skills自动发现、已知内置Skills、记忆导入、插件和Hooks；不读取旧开发会话。启动时只枚举专用配置、工作目录及其祖先、用户和系统Skills目录中的文件名，刷新显式禁用列表，避免新增或符号链接的开发Skills进入上下文；不读取这些Skills的内容。项目本身的 `AGENTS.md`、开发Skills和其他coding agent内容继续保留给正常开发使用，不为隔离任务入口而删除。升级CLI后应重新核对实际模型上下文与新增内置Skills。
 
@@ -99,6 +100,6 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 ~/.local/share/saydo-mcp/venv/bin/python -m unittest discover -s tools/robot_agent -p 'test_*.py' -v
 ```
 
-动作测试使用模拟控制器；覆盖实际 HTTP 认证、任务去重/冲突/重启、物品和夹持绑定、停止失败锁定、最新画面和过期位姿。MCP SDK 测试覆盖原生图片块、18 个工具的模式和参数、任务查询及错误语义。实机联调仅调用观察/状态工具，不以真实抓取、放置、复位或停止作为自动验收。
+动作测试使用模拟控制器；覆盖实际 HTTP 认证、任务去重/冲突/重启、物品和夹持绑定、停止失败锁定、最新画面和过期位姿。MCP SDK 测试覆盖原生图片块、19 个工具的模式和参数、任务查询及错误语义。实机联调仅调用观察/状态工具，不以真实抓取、放置、复位或停止作为自动验收。
 
 2026-09-22 验证：175 项后端测试、11 项 MCP/客户端/安装器测试和 7 组前端检查通过。真实相机和机械臂读取成功；GPT-6 Astra/high 通过实际 MCP 工具读取状态并识别相机朝向天花板。当前无目标物品，位姿接口明确返回 `POSE_NOT_READY`，不把不存在的位姿交给 Agent。有效目标位姿和真实动作效果需在适当场景下单独验收。完整结果见根目录 `HANDOFF_REPORT.md`。

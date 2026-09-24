@@ -60,6 +60,11 @@ def create_server(backend):
         return await call('/api/agent/frame', image=True)
 
     @server.tool(annotations=read)
+    async def get_tracking_candidates_frame() -> CallToolResult:
+        """Get the frozen image matching current detection candidates, with selection_id. Use this before choosing a candidate; do not substitute the newest camera image. Reject expired selections."""
+        return await call('/api/agent/selection-frame', image=True)
+
+    @server.tool(annotations=read)
     async def get_object_pose() -> CallToolResult:
         """Read the stable tracked object's 4x4 pose in the camera optical frame (metres), model identity and original capture time. Reject stale/unreliable poses; this is NOT a robot-base pose."""
         return await call('/api/agent/pose')
@@ -86,7 +91,7 @@ def create_server(backend):
 
     @server.tool(annotations=write)
     async def start_tracking(object_id: str, box: list[int] | None = None) -> CallToolResult:
-        """Initialize the selected object's tracking without motion. box=[x0,y0,x1,y1] uses current 640x360 image pixels; null uses category detection, which may be ambiguous or select another instance."""
+        """Initialize the selected object's tracking without motion. box=[x0,y0,x1,y1] uses current 640x360 image pixels; null uses the configured detector (default Terra/low with the per-model prompt). Multiple matches require choosing a candidate."""
         return await call('/api/agent/vision', {'operation':'start_tracking','arguments':{'object_id':object_id,'box':box}})
 
     @server.tool(annotations=write)
