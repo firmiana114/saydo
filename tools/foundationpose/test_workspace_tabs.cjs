@@ -2,7 +2,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const html=fs.readFileSync(__dirname+'/live_tracker.html','utf8');
 const source=html.match(/<script id="workspace-tabs-script">([\s\S]*?)<\/script>/)[1];
-const names=['tracking','grasp-editor','reorientation','placement','task-runner'];
+const names=['tracking','grasp-editor','reorientation','placement','task-runner','codex-terminal'];
 const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);
 assert.equal(new Set(ids).size,ids.length,'all existing controls must retain unique IDs');
 const arm=html.match(/<aside class="arm-sidebar"[\s\S]*?<\/aside>/)[0];
@@ -25,14 +25,14 @@ function run(saved,unavailable=false){
 }
 let test=run('tab-grasp-editor');assert.deepEqual(test.visible(),[1]);
 const draft=test.panels[1].draft;
-for(let i=0;i<5;i++){
+for(let i=0;i<6;i++){
  test.buttons[i].events.click();assert.deepEqual(test.visible(),[i]);
  assert.equal(test.buttons[i].attributes['aria-selected'],'true');assert.equal(test.buttons[i].tabIndex,0);
  assert.strictEqual(test.panels[1].draft,draft);assert(draft.dirty);
 }
-test.buttons[4].events.keydown({key:'ArrowDown',preventDefault(){}});assert.deepEqual(test.visible(),[0]);assert(test.buttons[0].focused);
-test.buttons[0].events.keydown({key:'End',preventDefault(){}});assert.deepEqual(test.visible(),[4]);
-test.buttons[4].events.keydown({key:'Home',preventDefault(){}});assert.deepEqual(test.visible(),[0]);
+test.buttons[5].events.keydown({key:'ArrowDown',preventDefault(){}});assert.deepEqual(test.visible(),[0]);assert(test.buttons[0].focused);
+test.buttons[0].events.keydown({key:'End',preventDefault(){}});assert.deepEqual(test.visible(),[5]);
+test.buttons[5].events.keydown({key:'Home',preventDefault(){}});assert.deepEqual(test.visible(),[0]);
 assert(test.draws.includes('grasp-editor')&&test.draws.includes('reorientation')&&test.draws.includes('placement'));
 assert.deepEqual(run('invalid').visible(),[0]);assert.deepEqual(run(null,true).visible(),[0]);
 console.log('Workspace tabs passed: panel isolation, persistent sidebar, draft retention, redraw, keyboard and storage fallback.');
@@ -49,3 +49,6 @@ console.log('Fifth task page and same-origin frame sizing passed.');
 assert(!/id="grasp-stop"[^>]*disabled/.test(html),'stop must remain available while the model is thinking and the robot is idle');
 assert(html.includes("document.querySelector('#grasp-stop').disabled=taskStopPending;"));
 assert(html.includes("if(taskStopPending)return;"));
+
+assert(html.includes('src="/codex-terminal/"'));assert.deepEqual(run('tab-codex-terminal').visible(),[5]);
+console.log('Sixth Codex terminal page preserves the other pages and does not start a process on tab selection.');
