@@ -8,6 +8,7 @@ from grasp_geometry import transform, rotation_error
 
 
 HORIZONTAL_AXIS_TOLERANCE_DEG = 10.
+HORIZONTAL_GRASP_REFERENCE_TCP_M = (0., 0., .03)
 
 
 def checked_mode(value):
@@ -110,6 +111,7 @@ def grasp_variants(base_object, profile, current_rotation):
                        'horizontal_tolerance_deg': HORIZONTAL_AXIS_TOLERANCE_DEG,
                        'configured_approach_angle_deg': profile['approach_angle_deg'],
                        'effective_approach_angle_deg': angle,
+                       'grasp_reference_offset_tcp_m': list(HORIZONTAL_GRASP_REFERENCE_TCP_M),
                        'jaw_roll_deg': float(np.rad2deg(roll))}
             candidates.append((rotation_error(current_rotation, rotation), resolved, details))
         return [(resolved, details) for _, resolved, details in sorted(candidates, key=lambda item: item[0])]

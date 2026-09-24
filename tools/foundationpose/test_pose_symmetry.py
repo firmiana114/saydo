@@ -240,6 +240,9 @@ class FiveDLibraryTests(unittest.TestCase):
         from grasp_geometry import controller_pose
         for call in self.service.verify_motion_targets.call_args_list:
             candidate=call.args[0]
+            np.testing.assert_allclose(candidate['grasp_reference_position_m'],args[4][:3,3],atol=1e-12)
+            np.testing.assert_allclose(candidate['target_position_m'],args[4][:3,3]+[0,0,.03],atol=1e-12)
+            np.testing.assert_allclose(candidate['grasp_reference_offset_tcp_m'],[0,0,.03],atol=1e-12)
             np.testing.assert_allclose(np.asarray(candidate['target_rotation'])[:,2],[0,0,-1],atol=1e-12)
             for point in candidate['waypoints']:
                 np.testing.assert_allclose(controller_pose(point['controller_pose'])[:3,2],[0,0,-1],atol=.0006)
@@ -247,6 +250,37 @@ class FiveDLibraryTests(unittest.TestCase):
             np.testing.assert_allclose(pre-grasp,[0,0,args[0]['pregrasp_distance_m']],atol=1e-12)
             np.testing.assert_allclose(lift-grasp,[0,0,args[0]['lift_height_m']],atol=1e-12)
         self.assertEqual(self.library.object('cup'),before)
+
+    def test_horizontal_reference_offset_and_attachment_use_real_controller_tcp(self):
+        self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
+        args[4][:3,:3]=axis_rotation([1,0,0]);args[4][2,3]=-.010186
+        args[0]['workspace_min_m']=[-1,-1,0];args[0]['table_z_m']=-.02609
+        self.service.verify_motion_targets=Mock(return_value={'joint_travel_deg':3})
+        plan,_,_=self.service.select_grasp_candidate(*args)
+        self.assertAlmostEqual(plan['grasp_reference_position_m'][2],-.010186)
+        self.assertAlmostEqual(plan['target_position_m'][2],.019814)
+        self.assertEqual(plan['controller_tcp_frame'],'grip_tcp')
+        # Capture the real, already converted controller pose. Later object
+        # reconstruction must recover the visual pose, without a second shift.
+        from grasp_geometry import controller_pose
+        grasp=next(w for w in plan['waypoints'] if w['name']=='grasp')
+        arm={**args[5],'pose':grasp['controller_pose']}
+        self.service.arm_state=Mock(return_value=arm)
+        self.service.status['gripper_contact']={'pos':[500]}
+        plan.update(object_id='cup',model_sha256='mesh',tool_response=self.tool)
+        report={};self.service.capture_attachment(plan,report)
+        held=report['held_object'];attachment=np.asarray(held['object_T_tcp'])
+        reconstructed=controller_pose(arm['pose'])@np.linalg.inv(attachment)
+        np.testing.assert_allclose(reconstructed,args[4],atol=1e-12)
+        self.assertAlmostEqual(np.linalg.norm(attachment[:3,3]),.03)
+        self.assertEqual(held['tool_response'],self.tool)
+
+    def test_nonhorizontal_5d_does_not_shift_the_reference(self):
+        self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
+        self.service.verify_motion_targets=Mock(return_value={'joint_travel_deg':3})
+        plan,_,_=self.service.select_grasp_candidate(*args)
+        np.testing.assert_allclose(plan['target_position_m'],args[4][:3,3])
+        self.assertEqual(plan['grasp_reference_offset_tcp_m'],[0,0,0])
 
     def test_horizontal_failure_does_not_fall_back_to_tilted_candidates(self):
         self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
@@ -262,6 +296,8 @@ class FiveDLibraryTests(unittest.TestCase):
         plan,_,_=self.service.select_grasp_candidate(*args)
         np.testing.assert_allclose(plan['target_rotation'],args[4][:3,:3],atol=1e-12)
         self.assertNotIn('approach_policy',plan)
+        np.testing.assert_allclose(plan['target_position_m'],args[4][:3,3])
+        self.assertEqual(plan['grasp_reference_offset_tcp_m'],[0,0,0])
 
 
 if __name__=='__main__':unittest.main()

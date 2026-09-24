@@ -56,7 +56,7 @@ def return_joint_target(config):
     return np.rint(values * 1000).astype(int).tolist()
 
 
-def plan_grasp(raw_tcp, base_object, object_profile, config):
+def plan_grasp(raw_tcp, base_object, object_profile, config, *, grasp_reference_offset_tcp_m=None):
     current = controller_pose(raw_tcp)
     point = np.asarray(object_profile['grasp_point_object_m'], dtype=float)
     if point.shape != (3,) or not np.isfinite(point).all():
@@ -79,7 +79,13 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
     if approach.shape != (3,) or not np.isfinite(approach).all() or not np.isclose(np.linalg.norm(approach), 1):
         raise ValueError('夹爪接近方向必须是单位向量')
     approach = target_rotation @ approach
-    target = (transform(base_object) @ np.r_[point, 1])[:3]
+    reference = (transform(base_object) @ np.r_[point, 1])[:3]
+    offset = np.zeros(3) if grasp_reference_offset_tcp_m is None else np.asarray(grasp_reference_offset_tcp_m, dtype=float)
+    if offset.shape != (3,) or not np.isfinite(offset).all():
+        raise ValueError('夹持参考点偏移必须是grip_tcp坐标系中的三个有限数值，单位米')
+    # The controller, IK, arrival checks and held-object attachment still use
+    # the configured grip_tcp origin; only the point aligned to the object shifts.
+    target = reference - target_rotation @ offset
     distance = float(np.linalg.norm(target - current[:3, 3]))
     if distance > config['max_target_distance_m']:
         raise ValueError('目标距离超过本次试抓范围')
@@ -97,6 +103,8 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
         pose = np.rint(pose_values(T) * np.array([1e6]*3 + [1e3]*3)).astype(int).tolist()
         waypoints.append({'name': name, 'position_m': xyz.tolist(), 'controller_pose': pose})
     return {'base_T_object': transform(base_object).tolist(), 'target_position_m': target.tolist(),
+            'grasp_reference_position_m': reference.tolist(), 'grasp_reference_offset_tcp_m': offset.tolist(),
+            'controller_tcp_frame': 'grip_tcp',
             'current_position_m': current[:3, 3].tolist(),
             'orientation_policy': policy, 'target_rotation': target_rotation.tolist(),
             'approach_direction_base': approach.tolist(), 'grasp_point_object_m': point.tolist(), 'waypoints': waypoints, 'target_distance_m': distance,

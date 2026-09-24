@@ -232,7 +232,8 @@ class GraspProfilesMixin:
                         raise TimeoutError('候选检查时间预算已用完')
                     trial = dict(azimuth);attempts.append(trial)
                     try:
-                        candidate = plan_grasp(arm['pose'],base_object,resolved,effective)
+                        candidate = plan_grasp(arm['pose'],base_object,resolved,effective,
+                                               grasp_reference_offset_tcp_m=azimuth.get('grasp_reference_offset_tcp_m'))
                         blockers = workspace_blockers(candidate,effective)
                         if blockers:
                             raise ValueError('；'.join(blockers))
