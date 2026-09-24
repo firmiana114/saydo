@@ -111,7 +111,8 @@ class AgentAPI:
         result = self.tracker.snapshot()
         return {'session_id': self.session_id, 'tracking': {k: result.get(k) for k in [
             'state', 'error', 'object_id', 'object_name', 'model_ready', 'auto_detection_supported',
-            'pose_mode', 'pose_mode_revision', 'pose_semantics',
+            'pose_mode', 'pose_mode_revision', 'pose_semantics', 'detector_backend',
+            'detection_model', 'detection_effort', 'effective_detection_prompt', 'detection_seconds',
             'camera_age_s', 'pose_age_s', 'quality', 'bottle_candidates', 'selection_id']},
             'grasp': self.agent_controller_state(result['grasp']), 'active_task_id': self.active,
             'task_recording_error': self.recording_error}
@@ -121,21 +122,25 @@ class AgentAPI:
         # Old UI compatibility fields are not the parameters used by bound grasps.
         return {key: value for key, value in state.items() if key not in ('force_config', 'open_position_config')}
 
-    def frame(self):
+    def frame(self, selection=False):
         with self.tracker.lock:
-            frame = self.tracker.latest
-            if frame is None or time.time()-frame['time'] > 1.:
-                raise AgentError('CAMERA_UNAVAILABLE', '没有一秒内的新鲜相机画面。')
+            frame = self.tracker.frozen if selection else self.tracker.latest
+            if selection and self.tracker.state['state'] != 'choose_candidate':
+                raise AgentError('SELECTION_EXPIRED', '候选画面已失效，请重新识别。')
+            if frame is None or time.time()-frame['time'] > (30. if selection else 1.):
+                raise AgentError('CAMERA_UNAVAILABLE', '候选画面超过30秒，请重新识别。' if selection else '没有一秒内的新鲜相机画面。')
             image = frame['bgr'].copy()
             stamp, sequence = frame['time'], frame['sequence']
             camera = copy.deepcopy(frame.get('camera'))
+            selection_id = self.tracker.generation if selection else None
         ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not ok:
             raise AgentError('IMAGE_ENCODING_FAILED', '相机画面编码失败。')
         return {'captured_at': stamp, 'frame_age_s': time.time()-stamp, 'sequence': sequence,
                 'width': image.shape[1], 'height': image.shape[0], 'camera': camera,
                 'image_base64': base64.b64encode(encoded).decode(), 'mime_type': 'image/jpeg',
-                'image_kind': 'latest_raw_color_frame_not_frozen_selection'}
+                'selection_id': selection_id,
+                'image_kind': 'frozen_selection_frame' if selection else 'latest_raw_color_frame_not_frozen_selection'}
 
     def pose(self):
         with self.tracker.lock:
@@ -309,6 +314,7 @@ class AgentAPI:
     def get(self, path, params):
         if path == '/api/agent/status':return self.status()
         if path == '/api/agent/frame':return self.frame()
+        if path == '/api/agent/selection-frame':return self.frame(selection=True)
         if path == '/api/agent/pose':return self.pose()
         if path == '/api/agent/robot':return self.robot_state()
         if path == '/api/agent/objects':return {'objects': scan_objects(self.tracker.models_root)}

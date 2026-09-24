@@ -44,6 +44,16 @@ def scan_objects(root):
             if not isinstance(config, dict):
                 raise ValueError('tracking.json 必须为 JSON 对象')
             row['name'] = str(config.get('name', directory.name))
+            detection_path = directory/'detection.json'
+            if detection_path.is_symlink():
+                raise ValueError('detection.json 不能是符号链接')
+            detection_raw = detection_path.read_bytes() if detection_path.exists() else None
+            detection = json.loads(detection_raw) if detection_raw is not None else {}
+            if not isinstance(detection, dict):
+                raise ValueError('detection.json 必须为 JSON 对象')
+            prompt = checked_detection_prompt(detection.get('detection_prompt', ''))
+            row.update(detection_prompt=prompt, effective_detection_prompt=prompt or row['name'],
+                       detection_prompt_revision=tracking_revision(detection_raw))
             row['pose_mode'] = checked_mode(config.get('pose_mode', '6d'))
             row['pose_mode_revision'] = tracking_revision(raw)
             row['detector_class'] = config.get('detector_class', row['detector_class'])
@@ -104,4 +114,41 @@ def save_pose_mode(root, object_id, mode, expected_revision):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    return select_object(root, object_id)
+
+
+def checked_detection_prompt(prompt):
+    if not isinstance(prompt, str) or len(prompt) > 2000:
+        raise ValueError('识别提示词必须是最多2000字的文本')
+    return prompt.strip()
+
+
+def save_detection_prompt(root, object_id, prompt, expected_revision):
+    prompt = checked_detection_prompt(prompt)
+    row = select_object(root, object_id)
+    path = Path(root)/row['id']/'detection.json'
+    raw = path.read_bytes() if path.exists() else None
+    if expected_revision != tracking_revision(raw):
+        raise ValueError('识别提示词已变化，请重新打开模型选择')
+    if prompt == row['detection_prompt']:
+        return row
+    value = json.loads(raw) if raw is not None else {}
+    value['detection_prompt'] = prompt
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.detection-', delete=False) as output:
+            temporary = Path(output.name)
+            output.write(json.dumps(value, ensure_ascii=False, indent=2)+'\n')
+            output.flush();os.fsync(output.fileno())
+        if path.is_symlink() or (path.read_bytes() if path.exists() else None) != raw:
+            raise ValueError('识别提示词同时被其他程序修改，未保存')
+        if raw is not None:
+            backup = path.parent/'detection_backups'
+            if backup.is_symlink():
+                raise ValueError('识别配置备份目录不能是符号链接')
+            backup.mkdir(exist_ok=True)
+            (backup/f'{time.time_ns()}.json').write_bytes(raw)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:temporary.unlink(missing_ok=True)
     return select_object(root, object_id)

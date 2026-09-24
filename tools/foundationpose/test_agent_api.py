@@ -48,6 +48,18 @@ class AgentAPITests(unittest.TestCase):
         self.assertFalse(self.grasp.thread.is_alive())
         return self.api.get_task(task_id)
 
+    def test_candidate_frame_matches_frozen_selection_and_expires(self):
+        self.tracker.frozen = {'bgr':np.full((24,32,3),30,np.uint8),'time':time.time()-5,'sequence':7}
+        self.tracker.generation=4;self.tracker.state['state']='choose_candidate'
+        frame=self.api.frame(selection=True)
+        self.assertEqual(frame['sequence'],7);self.assertEqual(frame['selection_id'],4)
+        self.assertEqual(frame['image_kind'],'frozen_selection_frame')
+        self.assertEqual(self.api.frame()['sequence'],12)
+        self.tracker.frozen['time']-=31
+        with self.assertRaises(AgentError):self.api.frame(selection=True)
+        self.tracker.state['state']='tracking'
+        with self.assertRaises(AgentError):self.api.frame(selection=True)
+
     def test_grasp_completion_duplicate_and_conflicting_retry(self):
         self.request();result=self.wait()
         self.assertTrue(result['terminal']);self.assertEqual(result['state'],'completed')

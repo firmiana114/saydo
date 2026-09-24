@@ -40,6 +40,24 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.adapter = RobotAdapter(self.config, self.backend)
         self.cancelled = asyncio.Event()
 
+    async def test_vision_uses_matching_candidate_frame(self):
+        self.backend.state['tracking']={'state':'choose_candidate','selection_id':3}
+        original=self.backend.request
+        def request(path,value=None):
+            if path=='/api/agent/selection-frame':return {'selection_id':3,'sequence':7}
+            return original(path,value)
+        self.backend.request=request
+        result=await self.adapter.execute('start_tracking',{'object_id':'cup'},'id-12345',self.cancelled,lambda _:None)
+        self.assertEqual(result['candidate_frame']['sequence'],7)
+        self.backend.state['tracking']['selection_id']=4
+        with self.assertRaises(Blocked):
+            await self.adapter.execute('start_tracking',{'object_id':'cup'},'id-12345',self.cancelled,lambda _:None)
+
+    async def test_exhausted_detection_returns_failure_without_waiting_for_timeout(self):
+        self.backend.state['tracking']={'state':'lost'}
+        with self.assertRaisesRegex(Blocked,'初始化失败'):
+            await self.adapter.execute('start_tracking',{'object_id':'cup'},'id-12345',self.cancelled,lambda _:None)
+
     async def test_timeout_submission_queries_original_id_without_resubmit(self):
         self.backend.submission_error = True
         result = await self.adapter.execute('reset_arm', {'target': 'zero'}, 'original-id', self.cancelled, lambda _: None)

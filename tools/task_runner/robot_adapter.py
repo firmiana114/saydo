@@ -87,7 +87,10 @@ class RobotAdapter:
                     return state
                 if name != 'select_object':
                     if tracking.get('state') == 'choose_candidate':
-                        return {**state, 'candidate_frame': await self.request('/api/agent/frame')}
+                        frame = await self.request('/api/agent/selection-frame')
+                        if frame.get('selection_id') != tracking.get('selection_id'):
+                            raise Blocked('候选画面已变化，请重新获取识别结果')
+                        return {**state, 'candidate_frame': frame}
                     if tracking.get('state') == 'tracking':
                         try:
                             pose = await self.request('/api/agent/pose')
@@ -95,7 +98,7 @@ class RobotAdapter:
                         except BackendError as error:
                             if error.payload.get('code') != 'POSE_NOT_READY':
                                 raise
-                    if tracking.get('state') in ('model_error', 'camera_error', 'failed'):
+                    if tracking.get('state') in ('model_error', 'camera_error', 'failed', 'lost'):
                         raise Blocked('跟踪初始化失败')
                 await asyncio.sleep(self.config.poll_interval)
             raise Blocked('等待模型或跟踪初始化超时；未发送机械臂动作')

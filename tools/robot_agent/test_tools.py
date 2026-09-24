@@ -13,7 +13,7 @@ class FakeBackend:
     def request(self,path,value=None):
         self.calls.append((path,value))
         if self.fail:raise BackendError({'code':'REQUEST_UNCERTAIN','task_id':'fixed-id','message':'query original task'})
-        if path.endswith('/frame'):return {'image_base64':base64.b64encode(b'image-fixture').decode(),'mime_type':'image/jpeg','captured_at':123.,'sequence':4}
+        if path.endswith(('/frame','/selection-frame')):return {'image_base64':base64.b64encode(b'image-fixture').decode(),'mime_type':'image/jpeg','captured_at':123.,'sequence':4}
         return {'path':path,'value':value,'task_id':(value or {}).get('request_id'),'terminal':False}
 
 
@@ -23,8 +23,8 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             tools=await client.list_tools()
             tools=tools.tools if hasattr(tools,'tools') else tools
             names={t.name:t for t in tools}
-            self.assertEqual(len(names),18)
-            for name in ['get_camera_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
+            self.assertEqual(len(names),19)
+            for name in ['get_camera_frame','get_tracking_candidates_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
                 self.assertTrue(names[name].annotations.read_only_hint)
             for name in ['grasp','place','reorient','reset_arm','stop_robot']:
                 self.assertFalse(names[name].annotations.read_only_hint)
@@ -37,6 +37,13 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.content[0].mime_type,'image/jpeg')
             self.assertEqual(result.structured_content['sequence'],4)
             self.assertNotIn('image_base64',result.structured_content)
+
+    async def test_frozen_candidates_image_uses_separate_route(self):
+        backend=FakeBackend()
+        async with Client(create_server(backend)) as client:
+            result=await client.call_tool('get_tracking_candidates_frame',{})
+            self.assertFalse(result.is_error);self.assertEqual(result.content[0].type,'image')
+            self.assertEqual(backend.calls[-1][0],'/api/agent/selection-frame')
 
     async def test_motion_arguments_ids_and_stop_route(self):
         backend=FakeBackend()
