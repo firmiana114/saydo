@@ -7,6 +7,9 @@ import numpy as np
 from grasp_geometry import transform, rotation_error
 
 
+HORIZONTAL_AXIS_TOLERANCE_DEG = 10.
+
+
 def checked_mode(value):
     if value not in ('6d', '5d'):
         raise ValueError('位姿模式必须是 6d 或 5d')
@@ -86,7 +89,31 @@ def effective_profile(entry, mode='6d'):
 
 def grasp_variants(base_object, profile, current_rotation):
     """Search a bounded azimuth set, seeded by the current approach direction."""
-    basis = axis_rotation(transform(base_object)[:3, 2])
+    base_object = transform(base_object)
+    axis = base_object[:3, 2]
+    elevation = float(np.rad2deg(np.arcsin(np.clip(axis[2], -1., 1.))))
+    if abs(elevation) <= HORIZONTAL_AXIS_TOLERANCE_DEG + 1e-10:
+        # Horizontal 5D objects must be approached from above, regardless of the
+        # saved approach angle. Keep jaw closing perpendicular to the object axis.
+        down = np.array([0., 0., -1.])
+        x = np.cross(axis, down);x /= np.linalg.norm(x)
+        target = np.column_stack((x, np.cross(down, x), down))
+        angle = float(np.rad2deg(np.arccos(np.clip(np.dot(axis, down), -1., 1.))))
+        candidates = []
+        for roll in (0., np.pi):
+            rotation = target @ z_rotation(roll)
+            resolved = {**profile, 'orientation': 'follow_object',
+                        'approach_angle_deg': angle,
+                        'object_R_tcp': (base_object[:3, :3].T @ rotation).tolist()}
+            details = {'approach_policy': 'horizontal_5d_vertical_down',
+                       'object_axis_elevation_deg': elevation,
+                       'horizontal_tolerance_deg': HORIZONTAL_AXIS_TOLERANCE_DEG,
+                       'configured_approach_angle_deg': profile['approach_angle_deg'],
+                       'effective_approach_angle_deg': angle,
+                       'jaw_roll_deg': float(np.rad2deg(roll))}
+            candidates.append((rotation_error(current_rotation, rotation), resolved, details))
+        return [(resolved, details) for _, resolved, details in sorted(candidates, key=lambda item: item[0])]
+    basis = axis_rotation(axis)
     seed = basis.T @ np.asarray(current_rotation)[:, 2]
     phase = math.atan2(seed[1], seed[0])
     representative = grasp_rotation(profile['approach_angle_deg'])

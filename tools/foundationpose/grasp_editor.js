@@ -113,7 +113,7 @@ class GraspEditorPanel{
     const selected=this.data.grasps.find(g=>g.id===this.data.selected_id);
     this.q('selection').textContent='抓取使用：'+(this.data.selection_mode==='auto'?'自动筛选已启用夹法':selected?.name||'未选择');
     this.q('info').textContent=this.data.object_name+' · 坐标与角度均相对于物品模型';
-    if(this.fiveD)this.q('info').textContent+=' · 5D：Z轴夹角与轴上抓取中心，自由绕轴选方位';
+    if(this.fiveD)this.q('info').textContent+=' · 5D：Z轴夹角与轴上抓取中心；物品Z轴距水平面≤10°时强制竖直向下抓取，覆盖接近夹角，否则自由绕轴选方位';
   }
   newEntry(){
     if(!this.model||!this.data)return;this.activeId=null;

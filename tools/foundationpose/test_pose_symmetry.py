@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
 from object_catalog import scan_objects, save_pose_mode
 from pose_symmetry import (canonical_pose, object_rotation_error, checked_axis_profile,
                            effective_profile, grasp_variants, object_bounds, z_rotation,
-                           orientation_variants)
+                           orientation_variants, axis_rotation)
 from live_tracker import Tracker
 from reorientation_geometry import plan_reorientation
 from placement_geometry import plan_placement
@@ -25,6 +25,45 @@ import test_grasp_library
 
 
 class AxisGeometryTests(unittest.TestCase):
+    def test_horizontal_grasps_are_vertical_under_spin_and_axis_reversal(self):
+        current = Rotation.from_euler('xyz',[25,30,75],degrees=True).as_matrix()
+        for elevation in (-10., -2., 0., 2., 10.):
+            for heading in (0., 35., 120., 270.):
+                e,h = np.deg2rad([elevation,heading])
+                axis = np.array([np.cos(e)*np.cos(h),np.cos(e)*np.sin(h),np.sin(e)])
+                for sign in (-1,1):
+                    base = np.eye(4);base[:3,:3] = axis_rotation(sign*axis)
+                    for angle in (0., 37., 90., 180.):
+                        profile = checked_axis_profile({'grasp_point_object_m':[0,0,.035],'approach_angle_deg':angle})
+                        original = copy.deepcopy(profile)
+                        one = grasp_variants(base,profile,current)
+                        spun = base.copy();spun[:3,:3] = base[:3,:3]@z_rotation(.71)
+                        two = grasp_variants(spun,profile,current)
+                        self.assertEqual(len(one),2);self.assertEqual(profile,original)
+                        for (a,details),(b,_) in zip(one,two):
+                            world = base[:3,:3]@a['object_R_tcp']
+                            np.testing.assert_allclose(world[:,2],[0,0,-1],atol=1e-12)
+                            np.testing.assert_allclose(world,spun[:3,:3]@b['object_R_tcp'],atol=1e-12)
+                            np.testing.assert_allclose(world.T@world,np.eye(3),atol=1e-12)
+                            self.assertAlmostEqual(np.linalg.det(world),1)
+                            self.assertAlmostEqual(np.dot(world[:,0],axis),0)
+                            self.assertEqual(a['grasp_point_object_m'],[0.,0.,.035])
+                            self.assertEqual(details['approach_policy'],'horizontal_5d_vertical_down')
+                            self.assertAlmostEqual(a['approach_angle_deg'],90+sign*elevation)
+                        a,b = [base[:3,:3]@r['object_R_tcp'] for r,_ in one]
+                        np.testing.assert_allclose(a,b@z_rotation(np.pi),atol=1e-12)
+
+    def test_outside_horizontal_threshold_keeps_saved_approach_angle(self):
+        for elevation in (-90., -10.001, 10.001, 90.):
+            e = np.deg2rad(elevation)
+            base = np.eye(4);base[:3,:3] = axis_rotation([np.cos(e),0,np.sin(e)])
+            profile = checked_axis_profile({'grasp_point_object_m':[0,0,0],'approach_angle_deg':37.})
+            variants = grasp_variants(base,profile,np.eye(3))
+            self.assertEqual(len(variants),48)
+            for resolved,_ in variants:
+                world = base[:3,:3]@resolved['object_R_tcp']
+                self.assertAlmostEqual(np.dot(world[:,2],base[:3,2]),np.cos(np.deg2rad(37)))
+
     def test_object_spin_is_free_but_axis_flip_and_tilt_are_not(self):
         rotation = Rotation.from_euler('xyz',[25,39,-70],degrees=True).as_matrix()
         pose = np.eye(4);pose[:3,:3] = rotation;pose[:3,3] = [.1,.2,.3]
@@ -185,6 +224,44 @@ class FiveDLibraryTests(unittest.TestCase):
         self.service.verify_motion_targets=Mock(side_effect=ValueError('endpoint unavailable'))
         with self.assertRaisesRegex(ValueError,'已检查48个，以下为最后一个候选的原因'):
             self.service.select_grasp_candidate(*args)
+
+    def test_horizontal_plan_uses_only_vertical_waypoints_and_second_jaw_orientation(self):
+        self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
+        args[4][:3,:3]=axis_rotation([1,0,0])
+        before=copy.deepcopy(self.library.object('cup'))
+        self.service.verify_motion_targets=Mock(side_effect=[ValueError('unreachable'),{'joint_travel_deg':3}])
+        plan,profile,_=self.service.select_grasp_candidate(*args)
+        self.assertEqual(self.service.verify_motion_targets.call_count,2)
+        self.assertEqual(plan['approach_policy'],'horizontal_5d_vertical_down')
+        self.assertEqual(plan['azimuth_search_max_candidates'],2)
+        self.assertIsNone(plan['azimuth_step_deg'])
+        self.assertAlmostEqual(plan['approach_angle_deg'],90.)
+        self.assertEqual(plan['azimuth']['configured_approach_angle_deg'],0.)
+        from grasp_geometry import controller_pose
+        for call in self.service.verify_motion_targets.call_args_list:
+            candidate=call.args[0]
+            np.testing.assert_allclose(np.asarray(candidate['target_rotation'])[:,2],[0,0,-1],atol=1e-12)
+            for point in candidate['waypoints']:
+                np.testing.assert_allclose(controller_pose(point['controller_pose'])[:3,2],[0,0,-1],atol=.0006)
+            pre,grasp,lift=[np.array(p['position_m']) for p in candidate['waypoints']]
+            np.testing.assert_allclose(pre-grasp,[0,0,args[0]['pregrasp_distance_m']],atol=1e-12)
+            np.testing.assert_allclose(lift-grasp,[0,0,args[0]['lift_height_m']],atol=1e-12)
+        self.assertEqual(self.library.object('cup'),before)
+
+    def test_horizontal_failure_does_not_fall_back_to_tilted_candidates(self):
+        self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
+        args[4][:3,:3]=axis_rotation([1,0,0])
+        self.service.verify_motion_targets=Mock(side_effect=ValueError('endpoint unavailable'))
+        with self.assertRaisesRegex(ValueError,'横躺5D物品仅允许竖直向下抓取.*已检查2个'):
+            self.service.select_grasp_candidate(*args)
+        self.assertEqual(self.service.verify_motion_targets.call_count,2)
+
+    def test_horizontal_6d_keeps_saved_orientation(self):
+        self.save();args=self.candidate_args();args[4][:3,:3]=axis_rotation([1,0,0])
+        self.service.verify_motion_targets=Mock(return_value={'joint_travel_deg':3})
+        plan,_,_=self.service.select_grasp_candidate(*args)
+        np.testing.assert_allclose(plan['target_rotation'],args[4][:3,:3],atol=1e-12)
+        self.assertNotIn('approach_policy',plan)
 
 
 if __name__=='__main__':unittest.main()

@@ -241,14 +241,20 @@ class GraspProfilesMixin:
                         detail = self.verify_motion_targets(candidate,effective,report,arm,candidate['waypoints'],timeout=min(3.,remaining)) or {}
                         trial['passed'] = True;plan = candidate
                         if mode=='5d':
-                            plan.update(orientation_policy='axisymmetric_z', approach_angle_deg=profile['approach_angle_deg'],
-                                        azimuth=azimuth, azimuth_step_deg=15, azimuth_search_max_candidates=len(variants))
+                            vertical = azimuth.get('approach_policy')=='horizontal_5d_vertical_down'
+                            plan.update(orientation_policy='axisymmetric_z', approach_angle_deg=resolved['approach_angle_deg'],
+                                        approach_policy=azimuth.get('approach_policy','free_azimuth'),
+                                        azimuth=azimuth, azimuth_step_deg=None if vertical else 15,
+                                        azimuth_search_max_candidates=len(variants))
                         profile = resolved
                         break
                     except (ValueError, RuntimeError, TimeoutError, OSError, subprocess.TimeoutExpired) as error:
                         self.check_cancel();trial.update(passed=False,reason=str(error))
                 if plan is None:
-                    raise ValueError(f'自由方位候选均未通过（已检查{len(attempts)}个，以下为最后一个候选的原因）：'+attempts[-1]['reason'] if mode=='5d' else attempts[-1]['reason'])
+                    label = ('横躺5D物品仅允许竖直向下抓取，两种夹爪朝向均未通过'
+                             if attempts[-1].get('approach_policy')=='horizontal_5d_vertical_down'
+                             else '自由方位候选均未通过')
+                    raise ValueError(f'{label}（已检查{len(attempts)}个，以下为最后一个候选的原因）：'+attempts[-1]['reason'] if mode=='5d' else attempts[-1]['reason'])
                 plan['pose_mode'] = mode
                 travel = detail.get('joint_travel_deg',float(np.rad2deg(rotation_error(controller_pose(arm['pose'])[:3,:3],plan['target_rotation']))))
                 row.update(passed=True,joint_travel_deg=travel)
