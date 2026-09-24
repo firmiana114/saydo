@@ -57,12 +57,13 @@ for(const basis of [M.defaultView(),M.orbit(M.defaultView(),[73,57],[98,67],146,
 }
 const inputs=new Map(),input=(id,value='')=>{const e={value,checked:true,type:'number',checkValidity(){return true;}};inputs.set(id,e);return e;};
 const panel=Object.create(Panel.prototype);panel.q=id=>inputs.get(id);
-input('name','瓶身侧夹').type='text';input('enabled').type='checkbox';input('priority','7');input('distance','80');input('opening','500');input('force','20');
+input('name','瓶身侧夹').type='text';input('enabled').type='checkbox';input('priority','7');input('distance','80');input('clearance','');input('opening','500');input('force','20');
 const original=M.euler(23.456789,37.234567,41.345678),point=[.012345678,.003456789,-.005678912];
 panel.draft={profile:{grasp_point_object_m:point,object_R_tcp:original}};
 panel.pointInputs=point.map((v,i)=>input('p'+i,(v*1000).toFixed(2)));panel.angleInputs=M.angles(original).map((v,i)=>input('r'+i,v.toFixed(2)));panel.fields=[...inputs.values()];
 let result=plain(panel.formValue());assert.deepEqual(result.profile.object_R_tcp,plain(original),'metadata edits must not quantize/rebind the saved orientation');assert.deepEqual(result.profile.grasp_point_object_m,point);
 assert.deepEqual(result.overrides,{pregrasp_distance_m:.08,open_position:500,force_target_raw:20});
+input('clearance','3.5');result=plain(panel.formValue());assert.equal(result.overrides.min_table_clearance_m,.0035);input('clearance','0');assert.equal(panel.formValue().overrides.min_table_clearance_m,0);input('clearance','');assert(!('min_table_clearance_m' in panel.formValue().overrides));
 panel.pointInputs[0].value='42';panel.angleInputs[0].value='90';result=plain(panel.formValue());assert.equal(result.profile.grasp_point_object_m[0],.042);assert(Math.abs(M.angles(result.profile.object_R_tcp)[0]-90)<1e-8);
 input('force','');assert.throws(()=>panel.formValue(),/夹爪力度/);input('force','20');
 panel.angleInputs[1].value='';assert.throws(()=>panel.formValue());

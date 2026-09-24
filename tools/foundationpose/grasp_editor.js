@@ -86,7 +86,7 @@ class GraspEditorPanel{
     const q=id=>document.querySelector('#grasp-editor-'+id);this.q=q;this.feedback=q('feedback');this.list=q('list');
     this.pointInputs=['px','py','pz'].map(q);this.angleInputs=['rx','ry','rz'].map(q);
     this.approachAngle=q('approach-angle');this.approachAngle.oninput=()=>this.readFields();
-    this.fields=[q('name'),q('enabled'),q('priority'),...this.pointInputs,...this.angleInputs,q('distance'),q('opening'),q('force')];
+    this.fields=[q('name'),q('enabled'),q('priority'),...this.pointInputs,...this.angleInputs,q('distance'),q('clearance'),q('opening'),q('force')];
     try{this.viewer=new GraspEditorViewer(q('view'),q('overlay'),q('camera'));}catch(error){this.feedback.textContent=error.message;return;}
     this.mode=q('mode');this.mode.onchange=()=>this.redraw();
     for(const field of this.fields)field.oninput=()=>this.readFields();
@@ -132,9 +132,9 @@ class GraspEditorPanel{
     this.pointInputs.forEach((el,i)=>{el.value=(d.profile.grasp_point_object_m[i]*1000).toFixed(2);el.min=this.model.point_min_m[i]*1000;el.max=this.model.point_max_m[i]*1000;});
     ReorientationMath.angles(d.profile.object_R_tcp).forEach((v,i)=>this.angleInputs[i].value=v.toFixed(2));
     if(this.fiveD)this.approachAngle.value=d.profile.approach_angle_deg;
-    for(const [id,key,factor] of [['distance','pregrasp_distance_m',1000],['opening','open_position',1],['force','force_target_raw',1]]){
-      this.q(id).value=d.overrides?.[key]==null?(id==='distance'?'':this.data.defaults[key]*factor):d.overrides[key]*factor;
-      this.q(id).placeholder=id==='distance'?'沿用 '+this.data.defaults[key]*factor:'随夹法保存';
+    for(const [id,key,factor] of [['distance','pregrasp_distance_m',1000],['clearance','min_table_clearance_m',1000],['opening','open_position',1],['force','force_target_raw',1]]){
+      this.q(id).value=d.overrides?.[key]==null?(['distance','clearance'].includes(id)?'':this.data.defaults[key]*factor):d.overrides[key]*factor;
+      this.q(id).placeholder=['distance','clearance'].includes(id)?'沿用 '+this.data.defaults[key]*factor:'随夹法保存';
     }
     this.redraw();
   }
@@ -149,7 +149,7 @@ class GraspEditorPanel{
     if(!this.q('name').value.trim()||this.fields.filter(e=>active(e)&&e.type!=='checkbox'&&e.value!=='').some(e=>!e.checkValidity()))throw Error('请检查名称、坐标、角度和参数范围。');
     if([...this.pointInputs,...this.angleInputs,this.q('priority')].filter(active).some(e=>e.value.trim()===''||!Number.isFinite(Number(e.value))))throw Error('坐标、角度和优先级不能为空。');
     if([this.q('opening'),this.q('force')].some(e=>e.value.trim()===''||!Number.isInteger(Number(e.value))))throw Error('夹爪力度和抓取张开位置必须为整数且不能为空。');
-    const overrides={};for(const [id,key,factor] of [['distance','pregrasp_distance_m',.001],['opening','open_position',1],['force','force_target_raw',1]])if(this.q(id).value.trim()!=='')overrides[key]=Number(this.q(id).value)*factor;
+    const overrides={};for(const [id,key,factor] of [['distance','pregrasp_distance_m',.001],['clearance','min_table_clearance_m',.001],['opening','open_position',1],['force','force_target_raw',1]])if(this.q(id).value.trim()!=='')overrides[key]=Number(this.q(id).value)*factor;
     const old=this.draft?.profile,angles=old?ReorientationMath.angles(old.object_R_tcp):[];
     const point=old&&this.pointInputs.every((e,i)=>e.value===(old.grasp_point_object_m[i]*1000).toFixed(2))?old.grasp_point_object_m.slice():this.pointInputs.map(e=>Number(e.value)/1000);
     const rotation=old&&this.angleInputs.every((e,i)=>e.value===angles[i].toFixed(2))?old.object_R_tcp.map(row=>row.slice()):ReorientationMath.euler(...this.angleInputs.map(e=>Number(e.value)));
@@ -163,7 +163,7 @@ class GraspEditorPanel{
     if(this.pending||this.locked||!this.data)return;if(this.dirty&&['duplicate','select'].includes(action)){this.feedback.textContent='请先保存草稿或重新载入，再复制或更改抓取选择。';return;}this.pending=true;
     try{const data=await this.send('/api/grasp/profiles',{object_id:this.objectId,revision:this.data.revision,pose_mode:this.data.pose_mode||'6d',pose_mode_revision:this.data.pose_mode_revision,id:this.activeId,action,...extra});
       this.data=data;this.changedAt=data.changed_at;this.q('results').textContent='';this.populate();const id=action==='delete'?(data.selected_id||data.grasps[0]?.id):(data.saved_id||this.activeId);
-      if(id)this.selectEntry(id);else this.newEntry();this.feedback.textContent='已保存。'+(action==='select'?'抓取选择已更新。':'本次未发送运动。');
+      if(id)this.selectEntry(id);else this.newEntry();this.feedback.textContent='已保存。'+(action==='select'?'抓取选择已更新。':'本次未发送运动；下次预览/抓取立即使用新参数。');
     }catch(error){this.feedback.textContent=error.message;}finally{this.pending=false;}
   }
   update(state,otherPending=false){

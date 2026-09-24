@@ -10,7 +10,7 @@ import uuid
 
 import numpy as np
 
-from grasp_geometry import transform
+from grasp_geometry import transform, minimum_table_clearance
 
 MAX_GRASPS = 32
 
@@ -34,10 +34,12 @@ def checked_profile(value):
 
 
 def checked_overrides(value):
-    if not isinstance(value, dict) or set(value) - {'pregrasp_distance_m', 'open_position', 'force_target_raw'}:
+    if not isinstance(value, dict) or set(value) - {'pregrasp_distance_m', 'open_position', 'force_target_raw', 'min_table_clearance_m'}:
         raise ValueError('夹法参数覆盖项无效')
     for key, number in value.items():
-        if key == 'pregrasp_distance_m':
+        if key == 'min_table_clearance_m':
+            minimum_table_clearance({key: number})
+        elif key == 'pregrasp_distance_m':
             if type(number) not in (int, float) or not np.isfinite(number) or not 0 < number <= .3:
                 raise ValueError('预抓距离必须大于 0 且不超过 300 毫米')
         elif type(number) is not int or not (0 if key == 'open_position' else 1) <= number <= (1000 if key == 'open_position' else 100):
@@ -82,6 +84,8 @@ def effective_config(config, entry):
     result = copy.deepcopy(config);overrides = checked_bound_overrides(entry.get('overrides', {}))
     if 'pregrasp_distance_m' in overrides:
         result['pregrasp_distance_m'] = overrides['pregrasp_distance_m']
+    if 'min_table_clearance_m' in overrides:
+        result['min_table_clearance_m'] = overrides['min_table_clearance_m']
     if 'open_position' in overrides:
         result['gripper']['open_position'] = overrides['open_position']
     if 'force_target_raw' in overrides:
@@ -97,7 +101,17 @@ def effective_parameters(config, entry):
             'force_units': result['gripper'].get('force_units', 'native_units_not_newtons'),
             'open_position_units': 'native_position_0_to_1000',
             'pregrasp_distance_m': result.get('pregrasp_distance_m'),
+            'min_table_clearance_m': minimum_table_clearance(result),
+            'table_clearance_source': 'grasp_profile' if 'min_table_clearance_m' in entry.get('overrides',{}) else 'global_default',
             'lift_height_m': result.get('lift_height_m'), 'arm_speed_percent': result.get('arm_speed_percent')}
+
+
+def held_clearance_config(config, held):
+    """Keep the clearance of the actual grasp, independent of later editor saves."""
+    result = copy.deepcopy(config)
+    if 'min_table_clearance_m' in held:
+        result['min_table_clearance_m'] = minimum_table_clearance(held)
+    return result
 
 
 class GraspLibrary:

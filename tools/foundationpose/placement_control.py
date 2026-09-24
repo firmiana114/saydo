@@ -13,6 +13,7 @@ import traceback
 import numpy as np
 
 from grasp_geometry import controller_pose, rotation_error, contact_result
+from grasp_library import held_clearance_config
 from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from reorientation_geometry import model_geometry, pose_waypoint
@@ -125,6 +126,7 @@ class PlacementMixin:
             raw = self.config_path.read_bytes();config = json.loads(raw)
             report['config_sha256'] = hashlib.sha256(raw).hexdigest()
             self.placement_config_unchanged(report)
+            config = held_clearance_config(config, held)
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=mode == 'execute')
             self.robot.motion_log = report.setdefault('motion_events', [])
             self.check_cancel()

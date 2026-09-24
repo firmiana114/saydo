@@ -11,6 +11,7 @@ import numpy as np
 import yaml
 
 from grasp_geometry import controller_pose, transform, rotation_error, contact_result
+from grasp_library import held_clearance_config
 from grasp_robot import RobotClient
 from motion_validation import wait_for_pose
 from reorientation_visual import model_appearance
@@ -25,7 +26,7 @@ class ReorientationMixin:
         held = self.held_object
         result = {k: copy.deepcopy(held[k]) for k in ['hold_id','object_id','object_name','model_sha256',
                 'base_T_object_at_grasp','object_T_tcp','current_object_rotation','orientation_version',
-                'pose_mode','pose_mode_revision'] if k in held}
+                'pose_mode','pose_mode_revision','min_table_clearance_m'] if k in held}
         if held.get('pose_mode') == '5d':
             result['spin_observable'] = False
             if held.get('current_object_rotation') is not None:
@@ -44,6 +45,9 @@ class ReorientationMixin:
                 'tool_response':plan['tool_response'],
                 'contact_position':self.status['gripper_contact']['pos'][0],
                 'recorded_at':time.time(), 'evidence':'frozen_visual_pose_and_gripper_feedback_not_slip_measurement'}
+        parameters = plan.get('effective_parameters', {})
+        if 'min_table_clearance_m' in parameters:
+            held['min_table_clearance_m'] = parameters['min_table_clearance_m']
         report['held_object'] = held
 
     def finish_attachment(self, report):
@@ -255,7 +259,7 @@ class ReorientationMixin:
             directory.mkdir(parents=True,exist_ok=True)
             robot_lock=(directory.parent/'robot.lock').open('a')
             fcntl.flock(robot_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            config=json.loads(self.config_path.read_text())
+            config=held_clearance_config(json.loads(self.config_path.read_text()), held)
             settings=reorientation_settings(json.loads((self.root/'config/grasp/reorientation.json').read_text()))
             report['settings']=settings
             self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=mode=='execute')

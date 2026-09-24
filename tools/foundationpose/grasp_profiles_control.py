@@ -9,7 +9,7 @@ import uuid
 import numpy as np
 import yaml
 
-from grasp_geometry import plan_grasp, workspace_blockers, rotation_error, controller_pose
+from grasp_geometry import plan_grasp, workspace_blockers, rotation_error, controller_pose, minimum_table_clearance
 from grasp_library import (GraspLibrary, MAX_GRASPS, revision, checked_profile, checked_overrides,
                            point_limits, binding_error, effective_config, object_gripper_defaults,
                            checked_bound_overrides, effective_parameters)
@@ -82,7 +82,8 @@ class GraspProfilesMixin:
                 'object_name':geometry['object_name'], 'model_sha256':geometry['model_sha256'], 'maximum':MAX_GRASPS,
                 'changed_at':self.status.get('grasp_library_changed_at'),
                 'parameter_scope':'per_grasp',
-                'defaults':{'pregrasp_distance_m':config['pregrasp_distance_m'], **object_gripper_defaults(object_id)}}
+                'defaults':{'pregrasp_distance_m':config['pregrasp_distance_m'],
+                            'min_table_clearance_m':minimum_table_clearance(config), **object_gripper_defaults(object_id)}}
 
     def edit_grasp_profiles(self, request):
         if not isinstance(request, dict):
