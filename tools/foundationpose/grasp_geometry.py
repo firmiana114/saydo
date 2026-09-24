@@ -56,6 +56,13 @@ def return_joint_target(config):
     return np.rint(values * 1000).astype(int).tolist()
 
 
+def checked_tcp_offset(value):
+    if (not isinstance(value, list) or len(value) != 3
+            or any(type(v) not in (int, float) or not np.isfinite(v) or abs(v) > .3 for v in value)):
+        raise ValueError('TCP偏移须为grip_tcp局部X/Y/Z三个有限数值，每轴在−300到300毫米内')
+    return [float(v) for v in value]
+
+
 def plan_grasp(raw_tcp, base_object, object_profile, config, *, grasp_reference_offset_tcp_m=None):
     current = controller_pose(raw_tcp)
     point = np.asarray(object_profile['grasp_point_object_m'], dtype=float)
@@ -80,9 +87,7 @@ def plan_grasp(raw_tcp, base_object, object_profile, config, *, grasp_reference_
         raise ValueError('夹爪接近方向必须是单位向量')
     approach = target_rotation @ approach
     reference = (transform(base_object) @ np.r_[point, 1])[:3]
-    offset = np.zeros(3) if grasp_reference_offset_tcp_m is None else np.asarray(grasp_reference_offset_tcp_m, dtype=float)
-    if offset.shape != (3,) or not np.isfinite(offset).all():
-        raise ValueError('夹持参考点偏移必须是grip_tcp坐标系中的三个有限数值，单位米')
+    offset = np.asarray(checked_tcp_offset([0,0,0] if grasp_reference_offset_tcp_m is None else grasp_reference_offset_tcp_m))
     # The controller, IK, arrival checks and held-object attachment still use
     # the configured grip_tcp origin; only the point aligned to the object shifts.
     target = reference - target_rotation @ offset

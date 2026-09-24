@@ -60,9 +60,9 @@ const panel=Object.create(Panel.prototype);panel.q=id=>inputs.get(id);
 input('name','瓶身侧夹').type='text';input('enabled').type='checkbox';input('priority','7');input('distance','80');input('clearance','');input('opening','500');input('force','20');
 const original=M.euler(23.456789,37.234567,41.345678),point=[.012345678,.003456789,-.005678912];
 panel.draft={profile:{grasp_point_object_m:point,object_R_tcp:original}};
-panel.pointInputs=point.map((v,i)=>input('p'+i,(v*1000).toFixed(2)));panel.angleInputs=M.angles(original).map((v,i)=>input('r'+i,v.toFixed(2)));panel.fields=[...inputs.values()];
+panel.pointInputs=point.map((v,i)=>input('p'+i,(v*1000).toFixed(2)));panel.angleInputs=M.angles(original).map((v,i)=>input('r'+i,v.toFixed(2)));panel.offsetInputs=['x','y','z'].map(a=>input('offset-'+a,'0'));panel.fields=[...inputs.values()];
 let result=plain(panel.formValue());assert.deepEqual(result.profile.object_R_tcp,plain(original),'metadata edits must not quantize/rebind the saved orientation');assert.deepEqual(result.profile.grasp_point_object_m,point);
-assert.deepEqual(result.overrides,{pregrasp_distance_m:.08,open_position:500,force_target_raw:20});
+assert.deepEqual(result.overrides,{pregrasp_distance_m:.08,open_position:500,force_target_raw:20,tcp_offset_m:[0,0,0]});
 input('clearance','3.5');result=plain(panel.formValue());assert.equal(result.overrides.min_table_clearance_m,.0035);input('clearance','0');assert.equal(panel.formValue().overrides.min_table_clearance_m,0);input('clearance','');assert(!('min_table_clearance_m' in panel.formValue().overrides));
 panel.pointInputs[0].value='42';panel.angleInputs[0].value='90';result=plain(panel.formValue());assert.equal(result.profile.grasp_point_object_m[0],.042);assert(Math.abs(M.angles(result.profile.object_R_tcp)[0]-90)<1e-8);
 input('force','');assert.throws(()=>panel.formValue(),/夹爪力度/);input('force','20');
@@ -71,3 +71,9 @@ console.log('Grasp editor checks passed: ray/surface/plane selection, arbitrary 
 const unsaved=Object.create(Panel.prototype);let sent=false;
 Object.assign(unsaved,{pending:false,locked:false,dirty:true,data:{},feedback:{textContent:''},send:async()=>{sent=true;}});
 unsaved.mutate('select',{selection_mode:'auto'}).then(()=>{assert(!sent,'unsaved edits must block changing the grasp selection');assert(unsaved.feedback.textContent.includes('保存草稿'));}).catch(error=>{console.error(error);process.exitCode=1;});
+
+panel.angleInputs[1].value='37.23';panel.offsetInputs.forEach((e,i)=>e.value=[5,-8,-30][i].toString());
+assert.deepEqual(plain(panel.formValue()).overrides.tcp_offset_m,[.005,-.008,-.03]);
+panel.offsetInputs[2].value='';assert.throws(()=>panel.formValue(),/TCP偏移/);
+panel.offsetInputs[2].value='301';assert.throws(()=>panel.formValue(),/TCP偏移/);
+console.log('Per-grasp TCP offsets: signed millimetre conversion and invalid input rejected.');

@@ -39,7 +39,7 @@
 
 ## 夹法参数输出
 
-`get_grasp_profiles` 返回每条夹法的 `effective_parameters`：`force_target_raw`、`force_limit_raw`、`open_position`、`pregrasp_distance_m`、`lift_height_m`、`arm_speed_percent` 及单位。力度和开度来自该夹法的保存值，不从全局夹爪设置继承；它们不是当前硬件寄存器读回值。缺少绑定值时返回 `parameter_error`，执行拒绝该候选。
+`get_grasp_profiles` 返回每条夹法的 `effective_parameters`：`force_target_raw`、`force_limit_raw`、`open_position`、`pregrasp_distance_m`、`tcp_offset_m`（grip_tcp局部米制三元素偏移）、`lift_height_m`、`arm_speed_percent` 及单位。力度和开度来自该夹法的保存值，不从全局夹爪设置继承；它们不是当前硬件寄存器读回值。缺少绑定值时返回 `parameter_error`，执行拒绝该候选。
 
 `get_status` 的 `grasp.grasp_configuration` 和 `get_robot_state` 的 `controller.grasp_configuration` 提供当前物品的选择方式及各夹法参数摘要。Agent 输出不包含旧全局力度/开度字段。抓取任务的 `result.plan.effective_parameters` 记录实际选用的参数；历史任务保留当时的值。
 

@@ -25,7 +25,7 @@ const Editor=vm.runInContext('GraspEditorPanel',context),editor=Object.create(Ed
 const field=(id,value)=>{const f={value,type:'number',checked:true,checkValidity(){return true;}};fields.set(id,f);return f;};
 editor.q=id=>fields.get(id);field('name','5D侧夹').type='text';field('enabled','');field('priority','0');field('opening','800');field('force','30');field('distance','');field('clearance','');
 editor.pointInputs=[field('px','123'),field('py','-45'),field('pz','25')];editor.angleInputs=[field('rx',''),field('ry',''),field('rz','')];
-editor.fields=[...fields.values()];editor.fiveD=true;editor.approachAngle=field('approach-angle','70');
+editor.offsetInputs=['x','y','z'].map(a=>field('offset-'+a,'0'));editor.fields=[...fields.values()];editor.fiveD=true;editor.approachAngle=field('approach-angle','70');
 let value=editor.formValue();assert.deepEqual(JSON.parse(JSON.stringify(value.profile.grasp_point_object_m)),[0,0,.025]);assert.equal(value.profile.approach_angle_deg,70);
 assert(Math.abs(value.profile.object_R_tcp[2][2]-Math.cos(70*Math.PI/180))<1e-10);
 editor.approachAngle.value='181';assert.throws(()=>editor.formValue(),/夹角/);

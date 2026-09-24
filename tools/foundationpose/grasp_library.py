@@ -10,7 +10,7 @@ import uuid
 
 import numpy as np
 
-from grasp_geometry import transform, minimum_table_clearance
+from grasp_geometry import transform, minimum_table_clearance, checked_tcp_offset
 
 MAX_GRASPS = 32
 
@@ -34,10 +34,12 @@ def checked_profile(value):
 
 
 def checked_overrides(value):
-    if not isinstance(value, dict) or set(value) - {'pregrasp_distance_m', 'open_position', 'force_target_raw', 'min_table_clearance_m'}:
+    if not isinstance(value, dict) or set(value) - {'pregrasp_distance_m', 'open_position', 'force_target_raw', 'min_table_clearance_m', 'tcp_offset_m'}:
         raise ValueError('夹法参数覆盖项无效')
     for key, number in value.items():
-        if key == 'min_table_clearance_m':
+        if key == 'tcp_offset_m':
+            checked_tcp_offset(number)
+        elif key == 'min_table_clearance_m':
             minimum_table_clearance({key: number})
         elif key == 'pregrasp_distance_m':
             if type(number) not in (int, float) or not np.isfinite(number) or not 0 < number <= .3:
@@ -82,6 +84,7 @@ def binding_error(entry, model_hash, tool_response, handeye=None):
 
 def effective_config(config, entry):
     result = copy.deepcopy(config);overrides = checked_bound_overrides(entry.get('overrides', {}))
+    result['tcp_offset_m'] = checked_tcp_offset(overrides.get('tcp_offset_m', [0,0,0]))
     if 'pregrasp_distance_m' in overrides:
         result['pregrasp_distance_m'] = overrides['pregrasp_distance_m']
     if 'min_table_clearance_m' in overrides:
@@ -97,6 +100,7 @@ def effective_config(config, entry):
 def effective_parameters(config, entry):
     result = effective_config(config, entry)
     return {'gripper_parameters_source': 'grasp_profile', 'force_target_raw': result['gripper']['force_target_raw'],
+            'tcp_offset_m': result['tcp_offset_m'], 'tcp_offset_frame': 'grip_tcp',
             'force_limit_raw': result['gripper']['force_limit_raw'], 'open_position': result['gripper']['open_position'],
             'force_units': result['gripper'].get('force_units', 'native_units_not_newtons'),
             'open_position_units': 'native_position_0_to_1000',

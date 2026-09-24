@@ -83,6 +83,7 @@ class GraspProfilesMixin:
                 'changed_at':self.status.get('grasp_library_changed_at'),
                 'parameter_scope':'per_grasp',
                 'defaults':{'pregrasp_distance_m':config['pregrasp_distance_m'],
+                            'tcp_offset_m':[0.,0.,0.],
                             'min_table_clearance_m':minimum_table_clearance(config), **object_gripper_defaults(object_id)}}
 
     def edit_grasp_profiles(self, request):
@@ -233,7 +234,7 @@ class GraspProfilesMixin:
                     trial = dict(azimuth);attempts.append(trial)
                     try:
                         candidate = plan_grasp(arm['pose'],base_object,resolved,effective,
-                                               grasp_reference_offset_tcp_m=azimuth.get('grasp_reference_offset_tcp_m'))
+                                               grasp_reference_offset_tcp_m=effective['tcp_offset_m'])
                         blockers = workspace_blockers(candidate,effective)
                         if blockers:
                             raise ValueError('；'.join(blockers))

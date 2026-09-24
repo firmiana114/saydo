@@ -241,8 +241,8 @@ class FiveDLibraryTests(unittest.TestCase):
         for call in self.service.verify_motion_targets.call_args_list:
             candidate=call.args[0]
             np.testing.assert_allclose(candidate['grasp_reference_position_m'],args[4][:3,3],atol=1e-12)
-            np.testing.assert_allclose(candidate['target_position_m'],args[4][:3,3]+[0,0,.03],atol=1e-12)
-            np.testing.assert_allclose(candidate['grasp_reference_offset_tcp_m'],[0,0,.03],atol=1e-12)
+            np.testing.assert_allclose(candidate['target_position_m'],args[4][:3,3],atol=1e-12)
+            np.testing.assert_allclose(candidate['grasp_reference_offset_tcp_m'],[0,0,0],atol=1e-12)
             np.testing.assert_allclose(np.asarray(candidate['target_rotation'])[:,2],[0,0,-1],atol=1e-12)
             for point in candidate['waypoints']:
                 np.testing.assert_allclose(controller_pose(point['controller_pose'])[:3,2],[0,0,-1],atol=.0006)
@@ -252,7 +252,7 @@ class FiveDLibraryTests(unittest.TestCase):
         self.assertEqual(self.library.object('cup'),before)
 
     def test_horizontal_reference_offset_and_attachment_use_real_controller_tcp(self):
-        self.save();args=self.candidate_args();args[1]['pose_mode']='5d'
+        self.save(overrides={'tcp_offset_m':[0,0,.03]});args=self.candidate_args();args[1]['pose_mode']='5d'
         args[4][:3,:3]=axis_rotation([1,0,0]);args[4][2,3]=-.010186
         args[0]['workspace_min_m']=[-1,-1,0];args[0]['table_z_m']=-.02609
         self.service.verify_motion_targets=Mock(return_value={'joint_travel_deg':3})
