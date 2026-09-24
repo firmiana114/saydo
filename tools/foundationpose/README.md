@@ -350,6 +350,10 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 
 夹持反馈判定依据 RM Plus 状态 3（力控到位）、停止速度和尚未全闭的位置连续出现；正力反馈标记为 force_contact，零力反馈标记为 force_stop，两者均可进入配置的抬升阶段；状态 2 仅表示位置到位，状态 5 是电流保护，均不能当作抓到物体。该判据仍需本设备验证；即使触发也只表示疑似力控接触，不证明抓牢。
 
+闭合诊断保存在每次`work/grasp/jobs/*.json`的`gripper_close_diagnostics`中：记录写入力度与闭合命令的开始/应答时间、每次查询开始/返回时间、原始`state_info`（位置/状态/力度/电流/速度/错误码）、分类结果和连续接触计数，以及最终`decision`。沿用原查询节奏及通过条件，不为诊断额外下发命令或在失败后继续等待。最多保存前128帧，额外帧计入`samples_dropped`，始终保留`last_sample`及判定帧的独立副本。
+
+失败时，调用异常处理中的停止命令之前保存`failure_before_stop`，随后以`failure_stop`记录停止调用时间、应答是否成功及错误；不以停止后的反馈覆盖失败帧，也不把停止应答当作已确认机械停稳。原始任务JSON在任务正常结束/失败处理后写入；闭合指令或查询失败、超时和取消也保留已有诊断。前端分别显示“位置到位但未确认接触（现有规则判为空夹）”、电流保护、故障停止或具体反馈异常，并带关键原始值；位置原始值不是毫米。此更新仅补充证据和说明，不放宽空夹/故障检查，不自动重试。
+
 厂商资料：
 - https://develop.realman-robotics.com/robot/json/endeffector/
 - https://develop.realman-robotics.com/robot/json/motionConfig/

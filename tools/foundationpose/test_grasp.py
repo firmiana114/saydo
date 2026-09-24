@@ -383,7 +383,7 @@ class GraspTests(unittest.TestCase):
                         reply['state_info'].update(dof_state=[stop_state], pos=[0])
                     return reply
                 with patch.object(robot, 'query', side_effect=failed_close):
-                    with self.assertRaisesRegex(ValueError, '异常或空夹'):
+                    with self.assertRaisesRegex(ValueError, '未确认接触|电流保护'):
                         service.execute(plan, config, {})
                 self.assertEqual(len([c for c in robot.calls if c[0] == 'move']), 2)
             robot.calls.clear()

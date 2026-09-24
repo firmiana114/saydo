@@ -22,6 +22,7 @@ from reorientation_control import ReorientationMixin
 from placement_control import PlacementMixin
 from grasp_profiles_control import GraspProfilesMixin
 from pose_symmetry import effective_profile
+from gripper_diagnostics import CloseDiagnostics, contact_failure_message, feedback_summary, record_failure_before_stop
 from object_catalog import select_object
 from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
@@ -580,10 +581,17 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                     report['grasp_history_error'] = str(error)
         except Exception as error:
             if self.actuated:
+                record_failure_before_stop(report, error)
+                stop_record = report['failure_stop'] = {'requested_at':time.time(), 'commands_acknowledged':False,
+                                                       'stationarity_checked':False}
                 try:
                     self.robot.stop()
+                    stop_record['commands_acknowledged'] = True
                 except Exception as stop_error:
                     report['stop_error'] = str(stop_error)
+                    stop_record['error'] = str(stop_error)
+                finally:
+                    stop_record['finished_at'] = time.time()
             stage = report.get('active_stage', '抓取准备')
             detail = f'{stage}：{error}'
             self.update(state='cancelled' if self.cancelled.is_set() else 'failed', error=detail, message=detail)
@@ -664,18 +672,26 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 move_waypoint(waypoint)
         report['active_stage'] = '设置力度并闭合夹爪'
         self.update(state='closing', message='按指定力度闭合，等待力控接触反馈')
-        self.robot.set_register(1220, grip['force_limit_raw'])
-        self.robot.move_gripper(grip['closed_position'])
+        diagnostics = CloseDiagnostics(report, grip)
+        diagnostics.command('set_rm_plus_reg', {'addr':1220, 'data':[grip['force_limit_raw']]},
+                            lambda: self.robot.set_register(1220, grip['force_limit_raw']))
+        diagnostics.command('hand_follow_pos', {'hand_pos':[grip['closed_position']]},
+                            lambda: self.robot.move_gripper(grip['closed_position']))
         deadline = time.monotonic() + grip['close_timeout_s']
         stable = 0
         while time.monotonic() < deadline:
             self.check_cancel()
-            state = self.robot.query('get_rm_plus_state_info')['state_info']
-            result = contact_result(state, grip)
+            sample = diagnostics.sample(self.robot)
+            state, result = sample['state'], sample['classification']
+            sample['consecutive_contact_samples_before'] = stable
             if result in ('fault', 'empty_close'):
-                raise ValueError('夹爪异常或空夹到位')
+                sample['consecutive_contact_samples'] = 0
+                diagnostics.decision(result, sample)
+                raise ValueError(contact_failure_message(result, state, grip))
             stable = stable + 1 if result in ('force_contact', 'force_stop') else 0
+            sample['consecutive_contact_samples'] = stable
             if stable >= 3:
+                diagnostics.decision('contact_confirmed', sample)
                 self.update(gripper_contact=state)
                 self.capture_attachment(plan, report)
                 lifting = True
@@ -685,4 +701,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，停留在抬升位置并保持夹持。")
                 return
             time.sleep(.1)
-        raise TimeoutError('未确认稳定接触，停止本次抓取')
+        diagnostics.decision('timeout', diagnostics.data['last_sample'])
+        last_state = (diagnostics.data['last_sample'] or {}).get('state')
+        raise TimeoutError('闭合确认超时，未确认稳定接触，停止本次抓取' +
+                           ('；最后反馈：'+feedback_summary(last_state) if last_state is not None else '；尚无有效反馈'))
