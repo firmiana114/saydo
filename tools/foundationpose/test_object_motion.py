@@ -109,6 +109,21 @@ class ObjectGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'中间路点不得'):
             self.plan({'target_rpy_deg':[0,60,0],'waypoints':[{'position_m':[.3,0,.3],'rpy_deg':[0,20,0]}]})
 
+    def test_detour_search_preserves_goal_orientation_and_final_descent(self):
+        h,v,a,c=fixture();proof={'verified':True}
+        reachable=Mock(side_effect=[(False,{'reason':'blocked direct','failure':{'kind':'ik_failed','waypoint':'release_preplacement_1_sample_2'}}),(True,proof)])
+        p=plan_object_motion(h,v,a,c,{'target_position_m':[.4,-.1,.3]},np.eye(4),reachable,lambda:None,release=True)
+        self.assertEqual(p['route_offset_m'],[0.,.08])
+        self.assertTrue(any('detour' in w['name'] for w in p['waypoints']))
+        pre,last=p['waypoints'][-2:]
+        self.assertEqual(last['name'],'release_descent_1')
+        np.testing.assert_allclose(np.array(pre['reference_position_base_m'])-last['reference_position_base_m'],[0,0,.1])
+        final=np.array(p['base_T_object_target'])
+        for w in p['waypoints']:
+            self.assertEqual(w['method'],'linear')
+            np.testing.assert_allclose(np.array(w['object_pose'])[:3,:3],final[:3,:3])
+        self.assertEqual(p['search_attempts'][0]['failure']['kind'],'ik_failed')
+
     def test_release_current_pose_and_retreat(self):
         p=self.plan(None,release=True,retreat=[0,0,.05]);self.assertEqual(p['kind'],'release');self.assertEqual(p['waypoint_count'],2)
         self.assertAlmostEqual(p['retreat_waypoint']['position_m'][2],.30)

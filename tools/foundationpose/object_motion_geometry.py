@@ -48,7 +48,7 @@ def object_error(actual, target, point, pose_mode):
             'orientation_error_deg':float(np.rad2deg(object_rotation_error(actual[:3,:3],target[:3,:3],pose_mode)))}
 
 
-def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, release, retreat):
+def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, release, retreat, route=(0.,0.)):
     current=controller_pose(arm['pose']);attachment=transform(held['object_T_tcp']);obj=current@np.linalg.inv(attachment)
     point=np.asarray(goal['reference_point_object_m']);low,high=point_limits(vertices)
     if np.any(point<low) or np.any(point>high):raise ValueError('物品参考点超出模型附近允许范围')
@@ -90,6 +90,20 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
             stages=[(previous_ref,method,'release_orientation'),
                     (reference+np.array([0,0,height]),'linear','release_preplacement'),
                     (reference,'linear','release_descent')]
+        if route!=(0.,0.):
+            expanded=[]
+            for destination,stage_method,label in stages:
+                if label.startswith('transfer_') or label=='release_preplacement':
+                    start=obj[:3,3]+obj[:3,:3]@point
+                    height=max(start[2],destination[2])+route[0]
+                    delta=destination[:2]-start[:2];length=np.linalg.norm(delta)
+                    side=np.array([-delta[1],delta[0]])/length if length>1e-9 else np.array([1.,0.])
+                    offset=np.r_[side*route[1],0.]
+                    a=np.array([start[0],start[1],height]);b=np.array([destination[0],destination[1],height])
+                    for index,via in enumerate((a,a+offset,b+offset,b),1):
+                        expanded.append((via,'linear',f'{label}_detour_{index}'))
+                expanded.append((destination,stage_method,label))
+            stages=expanded
         for stage_ref,stage_method,label in stages:
             previous_ref=obj[:3,3]+obj[:3,:3]@point
             steps=fractions(obj[:3,:3],rotation,goal['max_rotation_step_deg'])
@@ -121,7 +135,7 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
             'current_arm':arm,'base_T_object_start':start_obj.tolist(),'base_T_object_target':obj.tolist(),
             'reference_point_object_m':point.tolist(),'target_reference_position_base_m':final_ref.tolist(),
             'reference_frame_pose':frame.tolist(),'target_requests':target_requests,'waypoints':waypoints,
-            'waypoint_count':len(waypoints),'position_constraint_scope':'commanded_waypoint_endpoints','stage_policy':'orient_then_translate_then_release','validation_points':validation,'retreat_waypoint':retreat_target,
+            'waypoint_count':len(waypoints),'position_constraint_scope':'commanded_waypoint_endpoints','stage_policy':'orient_then_translate_then_release','route_offset_m':list(route),'validation_points':validation,'retreat_waypoint':retreat_target,
             'retreat_vector_base_m':retreat.tolist(),'speed_percent':checked_speed(config['arm_speed_percent']),
             'position_tolerance_m':POSITION_TOLERANCE,'orientation_tolerance_deg':ANGLE_TOLERANCE_DEG,
             'gripper_action':'open_after_arrival' if release else 'keep_holding','max_execution_duration_s':90,
@@ -138,22 +152,31 @@ def plan_object_motion(held,vertices,arm,config,goal,frame,reachable,cancelled,r
     attempts=diagnostics if diagnostics is not None else [];deadline=time.monotonic()+20
     current=controller_pose(arm['pose']);spins=range(24) if held.get('pose_mode')=='5d' and (goal['target_rpy_deg'] is not None or any(r['rpy_deg'] is not None for r in goal['waypoints'])) else range(1)
     shifts=position_offsets(current[:3,3],config['table_z_m']+.103,.025) if goal['position_mode']=='adaptive' else [np.zeros(3)]
+    routes=[(0.,0.),(0.,.08),(0.,-.08),(0.,.16),(0.,-.16),(.05,0.),(.10,0.),(.05,.08),(.05,-.08),(.10,.08),(.10,-.08),(.15,0.)]
     for shift in shifts:
         for spin in spins:
-            cancelled()
-            if time.monotonic()>=deadline:raise TimeoutError('持物运动规划达到20秒预算，未发送运动')
-            attempt={'spin_candidate':spin,'shift_m':shift.tolist()};attempts.append(attempt)
-            if len(attempts)>64:del attempts[32]
-            try:
-                plan=build_candidate(held,vertices,arm,config,goal,frame,spin,shift,release,retreat)
-                valid,detail=reachable(plan['validation_points'],min(3.,max(.05,deadline-time.monotonic())))
-                if not valid:raise ValueError(detail.get('reason','逆解/正解或自身碰撞检查失败'))
+            for route in routes:
                 cancelled()
-                if time.monotonic()>deadline:raise TimeoutError('规划超时')
-                plan.update(reachability_check=detail,search_attempts=attempts)
-                plan.pop('validation_points')
-                return plan
-            except (ValueError,TimeoutError,subprocess.TimeoutExpired) as error:
-                attempt['reason']=str(error)[:1200]
+                if time.monotonic()>=deadline:raise TimeoutError('持物运动规划达到20秒预算，未发送运动')
+                attempt={'spin_candidate':spin,'shift_m':shift.tolist(),'route_offset_m':list(route)};attempts.append(attempt)
+                if len(attempts)>64:del attempts[32]
+                try:
+                    plan=build_candidate(held,vertices,arm,config,goal,frame,spin,shift,release,retreat,route)
+                    valid,detail=reachable(plan['validation_points'],min(3.,max(.05,deadline-time.monotonic())))
+                    if not valid:
+                        attempt['failure']=detail.get('failure')
+                        attempt['initial_fk_error']=detail.get('initial_fk_error')
+                        attempt['continuity_failure']=detail.get('continuity_failure')
+                        raise ValueError(detail.get('reason','逆解/正解或自身碰撞检查失败'))
+                    cancelled()
+                    if time.monotonic()>deadline:raise TimeoutError('规划超时')
+                    plan.update(reachability_check=detail,search_attempts=attempts)
+                    plan.pop('validation_points')
+                    return plan
+                except (ValueError,TimeoutError,subprocess.TimeoutExpired) as error:
+                    attempt['reason']=str(error)[:1200]
+                    # A transfer detour cannot repair orientation-stage IK.
+                    failure=attempt.get('failure') or {}
+                    if failure.get('waypoint','').startswith(('orient_','release_orientation')):break
         if goal['position_mode']!='adaptive':break
     raise ValueError('没有通过检查的持物运动方案：'+(attempts[-1].get('reason','无候选') if attempts else '无候选'))

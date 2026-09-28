@@ -32,6 +32,22 @@ class MotionValidationTests(unittest.TestCase):
     def parse(self,stdout,code=0):
         return parse_kinematics(SimpleNamespace(stdout=stdout,stderr='',returncode=code),self.arm,self.points)
 
+    def test_failure_identifies_stage_sample_and_error_type(self):
+        data=protocol().replace('IK 0 0','IK 1 -1').split('VERIFY')[0]
+        ok,d=self.parse(data,1)
+        self.assertFalse(ok);self.assertEqual(d['failure']['kind'],'ik_failed')
+        self.assertEqual(d['failure']['waypoint'],'pregrasp')
+        ok,d=self.parse(protocol('.2 0 0 0 0 0'),3)
+        self.assertEqual(d['failure']['kind'],'fk_residual')
+        self.assertEqual(d['failure']['sample_index'],0)
+
+    def test_seed_diagnostics_and_missing_binary_capability(self):
+        ok,d=self.parse(protocol()+'SEEDS 0 31 2\n')
+        self.assertTrue(ok);self.assertEqual(d['seed_search'][0]['valid_candidates'],2)
+        with patch('motion_validation.subprocess.run',return_value=SimpleNamespace(stdout=protocol(),stderr='',returncode=0)):
+            ok,d=check_waypoints('fixture',{'flange_T_grip_tcp':np.eye(4).tolist()},self.arm,self.points)
+        self.assertFalse(ok);self.assertIn('多初值协议',d['reason'])
+
     def test_verified_success(self):
         ok,detail=self.parse(protocol());self.assertTrue(ok);self.assertTrue(detail['verified'])
         self.assertEqual(detail['fk_checks'][0]['position_error_mm'],0)

@@ -19,7 +19,10 @@ def si_pose(values):
 
 def parse_kinematics(result, arm, waypoints):
     detail={'returncode':result.returncode,'stdout':result.stdout[-4096:],'stderr':result.stderr[-512:],
-            'fk_checks':[], 'verified':False}
+            'fk_checks':[], 'verified':False,'seed_search':[]}
+    def location(index,kind):
+        if 0<=index<len(waypoints):
+            detail['failure']={'kind':kind,'sample_index':index,'waypoint':waypoints[index].get('name',str(index)),'controller_pose':waypoints[index]['controller_pose']}
     def fail(reason):
         detail['reason']=reason
         return False,detail
@@ -30,6 +33,7 @@ def parse_kinematics(result, arm, waypoints):
     fk=[row for row in lines if row and row[0]=='FK']
     verified=[row for row in lines if row and row[0]=='VERIFY']
     try:
+        detail['seed_search']=[{'sample_index':int(row[1]),'attempts':int(row[2]),'valid_candidates':int(row[3])} for row in lines if len(row)==4 and row[0]=='SEEDS']
         if len(fk)!=1 or len(fk[0])!=7:
             return fail('缺少有效的起始正解反馈')
         initial=si_pose([float(x) for x in fk[0][1:]])
@@ -52,10 +56,13 @@ def parse_kinematics(result, arm, waypoints):
             check={'index':index,'name':name,'position_error_mm':distance*1000,'orientation_error_deg':float(np.rad2deg(angle))}
             detail['fk_checks'].append(check)
             if distance>POSITION_TOLERANCE_M or angle>ORIENTATION_TOLERANCE_RAD:
+                location(index,'fk_residual')
                 label={'pregrasp':'预抓点','grasp':'夹持点','lift':'抬升点','reorient':'姿态目标'}.get(name,name)
                 return fail(f'{label}：逆解返回成功，但正解位置误差 {distance*1000:.2f} 毫米、朝向误差 {np.rad2deg(angle):.2f}°，超出 2 毫米/2°')
         if result.returncode!=0:
-            return fail('逆解、自碰撞或正解回验失败；'+(str(ik[-1][:3]) if ik else '没有逆解结果'))
+            index=max(0,len(ik)-1);kind='ik_failed' if ik and ik[-1][1]!='0' else 'self_collision' if ik and ik[-1][2]!='0' else 'checker_failed'
+            location(index,kind)
+            return fail(f"{detail.get('failure',{}).get('waypoint','未知阶段')}：{kind}；"+(str(ik[-1][:3]) if ik else '没有逆解结果'))
         if len(ik)!=len(waypoints) or seen!=set(range(len(waypoints))):
             return fail('逆解或正解回验结果不完整')
         if any(len(row)!=10 or row[1:3]!=['0','0'] for row in ik):
@@ -69,6 +76,7 @@ def parse_kinematics(result, arm, waypoints):
         for index, waypoint in enumerate(waypoints):
             if waypoint.get('method') == 'linear' and differences[index].max() > 10.:
                 joint=int(np.argmax(differences[index]))
+                location(index,'joint_discontinuity')
                 detail['continuity_failure']={'sample_index':index,'joint_index':joint+1,
                     'delta_deg':float(differences[index,joint]),'limit_deg':10.}
                 return fail(f'直线采样关节解不连续：采样{index+1}关节{joint+1}变化{differences[index,joint]:.2f}°，超过10°；请更换接近路点或姿态，不能直接执行该直线')
@@ -85,7 +93,10 @@ def check_waypoints(executable, tool, arm, waypoints, timeout=3.):
     values=[*pose_values(tool['flange_T_grip_tcp']),*(joints/1000),len(waypoints)]
     for waypoint in waypoints:
         values.extend(pose_values(controller_pose(waypoint['controller_pose'])))
-    result=subprocess.run([str(executable)],input=' '.join(str(x) for x in values)+'\n',text=True,capture_output=True,timeout=timeout)
+        values.append(10 if waypoint.get('method')=='linear' else 360)
+    result=subprocess.run([str(executable),'--multi-seed-v1'],input=' '.join(str(x) for x in values)+'\n',text=True,capture_output=True,timeout=timeout)
+    if 'CAPABILITY MULTI_SEED_V1' not in result.stdout.splitlines():
+        return False,{'verified':False,'reason':'离线检查器尚未支持多初值协议，请重新构建，不发送运动'}
     return parse_kinematics(result,arm,waypoints)
 
 

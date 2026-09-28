@@ -147,6 +147,8 @@ class ObjectMotionMixin:
                 config,arm,tool,geometry,checker=self.motion_context(held)
                 binding=self.motion_binding(config)
                 frame,context,arm=self.resolve_motion_frame(goal,held,config,arm,tool)
+                report.update(goal=goal,held_object=held,initial_arm=arm,reference_context=context,
+                              configuration_binding=binding,flange_T_grip_tcp=tool['flange_T_grip_tcp'])
                 plan=plan_object_motion(held,geometry['vertices'],arm,config,goal,frame,
                     lambda points,timeout:check_waypoints(checker,tool,arm,points,timeout),self.check_cancel,release,retreat,
                     report.setdefault('search_attempts',[]))
