@@ -1,6 +1,7 @@
 """Per-task retry cycle shared by both motion APIs; changing tool/ID cannot reset it."""
 import copy
 import math
+from .planning_validation import READONLY_PLANNING
 
 
 class RetryLimit(ValueError):pass
@@ -21,7 +22,7 @@ class MotionRetry:
     def reset(self):self.hold_id=None;self.planning=0;self.execution=0;self.pending=None;self.plans={}
     def snapshot(self):return {'planning_attempts':self.planning,'planning_limit':5,'execution_attempts':self.execution,'execution_limit':3,'recovery_pending':self.pending is not None,'planning_remaining':max(0,5-self.planning),'execution_remaining':max(0,3-self.execution)}
     def before(self,name,args,held):
-        planning=name in ('preview_reorient','reorient','plan_held_object_motion')
+        planning=name in READONLY_PLANNING or name=='reorient'
         executing=name in ('reorient','execute_plan')
         if self.pending and self.execution>=3 and (planning or executing):raise RetryLimit('同一目标已尝试执行3次，达到上限')
         if self.pending and name in ('grasp','place','reset_arm','plan_release'):raise RetryLimit('调姿失败尚未恢复；只能观察或重新规划原目标，不能跳过后续核验')

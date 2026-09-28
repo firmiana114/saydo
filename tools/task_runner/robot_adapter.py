@@ -7,6 +7,7 @@ from urllib.parse import quote
 from tools.robot_agent.client import RobotBackend, BackendError
 from .tool_registry import READS, ACTIONS, MOTIONS, VISION
 from .motion_retry import MotionRetry,RetryLimit
+from .planning_validation import READONLY_PLANNING,validate_planning_arguments,goal_error_detail
 
 
 class Blocked(RuntimeError):
@@ -70,6 +71,21 @@ class RobotAdapter:
         robot, objects = await asyncio.gather(self.request('/api/agent/robot'), self.request('/api/agent/objects'))
         return {'status': state, 'robot': robot, 'objects': objects}
 
+    def argument_error_result(self,name,detail,state,source):
+        return {'error':{**detail,'validation_source':source},'status':state,'verified':False,
+                'argument_correction_required':True,'motion_sent':False,
+                'backend_submitted':source=='backend','retry_budget':self.motion_retry.snapshot(),
+                'note':'只读规划参数被拒绝，尚未发送运动。纠正字段后重新调用规划工具，计入最多5次规划预算；保持原目标和夹持身份，不重做已成功动作。'}
+
+    async def planning_argument_error(self,name,args,detail,cancelled):
+        if name not in READONLY_PLANNING:raise Blocked('该工具不允许自动纠正后重试')
+        if cancelled.is_set():raise Cancelled()
+        state=await self.status();self.check_idle(state)
+        if cancelled.is_set():raise Cancelled()
+        try:self.motion_retry.before(name,args,state['grasp'].get('held_object'))
+        except RetryLimit as e:raise Blocked(str(e)) from e
+        return self.argument_error_result(name,detail,state,'local_schema')
+
     async def execute(self, name, args, request_id, cancelled, progress):
         if cancelled.is_set():
             raise Cancelled()
@@ -112,6 +128,12 @@ class RobotAdapter:
             raise ValueError('不支持的工具')
         state = await self.status()
         self.check_idle(state)
+        if cancelled.is_set():raise Cancelled()
+        if name in READONLY_PLANNING:
+            try:self.motion_retry.before(name,args,state['grasp'].get('held_object'))
+            except RetryLimit as error:raise Blocked(str(error)) from error
+            try:validate_planning_arguments(name,args)
+            except ValueError as error:return self.argument_error_result(name,goal_error_detail(error),state,'local_semantics')
         if name in ('preview_reorient', 'reorient','plan_held_object_motion','plan_release'):
             held = state.get('grasp', {}).get('held_object')
             if not held or any(held.get(k) != args[k] for k in ('object_id', 'hold_id', 'orientation_version')):
@@ -125,8 +147,9 @@ class RobotAdapter:
             raise Blocked('必须先在本任务采集全部目标，再引用返回的scene_id抓取')
         if cancelled.is_set():
             raise Cancelled()
-        try:self.motion_retry.before(name,args,state['grasp'].get('held_object'))
-        except RetryLimit as error:raise Blocked(str(error)) from error
+        if name not in READONLY_PLANNING:
+            try:self.motion_retry.before(name,args,state['grasp'].get('held_object'))
+            except RetryLimit as error:raise Blocked(str(error)) from error
         if name=='capture_scene_snapshot':self.scene_ids.clear()
         self.active_request = request_id
         self.motion_inflight = name in MOTIONS
@@ -134,6 +157,15 @@ class RobotAdapter:
         try:
             result = await self.request('/api/agent/tasks', value, cancelled)
         except BackendError as error:
+            if error.payload.get('outcome_unknown'):raise Blocked('后端报告请求结果未知，禁止自动纠错重试',uncertain=True) from error
+            if name in READONLY_PLANNING and error.payload.get('code')=='INVALID_ARGUMENTS' and not error.payload.get('outcome_unknown'):
+                self.motion_inflight=False
+                if cancelled.is_set():raise Cancelled()
+                latest=await self.status();self.check_idle(latest)
+                if cancelled.is_set():raise Cancelled()
+                self.active_request=None  # Rejected planner submission is not an unresolved motion.
+                detail={'code':'INVALID_ARGUMENTS','message':str(error.payload.get('message') or '后端规划参数校验失败')[:1200]}
+                return self.argument_error_result(name,detail,latest,'backend')
             if error.payload.get('code') != 'REQUEST_UNCERTAIN':
                 self.motion_inflight = False
                 raise
@@ -192,7 +224,7 @@ class RobotAdapter:
             try:self.motion_retry.plan(plan)
             except RetryLimit as error:return {'task':result,'status':latest,'verified':False,'error':{'code':'GOAL_CONSTRAINT_CHANGED','message':str(error)},'retry_budget':self.motion_retry.snapshot()}
         budget=self.motion_retry.snapshot()
-        if name in ('reorient','execute_plan') and result.get('state')=='completed':self.motion_retry.reset()
+        if name in ('grasp','place','reorient','execute_plan') and result.get('state')=='completed':self.motion_retry.reset()
         return {'task': result, 'status': latest,'retry_budget':budget, 'verified': name in MOTIONS,
                 'verification_scope': 'controller_feedback_only; not independent contact/slip/visual verification'}
 

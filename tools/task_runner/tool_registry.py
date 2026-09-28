@@ -3,6 +3,7 @@ import json
 from jsonschema import Draft202012Validator
 from tools.robot_agent.motion_contract import GOAL_SCHEMA, VECTOR
 from tools.robot_agent.scene_contract import TARGETS
+from .planning_validation import READONLY_PLANNING,PlanningArgumentError
 
 STRING = {'type': 'string', 'minLength': 1, 'maxLength': 200}
 INT = {'type': 'integer', 'minimum': 0}
@@ -96,7 +97,14 @@ def validate(call, mode):
             result[key] = value
         return result
     args = json.loads(raw, object_pairs_hook=pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('非有限数值')))
-    if not Draft202012Validator(schema(name)['parameters']).is_valid(args):
+    validator=Draft202012Validator(schema(name)['parameters'])
+    errors=list(validator.iter_errors(args))
+    if errors:
+        if name in READONLY_PLANNING and isinstance(args,dict):
+            fields=[{'field':'.'.join(str(p)[:80] for p in e.absolute_path) or 'arguments',
+                     'rule':e.validator,'expected':e.validator_value} for e in errors[:5]]
+            raise PlanningArgumentError(name,args,{'code':'INVALID_ARGUMENTS',
+                'message':'规划参数不符合工具Schema；请按fields中的字段、类型或范围修正后重新规划。','fields':fields})
         raise ValueError('工具参数不符合严格定义')
     if name == 'start_tracking' and args['box'] is not None:
         x0, y0, x1, y1 = args['box']

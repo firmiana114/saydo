@@ -76,6 +76,14 @@ POST /api/task-runs/stop                {}，工作台全局停止
 
 失败记录标为recoverable_failure，保留在任务日志但不算成功动作；恢复未完成不能报告succeeded。未知结果、记录故障、停止不明、控制器错误、夹持失效、释放类失败及用户取消均不自动继续。600秒整任务期限、网络连接重试和用户停止保持原规则，重启不恢复旧任务。
 
+## 规划参数纠错
+
+`preview_grasp`、`preview_place`、`preview_reorient`、`plan_held_object_motion`、`plan_release`的Schema/坐标语义错误会返回模型纠正，标记argument_correction_required、motion_sent=false、具体字段/期望值和validation_source。已进入后端但明确返回INVALID_ARGUMENTS的上述只读规划请求也保留具体message；请求结果未知、权限、夹持身份/版本问题和真实执行工具错误不走参数纠错，不自动重发HTTP请求。
+
+每次参数被拒绝也计入5次规划预算，plan_release及其他预览共享该预算，切换工具不重置。成功抓取、放置或持物运动后进入下一个目标周期。前端时间线显示“规划参数需修正”和尝试次数；日志保存原调用参数及错误，模型修正后使用新的请求编号。不会自动删改字段或修改目标坐标。
+
+坐标规则：reference_object_id仅在tracked_object时填写模型ID；scene_object必须将其设为null，使用scene_id及reference_instance_id，可选reference_feature_id。base/camera/tcp/held_object的这些外部参照字段均须为null。规则由共享校验器检查，并出现在两套工具的字段说明中。此更新无需重启机械臂后端，因为原后端已有相同拒绝规则；更新执行器即可在本地提前发现并纠正。
+
 ## 前端模型与推理强度
 
 第5页新任务表单可选择 `gpt-5.5`、`gpt-6-luna`、`gpt-6-sol`、`gpt-6-astra`，推理强度可选 `low`、`medium`、`high`。默认仍取服务器配置（Sol/medium）；浏览器记住上次选择，轮询不会覆盖草稿。选项只影响下一次提交，运行期间控件禁用。

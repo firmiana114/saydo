@@ -1,5 +1,13 @@
 # SayDo 当前维护交接
 
+## 2026-09-28 只读规划参数纠错
+
+- 修复任务6258773a…第13步plan_release：scene_object错误携带reference_object_id导致INVALID_ARGUMENTS后直接退出。共享Goal Schema和MCP字段说明明确tracked_object/scene_object互斥，GoalArgumentError提供field/expected。保留原后端严格规则，不静默删除字段或改目标。
+- SayDo对五个只读规划工具（preview_grasp/place/reorient、plan_held_object_motion、plan_release）的Schema及坐标语义进行本地校验，把具体错误交回模型；明确的后端INVALID_ARGUMENTS也转成可纠错结果，未知请求、权限/身份/版本错误与实际执行工具不进入该流程。界面新增“规划参数需修正”，原错误和参数保存在运行日志。
+- plan_release及其他预览加入共享5次规划预算，本地/后端拒绝各占一次，不因换工具重置；成功抓取/放置/持物动作后进入下一目标周期。已明确拒绝的只读提交清除active_request，避免停止时将不存在的任务误判为未知运动。实际执行失败恢复逻辑和网络重试不变。
+- 本机/MSI隔离111项执行器、MSI19项MCP测试通过；本机14项通用运动、9项场景和3组任务前端检查通过。覆盖原错误→纠正→规划→模拟释放（没有重抓/重调姿）、结构字段错误、五次上限、后端拒绝、未知/权限/实际运动错误不重试及取消。
+- 6-Sol真实历史参数回放只将goal.reference_object_id改为null，其余参数逐字段相等，校验通过；未派发工具或动作。记录work/planning_argument_validation/。部署将仅重启空闲8091，保持8089与夹持记录，不自动恢复原失败任务。
+
 ## 2026-09-28 调姿分段统一及有限恢复
 
 - 新旧调姿入口共用rotation_steps，默认/最大15°，可选1–15°，预留0.2°覆盖控制器0.001rad量化；旧reorient不再一次movej_p到大角度目标，而是逐段执行原生SDK核验的movej关节解，保留固定TCP终点/自适应位置语义。新plan_held_object_motion固定物品参考点语义不变。每段到位与关节解检查、最多64路点及执行90秒预算仍有界。

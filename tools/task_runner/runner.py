@@ -7,6 +7,7 @@ from .llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent
 from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError, model_result
 from .tool_registry import schemas, validate, MOTIONS, READS
 from .config import UI_MODELS, UI_REASONING_EFFORTS
+from .planning_validation import PlanningArgumentError
 
 
 CONNECTION_ATTEMPTS = 5
@@ -229,7 +230,10 @@ class Runner:
                         raise Blocked('模型必须返回一个完整工具调用；文本不作为执行或成功凭据')
                     history.extend(output)
                     call = calls[0]
-                    name, args = validate(call, self.config.mode)
+                    argument_error=None
+                    try:name, args = validate(call, self.config.mode)
+                    except PlanningArgumentError as error:
+                        name,args,argument_error=error.name,error.arguments,error.detail
                     progress_message = args.pop('progress_message', None)
                     if run.get('finalizing') and name != 'finish_task':
                         raise Blocked('收尾修正期间不允许新的工具或动作')
@@ -237,7 +241,7 @@ class Runner:
                         raise Blocked('模型重复使用工具调用编号')
                     messages = [part.get('text', '') for item in output if item.get('type') == 'message'
                         for part in item.get('content', []) if part.get('type') == 'output_text'] if name != 'finish_task' else []
-                    if progress_message and not any(message.strip() for message in messages):
+                    if isinstance(progress_message,str) and progress_message and not any(message.strip() for message in messages):
                         messages.append(progress_message)
                     for message in messages:
                         if message.strip():
@@ -286,14 +290,17 @@ class Runner:
                     record['state'] = 'dispatching'
                     self.store.save_call(run['run_id'], record)
                     self.emit(run, 'tool_started', name=name, call_id=call['call_id'])
-                    if name == 'stop_robot':
+                    if argument_error is not None:
+                        result=await self.adapter.planning_argument_error(name,args,argument_error,self.cancelled)
+                    elif name == 'stop_robot':
                         result = await self.adapter.stop()
                     else:
                         try:
                             result = await self.adapter.execute(name, args, record['request_id'], self.cancelled, self.progress)
                         except BackendError as error:
                             if name not in READS or error.payload.get('code') not in ('POSE_NOT_READY', 'CAMERA_UNAVAILABLE'):
-                                raise Blocked('后端工具拒绝请求：'+str(error.payload.get('code', 'BACKEND_ERROR'))) from error
+                                detail=str(error.payload.get('message') or '')[:1200]
+                                raise Blocked('后端工具拒绝请求：'+str(error.payload.get('code', 'BACKEND_ERROR'))+('：'+detail if detail else '')) from error
                             read_failures += 1
                             if read_failures > 3:
                                 raise Blocked('观察连续不可用，已达到有限恢复次数') from error
@@ -301,6 +308,8 @@ class Runner:
                     self.check()
                     cleaned = self.append_result(history, call['call_id'], name, result)
                     results[call['call_id']] = cleaned
+                    if result.get('argument_correction_required'):
+                        self.emit(run,'planning_argument_error',text=result['error']['message'],retry_budget=result.get('retry_budget'),field=result['error'].get('field'))
                     if result.get('recoverable_failure'):
                         recovery_pending=True
                         self.emit(run,'motion_recovery',text='调姿失败后已确认停稳和夹持，将诊断返回模型重新规划。',retry_budget=result.get('retry_budget'))
