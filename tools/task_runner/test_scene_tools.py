@@ -33,11 +33,13 @@ class SceneAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_uncaptured_and_failed_capture_cannot_use_old_scene(self):
         backend=Backend();adapter=RobotAdapter(Config(api_key='test',poll_interval=.001),backend);cancel=asyncio.Event()
         args={'object_id':'tube_model','scene_id':'old','instance_id':'tube'}
-        with self.assertRaisesRegex(Blocked,'本任务'):await adapter.execute('grasp',args,'g1',cancel,lambda _:None)
+        result=await adapter.execute('grasp',args,'g1',cancel,lambda _:None)
+        self.assertEqual(result['error']['code'],'SCENE_CAPTURE_REQUIRED');self.assertFalse(result['backend_submitted'])
         adapter.scene_ids.add('old');backend.result={'state':'failed','terminal':True,'error':'rack not visible'}
         result=await adapter.execute('capture_scene_snapshot',{'targets':TARGETS,'environment_static':True},'c1',cancel,lambda _:None)
         self.assertIn('error',result);self.assertEqual(adapter.scene_ids,set())
-        with self.assertRaises(Blocked):await adapter.execute('grasp',args,'g2',cancel,lambda _:None)
+        result=await adapter.execute('grasp',args,'g2',cancel,lambda _:None)
+        self.assertTrue(result['precondition_correction_required'])
         self.assertFalse(any(v and v.get('operation')=='grasp' for p,v in backend.requests))
 
     def test_models_receive_all_bounded_named_features_and_scene_schema(self):

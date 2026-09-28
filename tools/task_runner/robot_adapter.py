@@ -40,6 +40,8 @@ class RobotAdapter:
         self.motion_inflight = False
         self.active_request = None
         self.scene_ids=set()
+        self.scene_corrections=0
+        self.held_scene_id=None
         self.motion_retry=MotionRetry()
 
     async def request(self, path, value=None, cancelled=None):
@@ -51,13 +53,33 @@ class RobotAdapter:
             task.add_done_callback(self.pending.discard)
         return await asyncio.shield(task)
 
+    def scene_view(self, value):
+        """Expose backend validity and this run's provenance as separate facts."""
+        if isinstance(value,list):return [self.scene_view(v) for v in value]
+        if not isinstance(value,dict):return value
+        result={k:self.scene_view(v) for k,v in value.items()}
+        if 'median_depth_residual_mm' in result:
+            result['metric_semantics']='模型表面与观测深度的拟合残差，不是目标横向定位误差或位姿误差上界，不能直接与目标间隙比较判定可达/碰撞。good只表示拟合质量检查通过。'
+        if 'scene_id' in result and isinstance(result.get('instances'),list):
+            backend_valid=result.get('backend_valid_for_execution',result.get('valid_for_execution',False))
+            current=result['scene_id'] in self.scene_ids
+            reference_usable=bool(backend_valid and (current or result['scene_id']==self.held_scene_id))
+            result.update(backend_valid_for_execution=backend_valid,captured_in_this_run=current,
+                          usable_as_held_reference=reference_usable,
+                          usable_for_grasp_in_this_run=bool(current and backend_valid),
+                          valid_for_execution=reference_usable)
+            result['scene_usage_note']=('本任务已采集；仍须核对实例未移动及后端有效性。' if current else
+                '历史场景不可用于本任务新抓取；仅usable_as_held_reference=true时可供已有夹持继续引用。无夹持时先capture_scene_snapshot采集全部目标，读取不等于采集。')
+        return result
+
     async def status(self):
         state = await self.request('/api/agent/status')
         if self.session_id is None:
             self.session_id = state['session_id']
         elif self.session_id != state['session_id']:
             raise Blocked('后端已重启，需核对现场；不自动续跑', uncertain=True)
-        return state
+        self.held_scene_id=(state.get('grasp',{}).get('held_object') or {}).get('scene_id')
+        return self.scene_view(state)
 
     @staticmethod
     def check_idle(state):
@@ -69,7 +91,7 @@ class RobotAdapter:
         state = await self.status()
         self.check_idle(state)
         robot, objects = await asyncio.gather(self.request('/api/agent/robot'), self.request('/api/agent/objects'))
-        return {'status': state, 'robot': robot, 'objects': objects}
+        return self.scene_view({'status': state, 'robot': robot, 'objects': objects})
 
     def argument_error_result(self,name,detail,state,source):
         return {'error':{**detail,'validation_source':source},'status':state,'verified':False,
@@ -105,7 +127,7 @@ class RobotAdapter:
                 path += '?object_id='+quote(args['object_id'], safe='')
             if name=='get_scene_snapshot':path+='?scene_id='+quote(args['scene_id'],safe='')
             if name=='get_task_diagnostics':path+='?task_id='+quote(args['task_id'],safe='')
-            return await self.request(path, cancelled=cancelled)
+            return self.scene_view(await self.request(path, cancelled=cancelled))
         if name in VISION:
             await self.request('/api/agent/vision', {'operation': VISION[name], 'arguments': args}, cancelled)
             deadline = time.monotonic()+self.config.vision_timeout
@@ -154,7 +176,13 @@ class RobotAdapter:
             if name == 'grasp' and state['grasp'].get('held_object'):
                 raise Blocked('已有夹持记录，不能再次抓取')
         if name in ('grasp','preview_grasp') and args.get('scene_id') not in self.scene_ids:
-            raise Blocked('必须先在本任务采集全部目标，再引用返回的scene_id抓取')
+            if state['grasp'].get('held_object'):raise Blocked('已有夹持记录，不能重新采集抓取场景')
+            self.scene_corrections+=1
+            if self.scene_corrections>3:raise Blocked('本任务场景前置条件连续纠正3次仍未满足，停止；未派发抓取')
+            return {'error':{'code':'SCENE_CAPTURE_REQUIRED','message':'必须先在本任务采集全部目标，再引用返回的scene_id抓取。请调用capture_scene_snapshot，包含所有source/reference实例。'},
+                    'precondition_correction_required':True,'required_tool':'capture_scene_snapshot',
+                    'motion_sent':False,'backend_submitted':False,'verified':False,
+                    'correction_attempt':self.scene_corrections,'correction_limit':3,'status':state}
         if cancelled.is_set():
             raise Cancelled()
         if name not in READONLY_PLANNING:
@@ -235,8 +263,8 @@ class RobotAdapter:
             except RetryLimit as error:return {'task':result,'status':latest,'verified':False,'error':{'code':'GOAL_CONSTRAINT_CHANGED','message':str(error)},'retry_budget':self.motion_retry.snapshot()}
         budget=self.motion_retry.snapshot()
         if name in ('grasp','place','reorient','execute_plan') and result.get('state')=='completed':self.motion_retry.reset()
-        return {'task': result, 'status': latest,'retry_budget':budget, 'verified': name in MOTIONS,
-                'verification_scope': 'controller_feedback_only; not independent contact/slip/visual verification'}
+        return self.scene_view({'task': result, 'status': latest,'retry_budget':budget, 'verified': name in MOTIONS,
+                'verification_scope': 'controller_feedback_only; not independent contact/slip/visual verification'})
 
     @staticmethod
     def verify_object_execution(args,task,status):
@@ -378,6 +406,12 @@ def model_result(name, value):
     def trim(value):
         if isinstance(value,list):return [trim(v) for v in value]
         if not isinstance(value,dict):return value
+        if value.get('instance_id') and value.get('static_pose_usable') is False:
+            value={k:v for k,v in value.items() if k not in ('base_T_object','camera_T_object')}
+            value['pose_usage_note']='实例已移动；原快照位姿不再提供给模型。当前持物位姿查询get_robot_state.held_object_pose。'
+        if 'base_T_object_at_grasp' in value:
+            value={k:v for k,v in value.items() if k!='base_T_object_at_grasp'}
+            value['current_pose_source']='get_robot_state.held_object_pose；不能使用抓取时位姿代替抬升后位姿'
         reduced={k:trim(v) for k,v in value.items() if k not in
             ('configuration_binding','flange_T_grip_tcp','target_requests','search_attempts','controller_readback')}
         # Inspection API and durable journal retain detailed trajectories.

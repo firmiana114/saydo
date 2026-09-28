@@ -57,3 +57,5 @@ const argumentRows=entries({timeline_version:1,state:'running',events:[{seq:1,ev
 assert.equal(argumentRows[0].title,'规划参数需修正');assert(argumentRows[0].text.includes('goal.reference_object_id'));assert(argumentRows[0].text.includes('2/5'));
 
 assert.equal(entries({timeline_version:1,state:'running',events:[{seq:1,event:'llm_response_retry',text:'响应超时重试'}]})[0].title,'模型响应重试');
+
+assert.equal(entries({timeline_version:1,state:'running',events:[{seq:1,event:'scene_precondition_correction',text:'先重新采集'}]})[0].title,'需重新采集本任务场景');

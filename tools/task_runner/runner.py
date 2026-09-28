@@ -212,6 +212,23 @@ class Runner:
         frame = result if name == 'get_camera_frame' else result.get('candidate_frame')
         cleaned = {**compact({k: v for k, v in result.items() if k != 'candidate_frame'}), 'evidence_call_id': call_id}
         model_view=model_result(name,cleaned)
+        held=result.get('task',{}).get('result',{}).get('held_object') or {}
+        if name=='grasp' and result.get('verified') and held.get('scene_id') and held.get('instance_id'):
+            def retire(value):
+                if isinstance(value,dict):
+                    if value.get('scene_id')==held['scene_id'] and isinstance(value.get('instances'),list):
+                        for row in value['instances']:
+                            if row.get('instance_id')==held['instance_id']:
+                                row.update(state='held',static_pose_usable=False)
+                                row.pop('base_T_object',None);row.pop('camera_T_object',None)
+                                row['pose_usage_note']='已抓起；当前位姿须查询get_robot_state.held_object_pose'
+                    for v in value.values():retire(v)
+                elif isinstance(value,list):
+                    for v in value:retire(v)
+            for item in history:
+                if item.get('type')=='function_call_output':
+                    prior=json.loads(item['output']);retire(prior)
+                    item['output']=json.dumps(prior,ensure_ascii=False)
         history.append({'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps(model_view, ensure_ascii=False)})
         if frame and frame.get('image_base64'):
             # Retain timestamp/text evidence and tool outputs, but send only
@@ -329,14 +346,17 @@ class Runner:
                                 raise Blocked('观察连续不可用，已达到有限恢复次数') from error
                             result = {'error': error.payload, 'motion_sent': False}
                     self.check()
+                    if hasattr(self.adapter,'scene_view'):result=self.adapter.scene_view(result)
                     cleaned = self.append_result(history, call['call_id'], name, result)
                     results[call['call_id']] = cleaned
+                    if result.get('precondition_correction_required'):
+                        self.emit(run,'scene_precondition_correction',text=result['error']['message'])
                     if result.get('argument_correction_required'):
                         self.emit(run,'planning_argument_error',text=result['error']['message'],retry_budget=result.get('retry_budget'),field=result['error'].get('field'))
                     if result.get('recoverable_failure'):
                         recovery_pending=True
                         self.emit(run,'motion_recovery',text='调姿失败后已确认停稳和夹持，将诊断返回模型重新规划。',retry_budget=result.get('retry_budget'))
-                    if name in MOTIONS and not result.get('recoverable_failure'):
+                    if name in MOTIONS and not result.get('recoverable_failure') and not result.get('precondition_correction_required'):
                         if not result.get('verified'):
                             raise Blocked('动作缺少后端核验')
                         if name in ('reorient','execute_plan'):recovery_pending=False

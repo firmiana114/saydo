@@ -36,6 +36,8 @@ function entries(run,now=Date.now()/1000){
    continue;
   }else if(['llm_connection_retry','llm_response_retry'].includes(event.event)){
    row.title=event.event==='llm_response_retry'?'模型响应重试':'连接重试';row.text=event.text;
+  }else if(event.event==='scene_precondition_correction'){
+   row.title='需重新采集本任务场景';row.text=event.text;
   }else if(event.event==='planning_argument_error'){
    row.title='规划参数需修正';row.text=event.text;
    if(event.retry_budget)row.text+=` 规划尝试 ${event.retry_budget.planning_attempts}/5。`;
