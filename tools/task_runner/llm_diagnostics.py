@@ -11,7 +11,7 @@ PHASES = {'preparing':'准备请求','connecting':'连接服务','tls':'建立�
 
 class RequestDiagnostics:
     def __init__(self, payload, encoded, timeout, proxy, callback=None):
-        self.started=time.monotonic();self.callback=callback;self.proxy=bool(proxy);self.tls_ready=False
+        self.started=time.monotonic();self.callback=callback;self.proxy=bool(proxy);self.tls_ready=False;self.application_request_started=False
         self.data={'version':1,'model':payload['model'],'reasoning_effort':payload['reasoning']['effort'],
             'timeout_s':timeout,'stream':payload['stream'],'proxy_enabled':self.proxy,
             'request_bytes':len(encoded),'input_items':len(payload['input']),'tool_count':len(payload['tools']),
@@ -50,6 +50,8 @@ class RequestDiagnostics:
             if outcome=='complete':self.tls_ready=True;self.data['tls_complete_s']=self.elapsed()
         elif not self.proxy or self.tls_ready:
             if stage in ('send_request_headers','send_request_body'):
+                self.application_request_started=True
+                self.data['application_request_started']=True
                 self.data['phase']='uploading'
                 if stage=='send_request_body' and outcome=='complete':
                     self.data.update(request_sent_s=self.elapsed(),phase='waiting_headers')

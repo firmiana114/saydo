@@ -29,10 +29,13 @@ function entries(run,now=Date.now()/1000){
    const pending=!end&&run.state==='running';
    row.title=`LLM 调用 #${event.invocation} · 第 ${event.turn} 轮 · ${event.model}${event.reasoning_effort?` · 推理${effortLabels[event.reasoning_effort]||event.reasoning_effort}`:''}`;
    row.text=end?`${outcomes[end.outcome]||end.outcome} · 调用耗时 ${seconds(end.seconds)}`:pending?`等待响应 · 已用 ${seconds(Math.max(0,now-event.at))}`:'已中断 · 耗时未完整记录';
+   if(event.connection_attempt>1)row.title+=` · 连接尝试 ${event.connection_attempt}/${event.max_connection_attempts}`;
    row.text+=requestDetails(end?.diagnostics||event.diagnostics);
    row.kind=pending?'llm-pending':'llm';
   }else if(event.event==='llm'){
    continue;
+  }else if(event.event==='llm_connection_retry'){
+   row.title='连接重试';row.text=event.text;
   }else if(event.event==='model_message'){
    row.title='模型说明';row.text=event.text;
   }else if(event.event==='tool_started'){

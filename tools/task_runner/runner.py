@@ -3,10 +3,14 @@ import asyncio
 import json
 from pathlib import Path
 import time
-from .llm_client import LLMClient, ModelUnavailable, LLMError
+from .llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent
 from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError, model_result
 from .tool_registry import schemas, validate, MOTIONS, READS
 from .config import UI_MODELS, UI_REASONING_EFFORTS
+
+
+CONNECTION_ATTEMPTS = 5
+CONNECTION_RETRY_DELAYS = (1, 2, 4, 8)
 
 
 class Runner:
@@ -124,6 +128,24 @@ class Runner:
             return await self.model_call(history, run, turn)
 
     async def model_call(self, history, run, turn):
+        for attempt in range(1,CONNECTION_ATTEMPTS+1):
+            self.check()
+            try:
+                return await self.model_attempt(history,run,turn,attempt)
+            except ConnectionNotSent as error:
+                self.check()
+                if attempt==CONNECTION_ATTEMPTS:
+                    raise LLMError(f'{error}；连接已尝试{CONNECTION_ATTEMPTS}次，达到上限') from error
+                delay=CONNECTION_RETRY_DELAYS[attempt-1]
+                self.emit(run,'llm_connection_retry',turn=turn+1,failed_attempt=attempt,
+                    next_attempt=attempt+1,max_attempts=CONNECTION_ATTEMPTS,delay_s=delay,
+                    text=f'模型连接失败，请求尚未上传；{delay}秒后进行第{attempt+1}/{CONNECTION_ATTEMPTS}次尝试。')
+                # Cancellable wait: stopping/whole-task timeout prevents another request.
+                try:await asyncio.wait_for(self.cancelled.wait(),timeout=delay)
+                except TimeoutError:pass
+                self.check()
+
+    async def model_attempt(self, history, run, turn, attempt):
         self.check()
         tools = schemas(self.config.mode)
         if run.get('finalizing'):
@@ -131,7 +153,8 @@ class Runner:
         model = run['model']
         effort = run['reasoning_effort']
         invocation = 1 + sum(e['event'] == 'llm_started' for e in run['events'])
-        self.emit(run, 'llm_started', invocation=invocation, turn=turn+1, model=model, reasoning_effort=effort)
+        self.emit(run, 'llm_started', invocation=invocation, turn=turn+1, model=model, reasoning_effort=effort,
+            connection_attempt=attempt,max_connection_attempts=CONNECTION_ATTEMPTS)
         diagnostic_event=run['events'][-1]
         def diagnostics_callback(value):
             diagnostic_event['diagnostics']=value

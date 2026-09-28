@@ -1,11 +1,17 @@
 """Responses protocol only; never executes model text or follows redirects."""
 import asyncio
 import json
+import ssl
 import httpx
 from .llm_diagnostics import RequestDiagnostics
 
 
 class LLMError(RuntimeError):
+    pass
+
+
+class ConnectionNotSent(LLMError):
+    """Transport trace confirms a failed connection before application HTTP upload."""
     pass
 
 
@@ -41,6 +47,9 @@ class LLMClient:
                                 if len(raw)>4*1024*1024:raise LLMError('模型响应超出大小限制')
             except (httpx.HTTPError, TimeoutError) as error:
                 failure=error
+                if self.can_retry_connection(error,diagnostics):
+                    diagnostics.data['retryable_connection_failure']=True
+                    raise ConnectionNotSent(diagnostics.failure_message(isinstance(error,(TimeoutError,httpx.TimeoutException))).removesuffix('；未自动重试')) from error
                 raise LLMError(diagnostics.failure_message(isinstance(error,(TimeoutError,httpx.TimeoutException)))) from error
             diagnostics.mark('parsing')
             return self.parse_response(response,raw,diagnostics)
@@ -49,6 +58,19 @@ class LLMClient:
             raise
         finally:
             diagnostics.finish('cancelled' if isinstance(failure,asyncio.CancelledError) else 'failed' if failure else 'completed',failure)
+
+    @staticmethod
+    def can_retry_connection(error,diagnostics):
+        if not isinstance(error,(httpx.ConnectError,httpx.ConnectTimeout,TimeoutError)):return False
+        if diagnostics.application_request_started or diagnostics.data['phase'] not in ('connecting','tls'):return False
+        if 'http_status' in diagnostics.data or diagnostics.data['response_bytes']:return False
+        # Certificate validation/configuration errors do not improve with repetition.
+        cause=error;seen=set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause,ssl.SSLCertVerificationError):return False
+            cause=cause.__cause__
+        return True
 
     @staticmethod
     def parse_response(response,raw,diagnostics):
