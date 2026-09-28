@@ -40,3 +40,10 @@ const scrolling={...run,run_id:'scroll'};render(container,scrolling,200);assert.
 scroller.scrollTop=250;scroller.scrollHeight=1100;render(container,{...scrolling,events:[...events,{seq:10,event:'phase',text:'new status'}]},201);assert.equal(scroller.scrollTop,250,'reading earlier content must not jump');
 scroller.scrollTop=900;scroller.scrollHeight=1100;render(container,{...scrolling,events:[...events,{seq:10,event:'phase',text:'updated status'}]},202);assert.equal(scroller.scrollTop,1100,'near-bottom readers follow new content');
 console.log('Progress scrolling passed: follow at bottom, preserve manual scroll, reset on task selection.');
+const diagnosticRun={run_id:'d',timeline_version:1,state:'failed',events:[
+ {event:'llm_started',seq:1,at:1,invocation:1,turn:1,model:'gpt-6-sol'},
+ {event:'llm',seq:2,at:91,invocation:1,outcome:'failed',seconds:90,diagnostics:{phase:'waiting_headers',request_bytes:10240,request_sent_s:.5,exception_type:'TimeoutError'}}]};
+const diagnosticText=entries(diagnosticRun)[0].text;
+assert(diagnosticText.includes('等待响应头'));assert(diagnosticText.includes('10.0 KB'));assert(diagnosticText.includes('TimeoutError'));
+assert(!diagnosticText.includes('首字节'),'missing timings must not appear as zero');
+console.log('Request diagnostics visible; older events and missing timings remain supported.');

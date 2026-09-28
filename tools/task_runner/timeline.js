@@ -5,6 +5,19 @@ const tools={get_status:'读取系统状态',get_camera_frame:'查看相机画�
 const effortLabels={low:'低',medium:'中',high:'高'};
 const outcomes={completed:'完成',failed:'失败',cancelled:'已取消',unavailable:'暂不可用',blocked:'需要处理',interrupted:'已中断'};
 const seconds=value=>Number.isFinite(value)?value.toFixed(1)+' 秒':'耗时未记录';
+const requestPhases={preparing:'准备请求',connecting:'连接服务',tls:'建立加密连接',uploading:'上传请求',waiting_headers:'等待响应头',reading_body:'读取响应正文',parsing:'校验模型响应',completed:'已完成'};
+function requestDetails(d){
+ if(!d)return '';
+ const parts=[requestPhases[d.phase]||'请求处理中'];
+ if(Number.isFinite(d.request_bytes))parts.push(`请求 ${(d.request_bytes/1024).toFixed(1)} KB`);
+ if(Number.isFinite(d.request_sent_s))parts.push(`上传完成 ${seconds(d.request_sent_s)}`);
+ if(Number.isFinite(d.first_byte_s))parts.push(`首字节 ${seconds(d.first_byte_s)}`);
+ if(Number.isFinite(d.http_status))parts.push(`HTTP ${d.http_status}`);
+ if(d.usage?.input_tokens!==undefined)parts.push(`输入 ${d.usage.input_tokens} tokens`);
+ if(d.usage?.output_tokens!==undefined)parts.push(`输出 ${d.usage.output_tokens} tokens`);
+ if(d.exception_type)parts.push(d.exception_type);
+ return '\n'+parts.join(' · ');
+}
 function entries(run,now=Date.now()/1000){
  if(run.timeline_version!==1)return legacy(run);
  const events=run.events||[],ends=new Map(events.filter(e=>e.event==='llm').map(e=>[e.invocation,e]));
@@ -16,6 +29,7 @@ function entries(run,now=Date.now()/1000){
    const pending=!end&&run.state==='running';
    row.title=`LLM 调用 #${event.invocation} · 第 ${event.turn} 轮 · ${event.model}${event.reasoning_effort?` · 推理${effortLabels[event.reasoning_effort]||event.reasoning_effort}`:''}`;
    row.text=end?`${outcomes[end.outcome]||end.outcome} · 调用耗时 ${seconds(end.seconds)}`:pending?`等待响应 · 已用 ${seconds(Math.max(0,now-event.at))}`:'已中断 · 耗时未完整记录';
+   row.text+=requestDetails(end?.diagnostics||event.diagnostics);
    row.kind=pending?'llm-pending':'llm';
   }else if(event.event==='llm'){
    continue;

@@ -30,7 +30,7 @@ class FakeLLM:
         self.efforts = []
         self.started = asyncio.Event()
 
-    async def generate(self, history, tools, model, instructions, *, reasoning_effort=None):
+    async def generate(self, history, tools, model, instructions, *, reasoning_effort=None, diagnostics_callback=None):
         self.histories.append(copy.deepcopy(history))
         self.models.append(model)
         self.efforts.append(reasoning_effort)

@@ -1,5 +1,6 @@
 """Reuse Saydo's authenticated HTTP client; own the fixed state polling."""
 import asyncio
+import copy
 import math
 import time
 from urllib.parse import quote
@@ -265,3 +266,42 @@ class RobotAdapter:
                 raise Blocked('停止后原任务仍未结束', uncertain=True)
         self.motion_inflight = False
         return first
+
+
+def model_result(name, value):
+    """Reduce only model context, after verification; journal keeps compact full result."""
+    result=copy.deepcopy(value)
+    plan_keys=('plan','placement_plan','reorientation_plan','object_motion_plan')
+    def strip_history(grasp):
+        if isinstance(grasp,dict) and grasp.get('state') in ('completed','idle'):
+            for key in plan_keys:grasp.pop(key,None)
+    def status_view(status):
+        if not isinstance(status,dict):return
+        grasp=status.get('grasp')
+        # Pending plans and failed-task evidence remain available to a new run.
+        strip_history(grasp)
+    if name=='get_task_diagnostics':return result
+    if name=='get_status':status_view(result)
+    status_view(result.get('status'))
+    controller=result.get('controller')
+    strip_history(controller)
+    if name=='initial':
+        robot=result.get('robot',{})
+        controller=robot.get('controller',{}) if isinstance(robot,dict) else {}
+        strip_history(controller)
+    task=result.get('task')
+    if (name in MOTIONS and isinstance(task,dict) and task.get('state')=='completed'
+            and result.get('verified') is True and isinstance(task.get('result'),dict)):
+        payload=task['result'];plan=payload.get('plan')
+        if name=='grasp' and isinstance(plan,dict):
+            # Preserve actual selected grasp semantics/settings, not candidate matrices.
+            keep=('object_id','object_name','pose_mode','grasp_id','grasp_name','orientation_policy',
+                  'approach_policy','effective_parameters','controller_tcp_frame','lift_height_m')
+            payload['plan']={k:plan[k] for k in keep if k in plan}
+        if name!='grasp':
+            for key in plan_keys:payload.pop(key,None)
+        status=result.get('status',{});current=status.get('grasp',{}) if isinstance(status,dict) else {}
+        if 'held_object' in payload and isinstance(current,dict) and payload.get('held_object')==current.get('held_object') and 'held_object' in current:
+            current.pop('held_object');current['held_object_source']='task.result.held_object'
+        result['context_note']='成功动作已核验；历史路径/候选省略，完整报告按task.task_id查询；不得重放成功动作。'
+    return result

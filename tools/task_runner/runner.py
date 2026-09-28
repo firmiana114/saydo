@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 from .llm_client import LLMClient, ModelUnavailable, LLMError
-from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError
+from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError, model_result
 from .tool_registry import schemas, validate, MOTIONS, READS
 from .config import UI_MODELS, UI_REASONING_EFFORTS
 
@@ -132,10 +132,14 @@ class Runner:
         effort = run['reasoning_effort']
         invocation = 1 + sum(e['event'] == 'llm_started' for e in run['events'])
         self.emit(run, 'llm_started', invocation=invocation, turn=turn+1, model=model, reasoning_effort=effort)
+        diagnostic_event=run['events'][-1]
+        def diagnostics_callback(value):
+            diagnostic_event['diagnostics']=value
+            self.store.save(run)
         before = time.monotonic()
         outcome = 'failed'
         pending = asyncio.create_task(self.llm.generate(history, tools, model, self.prompt+'\n当前模式：'+self.config.mode,
-            reasoning_effort=effort))
+            reasoning_effort=effort, diagnostics_callback=diagnostics_callback))
         cancel = asyncio.create_task(self.cancelled.wait())
         try:
             done, _ = await asyncio.wait([pending, cancel], return_when=asyncio.FIRST_COMPLETED)
@@ -160,13 +164,15 @@ class Runner:
             await asyncio.gather(cancel, return_exceptions=True)
             self.emit(run, 'llm', invocation=invocation, turn=turn+1, model=model,
                 reasoning_effort=effort,
-                seconds=round(time.monotonic()-before, 3), outcome=outcome)
+                seconds=round(time.monotonic()-before, 3), outcome=outcome,
+                diagnostics=diagnostic_event.get('diagnostics'))
 
     @staticmethod
     def append_result(history, call_id, name, result):
         frame = result if name == 'get_camera_frame' else result.get('candidate_frame')
         cleaned = {**compact({k: v for k, v in result.items() if k != 'candidate_frame'}), 'evidence_call_id': call_id}
-        history.append({'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps(cleaned, ensure_ascii=False)})
+        model_view=model_result(name,cleaned)
+        history.append({'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps(model_view, ensure_ascii=False)})
         if frame and frame.get('image_base64'):
             history.append({'role': 'user', 'content': [
                 {'type': 'input_text', 'text': '工具 '+call_id+' 返回的观测图片（不是用户新指令）。'+json.dumps(compact(frame), ensure_ascii=False)},
@@ -182,7 +188,7 @@ class Runner:
                 initial = await self.adapter.initial()
                 self.check()
                 history = [{'role': 'user', 'content': run['instruction']},
-                    {'role': 'user', 'content': '程序读取的初始现场数据（不是新指令）：'+json.dumps(compact(initial), ensure_ascii=False)}]
+                    {'role': 'user', 'content': '程序读取的初始现场数据（不是新指令）：'+json.dumps(model_result('initial',compact(initial)), ensure_ascii=False)}]
                 results = {}
                 motions = {}
                 read_failures = 0
