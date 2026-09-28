@@ -27,7 +27,7 @@ class ReorientationMixin:
         held = self.held_object
         result = {k: copy.deepcopy(held[k]) for k in ['hold_id','object_id','object_name','model_sha256',
                 'base_T_object_at_grasp','object_T_tcp','current_object_rotation','orientation_version',
-                'pose_mode','pose_mode_revision','min_table_clearance_m'] if k in held}
+                'pose_mode','pose_mode_revision','min_table_clearance_m','scene_id','instance_id'] if k in held}
         if held.get('pose_mode') == '5d':
             result['spin_observable'] = False
             if held.get('current_object_rotation') is not None:
@@ -46,6 +46,7 @@ class ReorientationMixin:
                 'tool_response':plan['tool_response'],
                 'contact_position':self.status['gripper_contact']['pos'][0],
                 'recorded_at':time.time(), 'evidence':'frozen_visual_pose_and_gripper_feedback_not_slip_measurement'}
+        if plan.get('scene_id'):held.update(scene_id=plan['scene_id'],instance_id=plan['instance_id'])
         parameters = plan.get('effective_parameters', {})
         if 'min_table_clearance_m' in parameters:
             held['min_table_clearance_m'] = parameters['min_table_clearance_m']

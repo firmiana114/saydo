@@ -111,7 +111,7 @@ class LLMBoxDetector:
         except (ValueError, UnicodeDecodeError):
             raise ValueError('LLM识别服务未返回有效JSON') from None
 
-    def detect(self, frame, prompt, cancelled):
+    def detect(self, frame, prompt, cancelled, *, frozen_scene=False):
         import cv2
         if cancelled():
             raise DetectionCancelled()
@@ -151,6 +151,6 @@ class LLMBoxDetector:
                 raise ValueError(f'LLM识别超过{self.timeout:g}秒，未采用迟到结果')
         if cancelled():raise DetectionCancelled()
         if 'error' in result:raise result['error']
-        if time.time()-frame['time'] > MAX_FRAME_AGE_S:
+        if not frozen_scene and time.time()-frame['time'] > MAX_FRAME_AGE_S:
             raise ValueError('识别帧已超过初始化时限，请重新识别')
         return parse_detection(result['response'],width,height)

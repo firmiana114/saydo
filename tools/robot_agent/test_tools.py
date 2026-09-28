@@ -23,11 +23,22 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             tools=await client.list_tools()
             tools=tools.tools if hasattr(tools,'tools') else tools
             names={t.name:t for t in tools}
-            self.assertEqual(len(names),24)
+            self.assertEqual(len(names),26)
             for name in ['get_camera_frame','get_tracking_candidates_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
                 self.assertTrue(names[name].annotations.read_only_hint)
             for name in ['grasp','place','reorient','reset_arm','stop_robot']:
                 self.assertFalse(names[name].annotations.read_only_hint)
+
+    async def test_scene_tools_and_grasp_references(self):
+        backend=FakeBackend()
+        async with Client(create_server(backend)) as client:
+            targets=[{'object_id':'tube','instance_id':'tube-1','role':'source','box':None}]
+            result=await client.call_tool('capture_scene_snapshot',{'targets':targets,'environment_static':True,'request_id':'scene-001'})
+            self.assertFalse(result.is_error);self.assertEqual(backend.calls[-1][1]['arguments']['targets'],targets)
+            await client.call_tool('get_scene_snapshot',{'scene_id':'s'})
+            self.assertEqual(backend.calls[-1][0],'/api/agent/scene-snapshot?scene_id=s')
+            result=await client.call_tool('grasp',{'object_id':'tube','request_id':'grasp-001'})
+            self.assertTrue(result.is_error,'new tool callers must first obtain a scene')
 
     async def test_image_block_and_metadata_are_native_mcp_content(self):
         async with Client(create_server(FakeBackend())) as client:
@@ -48,7 +59,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_motion_arguments_ids_and_stop_route(self):
         backend=FakeBackend()
         async with Client(create_server(backend)) as client:
-            for name,args,operation in [('grasp',{'object_id':'bottle','request_id':'fixed-id'},'grasp'),
+            for name,args,operation in [('grasp',{'object_id':'bottle','scene_id':'scene','instance_id':'source','request_id':'fixed-id'},'grasp'),
                 ('place',{'hold_id':'h','orientation_version':2,'placement_revision':'v','request_id':'place-id'},'place'),
                 ('reset_arm',{'target':'zero','request_id':'reset-id'},'reset')]:
                 result=await client.call_tool(name,args);self.assertFalse(result.is_error)
@@ -61,7 +72,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_errors_do_not_retry_or_claim_completion(self):
         backend=FakeBackend();backend.fail=True
         async with Client(create_server(backend)) as client:
-            result=await client.call_tool('grasp',{'object_id':'bottle','request_id':'fixed-id'})
+            result=await client.call_tool('grasp',{'object_id':'bottle','scene_id':'scene','instance_id':'source','request_id':'fixed-id'})
             self.assertTrue(result.is_error);self.assertEqual(len(backend.calls),1)
             self.assertEqual(json.loads(result.content[0].text)['task_id'],'fixed-id')
 

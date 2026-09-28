@@ -13,6 +13,8 @@ from .robot_adapter import Blocked
 
 def call(name, args=None, ident='call-1'):
     args = dict(args or {})
+    if name in ('grasp','preview_grasp'):
+        args.setdefault('scene_id','fixture-scene');args.setdefault('instance_id','source')
     if name != 'finish_task':
         args.setdefault('progress_message', '我先确认当前情况，再继续下一步。')
     return {'status': 'completed', 'output': [{'type': 'function_call', 'name': name, 'call_id': ident, 'arguments': json.dumps(args)}]}

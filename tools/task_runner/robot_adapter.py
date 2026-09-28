@@ -23,7 +23,7 @@ def compact(value):
     excluded = {'image_base64', 'kinematics_checks', 'arrival_checks', 'samples', 'joint_samples',
                 'controller_readback', 'model_path', 'mesh', 'output', 'log_path'}
     if isinstance(value, dict):
-        return {k: compact(v) for k, v in value.items() if k not in excluded}
+        return {k: ([compact(row) for row in v[:256]] if k=='features' and isinstance(v,list) else compact(v)) for k, v in value.items() if k not in excluded}
     if isinstance(value, list):
         return [compact(v) for v in value[:32]]
     return value
@@ -37,6 +37,7 @@ class RobotAdapter:
         self.session_id = None
         self.motion_inflight = False
         self.active_request = None
+        self.scene_ids=set()
 
     async def request(self, path, value=None, cancelled=None):
         if cancelled is not None and cancelled.is_set():
@@ -74,6 +75,7 @@ class RobotAdapter:
             path = '/api/agent/'+READS[name]
             if name in ('get_grasp_profiles','get_object_geometry'):
                 path += '?object_id='+quote(args['object_id'], safe='')
+            if name=='get_scene_snapshot':path+='?scene_id='+quote(args['scene_id'],safe='')
             if name=='get_task_diagnostics':path+='?task_id='+quote(args['task_id'],safe='')
             return await self.request(path, cancelled=cancelled)
         if name in VISION:
@@ -117,8 +119,11 @@ class RobotAdapter:
                 raise Blocked('当前模式不允许实际动作')
             if name == 'grasp' and state['grasp'].get('held_object'):
                 raise Blocked('已有夹持记录，不能再次抓取')
+        if name in ('grasp','preview_grasp') and args.get('scene_id') not in self.scene_ids:
+            raise Blocked('必须先在本任务采集全部目标，再引用返回的scene_id抓取')
         if cancelled.is_set():
             raise Cancelled()
+        if name=='capture_scene_snapshot':self.scene_ids.clear()
         self.active_request = request_id
         self.motion_inflight = name in MOTIONS
         value = {'operation': ACTIONS[name], 'request_id': request_id, 'arguments': args}
@@ -129,7 +134,7 @@ class RobotAdapter:
                 self.motion_inflight = False
                 raise
             result = {'terminal': False}
-        deadline = time.monotonic()+self.config.action_timeout
+        deadline = time.monotonic()+(200 if name=='capture_scene_snapshot' else self.config.action_timeout)
         while not result.get('terminal'):
             if cancelled.is_set():
                 raise Cancelled()
@@ -144,15 +149,19 @@ class RobotAdapter:
         self.motion_inflight = False
         if result.get('state') == 'interrupted' or result.get('outcome_unknown'):
             raise Blocked('后端报告结果未知，需人工核对', uncertain=True)
-        expected = 'completed' if name in MOTIONS else {'preview_grasp':'preview', 'preview_place':'placement_preview', 'preview_reorient':'reorient_preview','plan_held_object_motion':'object_motion_planned','plan_release':'object_motion_planned'}[name]
+        expected = 'completed' if name in MOTIONS else {'capture_scene_snapshot':'scene_ready','preview_grasp':'preview', 'preview_place':'placement_preview', 'preview_reorient':'reorient_preview','plan_held_object_motion':'object_motion_planned','plan_release':'object_motion_planned'}[name]
         if result.get('state') != expected:
-            if name in ('plan_held_object_motion','plan_release') and result.get('state') in ('failed','rejected'):
+            if name in ('plan_held_object_motion','plan_release','capture_scene_snapshot') and result.get('state') in ('failed','rejected'):
                 latest=await self.status()
                 return {'task':result,'status':latest,'verified':False,
                         'error':{'code':'PLAN_FAILED','message':str(result.get('error') or result.get('result',{}).get('error') or result.get('state'))},
                         'motion_sent':False,'note':'只读规划失败，可查看诊断并在用户目标范围内重新规划；没有执行运动。'}
             raise Blocked('后端任务未成功：'+str(result.get('state')))
         latest = await self.status()
+        if name=='capture_scene_snapshot':
+            scene=result.get('result',{}).get('scene_snapshot') or {}
+            if not scene.get('valid_for_execution') or scene.get('state')!='ready':raise Blocked('场景未全部准备完成')
+            self.scene_ids={scene['scene_id']}
         if name == 'grasp':
             held = result.get('result', {}).get('held_object')
             current = latest.get('grasp', {}).get('held_object')

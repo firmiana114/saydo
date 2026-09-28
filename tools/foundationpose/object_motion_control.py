@@ -15,6 +15,7 @@ from grasp_library import held_clearance_config
 from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from object_catalog import select_object
+from scene_features import object_features
 from object_motion_geometry import plan_object_motion, segment_samples, validate_tcp, object_error
 from object_motion_store import ObjectPlanStore
 from placement_geometry import check_tcp_workspace
@@ -51,7 +52,7 @@ class ObjectMotionMixin:
             value=json.loads(path.read_text())
             if isinstance(value,dict):metadata={k:value[k] for k in ('origin','axis','axes','units','size_m','length_m','height_m','outer_diameter_m') if k in value}
         return {k:geometry[k] for k in ('object_id','object_name','model_sha256','pose_mode','pose_mode_revision','units')}|{
-            'coordinate_frame':'object_model','bounds_object_m':[lo.tolist(),hi.tolist()],
+            **object_features(self.tracker.models_root,object_id),'coordinate_frame':'object_model','bounds_object_m':[lo.tolist(),hi.tolist()],
             'declared_model_dimensions':metadata,
             'reference_points':{'model_origin':[0,0,0],'bounding_box_center':((lo+hi)/2).tolist(),
                 'axis_z_min':[0,0,float(lo[2])],'axis_z_max':[0,0,float(hi[2])]},
@@ -91,6 +92,7 @@ class ObjectMotionMixin:
 
     def motion_context(self, held, writes=False):
         config=json.loads(self.config_path.read_text());config=held_clearance_config(config,held)
+        if held.get('scene_id'):self.validate_scene(held['scene_id'],config)
         self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=writes)
         arm,tool=self.reorientation_hardware(held,config)
         source=tool['controller_readback']
@@ -104,7 +106,11 @@ class ObjectMotionMixin:
 
     def resolve_motion_frame(self, goal, held, config, arm, tool):
         name=goal['reference_frame'];context={'name':name,'captured_at':time.time()};frame=np.eye(4)
-        if name=='tcp':frame=controller_pose(arm['pose'])
+        if held.get('scene_id') and name in ('camera','tracked_object'):raise ValueError('快照任务不使用实时相机/跟踪目标，请引用开始时采集的scene_object')
+        if name=='scene_object':
+            if held.get('scene_id')!=goal['scene_id']:raise ValueError('参考快照必须与当前夹持来源一致')
+            frame,context=self.scene_reference(goal)
+        elif name=='tcp':frame=controller_pose(arm['pose'])
         elif name=='held_object':
             if held.get('pose_mode')=='5d':raise ValueError('5D物品横向轴不可观测，请使用base/camera/tcp坐标系')
             frame=controller_pose(arm['pose'])@np.linalg.inv(transform(held['object_T_tcp']))
@@ -160,6 +166,10 @@ class ObjectMotionMixin:
 
     def check_object_plan_binding(self, plan, config):
         self.check_cancel()
+        if plan['hold'].get('scene_id'):self.validate_scene(plan['hold']['scene_id'],config)
+        if plan['goal']['reference_frame']=='scene_object':
+            frame,_=self.scene_reference(plan['goal'])
+            if not np.allclose(frame,plan['reference_frame_pose'],atol=1e-9):raise ValueError('快照参考位姿变化')
         with self.lock:current_hold=self.require_motion_hold(plan['hold'])
         if current_hold['object_T_tcp']!=plan['hold']['object_T_tcp'] or current_hold.get('tool_response')!=plan['hold'].get('tool_response'):raise ValueError('夹持变换或工具绑定已变化')
         if self.motion_binding(config)!=plan['configuration_binding']:raise ValueError('工具、标定或运动配置已变化，请重新规划')
@@ -262,6 +272,7 @@ class ObjectMotionMixin:
                 if not self.actuated and time.time()>plan['expires_at']:raise ValueError('释放方案已过期')
                 report['active_stage']='open_gripper';self.actuated=True;report['release_attempted']=True;report['gripper_command_attempted']=True
                 report['release_requested_at']=time.time()
+                self.update_scene_instance(held,'release_unknown',actual_object)
                 with self.lock:self.held_object=None
                 self.robot.move_gripper(1000);report['release_command_acknowledged']=True
                 stop=time.monotonic()+8;stable=0
@@ -280,6 +291,7 @@ class ObjectMotionMixin:
                     retreat=controller_pose(arm['pose']);retreat[:3,3]+=plan['retreat_vector_base_m']
                     target=pose_waypoint('release_retreat',retreat);target['method']='linear';move(target,True)
                 result['retreat_confirmed']=True
+                self.update_scene_instance(held,'placed_unverified',actual_object)
             else:
                 updated=copy.deepcopy(held);updated.update(current_object_rotation=actual_object[:3,:3].tolist(),orientation_version=held['orientation_version']+1)
                 with self.lock:self.held_object=updated

@@ -25,10 +25,21 @@ class MotionWaypoint(BaseModel):
     rpy_deg: RPYDegrees | None = None
 
 
+class SceneTarget(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    instance_id: str
+    object_id: str
+    role: Literal['source','reference']
+    box: Annotated[list[Annotated[int,Field(strict=True,ge=0,le=640)]],Field(min_length=4,max_length=4)] | None = None
+
+
 class MotionGoal(BaseModel):
     model_config=ConfigDict(extra='forbid')
-    reference_frame: Literal['base','camera','tcp','held_object','tracked_object']='base'
+    reference_frame: Literal['base','camera','tcp','held_object','tracked_object','scene_object']='base'
     reference_object_id: str | None = None
+    scene_id: str | None = None
+    reference_instance_id: str | None = None
+    reference_feature_id: str | None = None
     reference_point_object_m: XYZ = Field(default_factory=lambda:[0.,0.,0.])
     target_position_m: XYZ | None = None
     target_rpy_deg: RPYDegrees | None = None
@@ -46,6 +57,7 @@ A motion tool returns an asynchronous task, not completion. Keep its request_id;
 Preview tools do not move hardware. Actual grasp/place/reset/reorient/execute_plan require the user's requested action and execution-enabled backend. Stop is a software stop, not a substitute for the physical emergency stop.
 Poses identify their frame and units. Never reuse a stale image pose as a robot target. The backend reacquires a fresh observation for grasping. Placement uses the saved rectangle and current held-object orientation; reset preserves the gripper opening. Reorient changes an already held object to absolute Base-frame angles, preserves holding, and increments orientation_version; read the new version before the next action. Never guess that model zero angles mean upright.
 General held-object tools: get_object_geometry explains model coordinates. plan_held_object_motion can translate, rotate, or move to a full object pose, with staged rotation and waypoints; plan_release plans opening at the current or target object pose plus an explicit Base-frame retreat. Neither planning tool moves hardware. Poll the plan task, inspect its kind/limits, then execute_plan once using plan_id and a new request_id when the user's task authorizes that movement/release. Plans expire and cannot survive backend restart. Every successful held motion increments orientation_version; read fresh state before the next plan. Null pose components retain the preceding target; object reference points are not TCP positions. Use get_robot_state.held_object_pose for the current pose derived from the saved rigid attachment, not as independent vision evidence. Never claim generic release provides support, settling, rack insertion, or complete environment/gripper collision checking. get_task_diagnostics exposes exact rejection/stage evidence.
+Before any grasp, capture_scene_snapshot must declare ALL task source and reference instances and reach scene_ready. Pass scene_id/instance_id to grasp; never grasp first and then initialize the placement target. For later static goals use reference_frame=scene_object with scene_id/reference_instance_id and optional reference_feature_id from get_object_geometry. Frozen Base poses survive camera motion; held/released instances no longer have a usable static pose. Do not recapture while holding.
 A completed controller task does not independently prove object placement, table contact, or absence of slipping. Observe again before claiming the user's goal is achieved. Backend errors must be reported; do not relax limits, clear errors, or recover holding records automatically.'''
 
 
@@ -107,6 +119,16 @@ def create_server(backend):
         return await call('/api/agent/profiles?object_id='+quote(object_id, safe=''))
 
     @server.tool(annotations=read)
+    async def capture_scene_snapshot(targets: Annotated[list[SceneTarget],Field(min_length=1,max_length=8)], environment_static: bool, request_id: str) -> CallToolResult:
+        """Before ANY grasp, declare ALL source and reference instances required by the task. Capture one stationary RGB-D frame and register each model in it; no physical motion. environment_static must be true. Unique instance IDs distinguish identical models. box=null requires a unique automatic detection; ambiguous/failed targets block the entire snapshot. Poll get_task to scene_ready; use its scene_id for grasp and later goals. Camera movement afterwards does not invalidate Base poses. Snapshot is process-scoped, expires in 30 minutes, and is invalidated by calibration/model changes. Never recapture after holding an object."""
+        return await action('capture_scene_snapshot',request_id,{'targets':[t.model_dump() for t in targets],'environment_static':environment_static})
+
+    @server.tool(annotations=read)
+    async def get_scene_snapshot(scene_id: str) -> CallToolResult:
+        """Read fixed Base poses and instance states from a captured scene. Only valid_for_execution=true and state=static instances retain usable static poses. Held/moved/released instances cannot be reused at their original location. Feature IDs refer to the estimated model frame, not independently calibrated physical labels."""
+        return await call('/api/agent/scene-snapshot?scene_id='+quote(scene_id,safe=''))
+
+    @server.tool(annotations=read)
     async def get_object_geometry(object_id: str) -> CallToolResult:
         """Read model-frame bounds, axes/reference points and pose_mode. Geometry points are not calibrated contact locations; 5D reference points must lie on model Z. Does not observe a scene instance."""
         return await call('/api/agent/object-geometry?object_id='+quote(object_id,safe=''))
@@ -151,14 +173,14 @@ def create_server(backend):
         return await call('/api/agent/vision', {'operation':'choose_target','arguments':{'selection_id':selection_id,'index':index}})
 
     @server.tool(annotations=read)
-    async def preview_grasp(object_id: str, request_id: str) -> CallToolResult:
-        """Plan/check a grasp without robot/gripper movement. Use a unique 8–96 character request_id; query get_task. Uses current saved grasp selection and fresh observation."""
-        return await action('preview_grasp', request_id, {'object_id':object_id})
+    async def preview_grasp(object_id: str, scene_id: str, instance_id: str, request_id: str) -> CallToolResult:
+        """Plan/check a grasp without robot/gripper movement. Use a unique 8–96 character request_id; query get_task. Uses saved grasp selection and a ready frozen scene; all required targets must be captured first."""
+        return await action('preview_grasp', request_id, {'object_id':object_id,'scene_id':scene_id,'instance_id':instance_id})
 
     @server.tool(annotations=write)
-    async def grasp(object_id: str, request_id: str) -> CallToolResult:
-        """Physically grasp/lift the requested tracked model using the selected grasp's bound force and opening plus all backend checks. Read get_grasp_profiles for parameters; completed task result.plan.effective_parameters records the actual selection. Requires user intent. Returns task ID; retries MUST keep the same request_id."""
-        return await action('grasp', request_id, {'object_id':object_id})
+    async def grasp(object_id: str, scene_id: str, instance_id: str, request_id: str) -> CallToolResult:
+        """Physically grasp/lift the requested source instance in a ready scene using the selected grasp's bound force and opening plus all backend checks. Read get_grasp_profiles for parameters; completed task result.plan.effective_parameters records the actual selection. Requires user intent. Returns task ID; retries MUST keep the same request_id."""
+        return await action('grasp', request_id, {'object_id':object_id,'scene_id':scene_id,'instance_id':instance_id})
 
     @server.tool(annotations=read)
     async def preview_place(hold_id: str, orientation_version: int, placement_revision: str, request_id: str) -> CallToolResult:

@@ -25,11 +25,12 @@ from pose_symmetry import effective_profile
 from gripper_diagnostics import CloseDiagnostics, contact_failure_message, feedback_summary, record_failure_before_stop
 from motion_speed import MotionSpeedMixin, checked_speed
 from object_motion_control import ObjectMotionMixin
+from scene_control import SceneMixin
 from object_catalog import select_object
 from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
 
-class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, PlacementMixin, GraspProfilesMixin):
+class GraspController(SceneMixin, ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()
@@ -51,7 +52,7 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
                 reset_available = return_joint_target(config) is not None
             except (ValueError, TypeError, KeyError, AttributeError):
                 reset_available = False
-            return {**self.status, 'force_config': self.force_config(),
+            return {**self.status,'active_scene_id':self.scenes().active, 'force_config': self.force_config(),
                     'motion_speed_config': self.motion_speed_configuration(),
                     'grasp_configuration': self.grasp_configuration(config),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
@@ -288,6 +289,7 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
                     report['initial_gripper_state'] = state
                     if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
                         raise ValueError('夹爪异常或正在运动')
+                    self.update_scene_instance(self.held_object,'release_unknown')
                     report['write_attempted'] = True
                     self.held_object = None
                     robot.move_gripper(1000)
@@ -414,9 +416,13 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
             records = self.grasp_library().object_directory(observation['object_id'])/'teach_commands';records.mkdir(parents=True,exist_ok=True)
             (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
 
-    def start(self, preview=False, expected_object_id=None):
+    def start(self, preview=False, expected_object_id=None, scene_id=None, instance_id=None):
         # Take the tracker lock before the grasp lock (snapshot uses the same order).
-        observation = copy.deepcopy(self.tracker.grasp_observation())
+        if scene_id is not None:
+            observation=self.scene_observation(scene_id,instance_id,expected_object_id)
+        else:
+            if self.scenes().active is not None:raise ValueError('已有场景采集上下文，必须引用准备完成的scene_id和instance_id')
+            observation = copy.deepcopy(self.tracker.grasp_observation())
         if expected_object_id is not None and observation.get('object_id') != expected_object_id:
             raise ValueError('当前跟踪物品已变化，拒绝抓取其他物品')
         with self.lock:
@@ -515,7 +521,9 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=mode == 'execute')
             self.robot.motion_log = report.setdefault('motion_events', [])
-            arm, observation = self.paired_observation(observation)
+            if observation.get('scene_id'):
+                self.validate_scene(observation['scene_id'],config);arm=self.stationary_scene_arm()
+            else:arm, observation = self.paired_observation(observation)
             handeye, tool = self.calibration(config)
             software = self.robot.query('get_arm_software_info')
             report['controller_software'] = software
@@ -539,7 +547,7 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
             check_camera_observation(handeye, observation)
             report['camera_calibration'] = handeye.get('runtime_camera_binding')
             report['gripper_base'] = base
-            base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
+            base_object = np.asarray(observation['base_T_object']) if observation.get('scene_id') else object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
             if observation.get('pose_mode_revision') is not None:
                 current_model = select_object(self.tracker.models_root, observation['object_id'])
                 if current_model['pose_mode_revision'] != observation['pose_mode_revision']:
@@ -556,6 +564,7 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
                         tool_response=tool['controller_readback']['tool_response_raw'], work_response=work,
                         flange_T_grip_tcp=tool['flange_T_grip_tcp'],
                         force_limit_raw=grip['force_limit_raw'], force_units=grip['force_units'])
+            if observation.get('scene_id'):plan.update(scene_id=observation['scene_id'],instance_id=observation['instance_id'])
             blockers = workspace_blockers(plan, config)
             if not base.get('force'):
                 blockers.append('当前夹爪未声明支持力度控制')
@@ -575,7 +584,11 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
             library = self.grasp_library()
             if revision(library.object(observation['object_id'])) != plan['grasp_library_revision']:
                 raise ValueError('夹法库在规划后变化，请重新预览')
+            if observation.get('scene_id'):
+                self.validate_scene(observation['scene_id'],config)
+                self.update_scene_instance(observation,'moving')
             self.execute(plan, config, report)
+            if observation.get('scene_id'):self.update_scene_instance(observation,'held')
             if self.status['state']=='completed' and plan['grasp_id']!='config':
                 try:
                     library.mark_success(observation['object_id'],plan['grasp_id'],plan['grasp_library_revision'],plan.get('pose_mode','6d'))
@@ -600,6 +613,9 @@ class GraspController(ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, P
             self.update(state='cancelled' if self.cancelled.is_set() else 'failed', error=detail, message=detail)
             report.update(error=detail, error_type=type(error).__name__, traceback=traceback.format_exc())
         finally:
+            if observation.get('scene_id') and self.status['state'] in ('failed','cancelled'):
+                try:self.update_scene_instance(observation,'unknown' if self.actuated else 'static')
+                except Exception as e:report['scene_record_error']=str(e)
             self.update(busy=False)
             report['result'] = self.snapshot()
             if robot_lock is not None:

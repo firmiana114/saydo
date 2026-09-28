@@ -45,6 +45,7 @@ class Tracker:
             self.object_info['detector_class'] = args.detector_class
         self.detector_backend = getattr(args, 'detector', 'ssdlite')
         self.llm_detector = LLMBoxDetector() if self.detector_backend == 'llm' else None
+        self.scene_job = None
         self.pending_object = None
         self.lock = threading.RLock()
         self.stop = threading.Event()
@@ -166,6 +167,21 @@ class Tracker:
         finally:
             if started:
                 pipe.stop()
+
+    def localize_frozen_scene(self, frame, targets, check, progress):
+        done=threading.Event();cancel=threading.Event();job={'done':done,'cancel':cancel,'frame':frame,'targets':targets,'progress':progress}
+        with self.lock:
+            if self.scene_job is not None:raise ValueError('已有场景采集请求')
+            self.scene_job=job
+        error=None
+        while not done.wait(.1):
+            try:check()
+            except Exception as failure:error=error or failure;cancel.set()
+            if self.stop.is_set():raise ValueError('视觉服务已停止')
+        if error:raise error
+        check()
+        if 'error' in job:raise ValueError(job['error'])
+        return job['result']
 
     def freeze(self):
         with self.lock:
@@ -488,6 +504,21 @@ class Tracker:
                                 if switch_generation == self.generation:
                                     self.state.update(state='model_error', error=str(error), model_ready=False, camera_T_object=None)
                             traceback.print_exc()
+                        continue
+                    with self.lock:
+                        scene_job=self.scene_job;self.scene_job=None
+                    if scene_job is not None:
+                        try:
+                            from scene_perception import localize_scene
+                            def scene_check():
+                                if scene_job['cancel'].is_set() or self.stop.is_set():raise ValueError('场景采集已取消')
+                            scene_job['result']=localize_scene(scene_job['frame'],scene_job['targets'],self.models_root,
+                                estimator,sam,context,self.llm_detector,scene_check,scene_job['progress'])
+                        except Exception as error:scene_job['error']=str(error)
+                        finally:scene_job['done'].set()
+                        # Do not resume an old live pose after spending time on scene inference.
+                        previous=None;last_sequence=-1
+                        with self.lock:self.state.update(state='paused',camera_T_object=None)
                         continue
                     if self.recover_if_due():
                         continue

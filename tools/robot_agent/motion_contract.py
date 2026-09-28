@@ -7,7 +7,10 @@ RPY = {'type':'array','items':{'type':'number','minimum':-180,'maximum':180},'mi
 WAYPOINT = {'type':'object','properties':{'position_m':{**VECTOR,'type':['array','null']},
              'rpy_deg':{**RPY,'type':['array','null']}},'required':['position_m','rpy_deg'],'additionalProperties':False}
 GOAL_PROPERTIES = {
-    'reference_frame':{'type':'string','enum':['base','camera','tcp','held_object','tracked_object']},
+    'reference_frame':{'type':'string','enum':['base','camera','tcp','held_object','tracked_object','scene_object']},
+    'scene_id':{'type':['string','null']},
+    'reference_instance_id':{'type':['string','null']},
+    'reference_feature_id':{'type':['string','null']},
     'reference_object_id':{'type':['string','null']},
     'reference_point_object_m':VECTOR,
     'target_position_m':{**VECTOR,'type':['array','null']},
@@ -18,7 +21,7 @@ GOAL_PROPERTIES = {
     'waypoints':{'type':'array','items':WAYPOINT,'maxItems':8},
 }
 GOAL_SCHEMA = {'type':'object','properties':GOAL_PROPERTIES,'required':list(GOAL_PROPERTIES),'additionalProperties':False}
-DEFAULT_GOAL = {'reference_frame':'base','reference_object_id':None,'reference_point_object_m':[0.,0.,0.],
+DEFAULT_GOAL = {'reference_frame':'base','scene_id':None,'reference_instance_id':None,'reference_feature_id':None,'reference_object_id':None,'reference_point_object_m':[0.,0.,0.],
                 'target_position_m':None,'target_rpy_deg':None,'path_mode':'joint','position_mode':'fixed',
                 'max_rotation_step_deg':15.,'waypoints':[]}
 
@@ -47,6 +50,12 @@ def checked_goal(value, release=False):
     if result['reference_frame']=='tracked_object':
         if not isinstance(oid,str) or not oid.strip() or len(oid)>200:raise ValueError('使用跟踪物品坐标时必须指定reference_object_id')
     elif oid is not None:raise ValueError('只有tracked_object坐标系接受reference_object_id')
+    scene_keys=('scene_id','reference_instance_id','reference_feature_id')
+    if result['reference_frame']=='scene_object':
+        for k in scene_keys[:2]:
+            if not isinstance(result[k],str) or not result[k] or len(result[k])>100:raise ValueError('快照目标须提供scene_id和reference_instance_id')
+        if result['reference_feature_id'] is not None and (not isinstance(result['reference_feature_id'],str) or not result['reference_feature_id'] or len(result['reference_feature_id'])>100):raise ValueError('特征编号无效')
+    elif any(result[k] is not None for k in scene_keys):raise ValueError('只有scene_object参考系接受快照字段')
     result['reference_point_object_m']=vector(result['reference_point_object_m'],'reference_point_object_m')
     if result['target_position_m'] is not None:result['target_position_m']=vector(result['target_position_m'],'target_position_m')
     if result['target_rpy_deg'] is not None:result['target_rpy_deg']=vector(result['target_rpy_deg'],'target_rpy_deg',180.)

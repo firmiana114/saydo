@@ -97,7 +97,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preview_does_not_become_held_object(self):
         self.backend.result['state'] = 'preview'
-        result = await self.adapter.execute('preview_grasp', {'object_id': 'b'}, 'id-12345', self.cancelled, lambda _: None)
+        self.adapter.scene_ids.add('fixture-scene')
+        result = await self.adapter.execute('preview_grasp', {'object_id': 'b','scene_id':'fixture-scene','instance_id':'source'}, 'id-12345', self.cancelled, lambda _: None)
         self.assertFalse(result['verified'])
         self.assertIsNone(result['status']['grasp']['held_object'])
 

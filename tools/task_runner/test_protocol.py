@@ -37,7 +37,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
 class RegistryTests(unittest.TestCase):
     def test_strict_schemas_and_no_request_ids(self):
         all_schemas = schemas('execute')
-        self.assertEqual(len(all_schemas), 23)
+        self.assertEqual(len(all_schemas), 25)
         for schema in all_schemas:
             self.assertTrue(schema['strict'])
             self.assertFalse(schema['parameters']['additionalProperties'])
@@ -53,7 +53,7 @@ class RegistryTests(unittest.TestCase):
                 validate({'type': 'function_call', 'name': name, 'call_id': 'c', 'arguments': raw}, 'execute')
 
     def test_read_only_has_no_writes(self):
-        self.assertEqual({s['name'] for s in schemas('read_only')}, {'get_status','get_camera_frame','get_robot_state','list_objects','get_object_pose','get_grasp_profiles','get_object_geometry','get_task_diagnostics','finish_task'})
+        self.assertEqual({s['name'] for s in schemas('read_only')}, {'get_status','get_camera_frame','get_robot_state','list_objects','get_object_pose','get_grasp_profiles','get_object_geometry','get_task_diagnostics','get_scene_snapshot','finish_task'})
 
     def test_env_does_not_execute_or_expand_shell(self):
         with tempfile.TemporaryDirectory() as directory:

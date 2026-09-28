@@ -139,6 +139,22 @@ class ObjectControlTests(unittest.TestCase):
         generation[0]=2;status=self.execute(plan)
         self.assertEqual(status['state'],'failed');self.assertIn('观测版本',status['error']);self.assertEqual(self.calls,[])
 
+    def test_scene_reference_motion_uses_frozen_frame_after_camera_moves(self):
+        self.service.held_object.update(scene_id='scene',instance_id='tube')
+        frame=np.eye(4);frame[:3,3]=[.4,-.1,.3]
+        self.service.scene_reference=Mock(return_value=(frame,{'name':'scene_object','scene_id':'scene'}))
+        self.service.validate_scene=Mock();self.service.update_scene_instance=Mock()
+        self.tracker.grasp_observation=Mock(side_effect=AssertionError('must not track reference again'))
+        args=self.args({'reference_frame':'scene_object','scene_id':'scene','reference_instance_id':'rack','reference_feature_id':'entry','target_position_m':[0,0,0]})
+        plan=self.planned(args);np.testing.assert_allclose(plan['target_reference_position_base_m'],frame[:3,3])
+        self.tracker.state['camera_frame_at']=0
+        status=self.execute(plan);self.assertEqual(status['state'],'completed',status.get('error'))
+        self.assertEqual(self.service.held_object['scene_id'],'scene');self.tracker.grasp_observation.assert_not_called()
+        self.calls.clear();args=self.args();args.update(goal=None,retreat_vector_base_m=[0,0,0])
+        plan=self.planned(args,True);status=self.execute(plan,'release-scene')
+        self.assertEqual(status['state'],'completed',status.get('error'))
+        self.assertEqual([c.args[1] for c in self.service.update_scene_instance.call_args_list],['release_unknown','placed_unverified'])
+
     def test_reference_frame_resolution_and_5d_rejection(self):
         held=self.held;config=self.config;tool={'flange_T_grip_tcp':np.eye(4).tolist()}
         goal={'reference_frame':'tcp'};frame,context,arm=self.service.resolve_motion_frame(goal,held,config,self.arm,tool)

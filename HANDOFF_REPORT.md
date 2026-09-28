@@ -1,5 +1,14 @@
 # SayDo 当前维护交接
 
+## 2026-09-28 动作前多目标场景快照
+
+- 实现capture_scene_snapshot/get_scene_snapshot，MCP26工具、SayDo25工具。一次声明最多8个source/reference实例，机械臂静止配对RGB-D与手眼/工具标定，同一冻结帧依次检测、分割和FoundationPose定位；全部身份及质量通过才ready。GPU工作在现有推理线程串行运行，采集期间只读采样机械臂并检测移动，不做实时追帧。
+- 新MCP/SayDo的grasp/preview_grasp要求scene_id/instance_id；SayDo另限定本任务生成的scene_id。活动快照失败/未齐全时旧HTTP抓取也不能绕过。模型提示明确抓放前声明所有目标，不在持物后重新跟踪参照；后端核验声明集合，不能自动识别自然语言中未声明的目标。
+- 持物规划/释放支持scene_object及reference_instance_id/reference_feature_id，冻结基座坐标不随相机移动重算。每段仍按实际TCP/关节/夹持关系规划核验。模型本地features.json提供通用特征坐标；现有hole_positions.json适配为120个孔口/中层/支撑点，保留180度歧义和未实测标记，不新增集中模型配置。
+- 快照绑定进程、模型/模式/特征和标定，30分钟失效，新采集取代旧快照；moving/held/unknown/placed_unverified实例不可再沿用原静态位姿。采集证据在work/grasp/scenes/<scene_id>.json及<scene_id>/frame.npz。get_status只提供active_scene_id，不重复输出过时采集状态；get_scene_snapshot查询当前实例状态。接口及边界见tools/foundationpose/SCENE_SNAPSHOTS.md。
+- MSI隔离267项后端（含原生离线运动学）、99项执行器、19项MCP通过，本机14组前端通过。真实GPU对同一历史RGB-D中的试管和试管架各约7秒完成定位，掩膜IoU约0.892/0.887、深度残差中位数约2.77/5.54毫米，均过原深度/掩膜门槛；属于历史帧局部验证，不是新现场精度验收。6-Sol真实调用接受25工具完整Schema并生成合法capture参数，未执行工具。证据work/scene_validation/。
+- 代码已准备，部署暂未执行：线上仍存在有效夹持记录，重启8089会丢失它，需用户安置物品并在前端松爪后再更新8089/8091。未发送机械臂/夹爪动作，未改设备/物品配置；不能声称已上线或已完成实际抓放验收。
+
 ## 2026-09-28 SayDo连接失败有限重试
 
 - 针对Clash上游节点连接失败，新增 `ConnectionNotSent` 分类；仅ConnectError/ConnectTimeout或连接阶段总超时，且trace确认连接/TLS阶段、应用HTTP尚未开始上传时可重试。上传开始标记为不可逆，后续阶段变化不会再次开放重试；证书校验失败不重试，代理CONNECT与模型HTTP上传区分。

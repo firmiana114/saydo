@@ -24,6 +24,7 @@ from reorientation_geometry import rotation_from_rpy_deg, checked_position_reque
 from grasp_geometry import controller_pose, transform
 from tools.robot_agent.motion_contract import checked_goal, identity, vector
 from object_motion_control import public_object_plan
+from tools.robot_agent.scene_contract import checked_targets
 
 
 class AgentError(ValueError):
@@ -99,6 +100,8 @@ class AgentAPI:
             task = self.get_task(self.active)
             terminal = not status.get('busy', False)
             result = {k: status.get(k) for k in ['state', 'busy', 'operation', 'message', 'error', 'plan', 'placement_plan', 'gripper_contact', 'reset_target_kind']}
+            if task['operation']=='capture_scene_snapshot':
+                result.update(scene_id=status.get('scene_id'),scene_snapshot=status.get('scene_snapshot'))
             if task['operation'] in ('plan_held_object_motion','plan_release','execute_plan'):
                 result.update({k:status.get(k) for k in ('execution_result','diagnostics_ref')})
                 result['object_motion_plan']=public_object_plan(status.get('object_motion_plan'))
@@ -128,7 +131,7 @@ class AgentAPI:
     @staticmethod
     def agent_controller_state(state):
         # Old UI compatibility fields are not the parameters used by bound grasps.
-        result={key: value for key, value in state.items() if key not in ('force_config', 'open_position_config')}
+        result={key: value for key, value in state.items() if key not in ('force_config', 'open_position_config','scene_snapshot')}
         if 'object_motion_plan' in result:result['object_motion_plan']=public_object_plan(result['object_motion_plan'])
         return result
 
@@ -193,6 +196,7 @@ class AgentAPI:
         with self.tracker.lock, self.grasp.lock:
             if self.grasp.status['busy'] or self.grasp.status.get('stopping'):
                 raise AgentError('BUSY', '机械臂任务进行中，不能修改跟踪目标。')
+            if self.grasp.held_object and self.grasp.held_object.get('scene_id'):raise AgentError('SCENE_FROZEN','快照持物期间不重新定位环境，请引用开始时的场景')
             if operation == 'select_object' and set(args) == {'object_id'}:
                 self.tracker.switch_object(args['object_id'])
             elif operation == 'start_tracking' and set(args) == {'object_id', 'box'}:
@@ -215,7 +219,7 @@ class AgentAPI:
         task_id, operation, args = request['request_id'], request['operation'], request['arguments']
         if not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,96}', task_id):
             raise AgentError('INVALID_REQUEST_ID', 'request_id 必须是 8–96 个字母、数字、连字符或下划线；重试时复用原编号。')
-        schemas = {'grasp': {'object_id'}, 'preview_grasp': {'object_id'},
+        schemas = {'capture_scene_snapshot':{'targets','environment_static'},'grasp': {'object_id'}, 'preview_grasp': {'object_id'},
                    'place': {'hold_id', 'orientation_version', 'placement_revision'},
                    'preview_place': {'hold_id', 'orientation_version', 'placement_revision'},
                    'reorient': {'object_id', 'hold_id', 'orientation_version', 'target_rpy_deg', 'position_mode'},
@@ -224,7 +228,9 @@ class AgentAPI:
                    'plan_held_object_motion': {'object_id','hold_id','orientation_version','goal'},
                    'plan_release': {'object_id','hold_id','orientation_version','goal','retreat_vector_base_m'},
                    'execute_plan': {'plan_id'}}
-        if operation not in schemas or not isinstance(args, dict) or set(args) != schemas[operation]:
+        allowed=schemas.get(operation)
+        valid=isinstance(args,dict) and allowed is not None and (set(args)==allowed or operation in ('grasp','preview_grasp') and set(args)=={'object_id','scene_id','instance_id'})
+        if not valid:
             raise AgentError('INVALID_ARGUMENTS', '未知的动作或参数。')
         if operation in ('grasp', 'preview_grasp') and (not isinstance(args['object_id'], str) or not args['object_id'].strip()):
             raise AgentError('INVALID_ARGUMENTS', '必须指定非空的物品编号。')
@@ -248,6 +254,12 @@ class AgentAPI:
             except ValueError as error:raise AgentError('INVALID_ARGUMENTS',str(error)) from error
         if operation=='execute_plan' and (not isinstance(args['plan_id'],str) or not re.fullmatch('[a-f0-9]{32}',args['plan_id'])):
             raise AgentError('INVALID_ARGUMENTS','plan_id必须来自本后端的规划结果')
+        if operation=='capture_scene_snapshot':
+            try:checked_targets(args['targets'])
+            except ValueError as e:raise AgentError('INVALID_ARGUMENTS',str(e)) from e
+            if args['environment_static'] is not True:raise AgentError('INVALID_ARGUMENTS','当前只支持静态场景快照')
+        if operation in ('grasp','preview_grasp') and 'scene_id' in args:
+            if any(not isinstance(args[k],str) or not args[k] or len(args[k])>100 for k in ('scene_id','instance_id')):raise AgentError('INVALID_ARGUMENTS','请先采集场景并提供有效实例编号')
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True, allow_nan=False).encode()).hexdigest()
         with self.tracker.lock, self.grasp.lock:
             with closing(self.connect()) as db:
@@ -269,7 +281,10 @@ class AgentAPI:
             self.active = task_id
             try:
                 if operation in ('grasp', 'preview_grasp'):
-                    self.grasp.start(preview=operation == 'preview_grasp', expected_object_id=args['object_id'])
+                    extra={k:args[k] for k in ('scene_id','instance_id') if k in args}
+                    self.grasp.start(preview=operation == 'preview_grasp', expected_object_id=args['object_id'],**extra)
+                elif operation=='capture_scene_snapshot':
+                    self.grasp.start_scene_capture(args['targets'],args['environment_static'],task_id)
                 elif operation == 'reset':
                     self.grasp.start_reset(args['target'])
                 elif operation in ('plan_held_object_motion','plan_release'):
@@ -349,6 +364,7 @@ class AgentAPI:
         if path == '/api/agent/robot':return self.robot_state()
         if path == '/api/agent/objects':return {'objects': scan_objects(self.tracker.models_root)}
         if path == '/api/agent/profiles':return self.grasp.grasp_profiles(params.get('object_id', [''])[0])
+        if path == '/api/agent/scene-snapshot':return self.grasp.scene_snapshot(params.get('scene_id',[''])[0])
         if path == '/api/agent/object-geometry':return self.grasp.object_geometry_info(params.get('object_id',[''])[0])
         if path == '/api/agent/task-diagnostics':
             task=self.get_task(params.get('task_id',[''])[0]);ref=(task.get('result') or {}).get('diagnostics_ref')
