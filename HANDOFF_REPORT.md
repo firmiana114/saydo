@@ -7,7 +7,7 @@
 - 持物规划/释放支持scene_object及reference_instance_id/reference_feature_id，冻结基座坐标不随相机移动重算。每段仍按实际TCP/关节/夹持关系规划核验。模型本地features.json提供通用特征坐标；现有hole_positions.json适配为120个孔口/中层/支撑点，保留180度歧义和未实测标记，不新增集中模型配置。
 - 快照绑定进程、模型/模式/特征和标定，30分钟失效，新采集取代旧快照；moving/held/unknown/placed_unverified实例不可再沿用原静态位姿。采集证据在work/grasp/scenes/<scene_id>.json及<scene_id>/frame.npz。get_status只提供active_scene_id，不重复输出过时采集状态；get_scene_snapshot查询当前实例状态。接口及边界见tools/foundationpose/SCENE_SNAPSHOTS.md。
 - MSI隔离267项后端（含原生离线运动学）、99项执行器、19项MCP通过，本机14组前端通过。真实GPU对同一历史RGB-D中的试管和试管架各约7秒完成定位，掩膜IoU约0.892/0.887、深度残差中位数约2.77/5.54毫米，均过原深度/掩膜门槛；属于历史帧局部验证，不是新现场精度验收。6-Sol真实调用接受25工具完整Schema并生成合法capture参数，未执行工具。证据work/scene_validation/。
-- 代码已准备，部署暂未执行：线上仍存在有效夹持记录，重启8089会丢失它，需用户安置物品并在前端松爪后再更新8089/8091。未发送机械臂/夹爪动作，未改设备/物品配置；不能声称已上线或已完成实际抓放验收。
+- 用户已安置物品并在前端松爪；复核无夹持/活动任务后已部署8089（PID941281）和8091（PID941282），保留原试管架选择及8092会话。487份既有设备/物品JSON/.env摘要不变。真实stdio MCP发现26工具、抓取参数要求scene_id/instance_id、试管架120命名特征可读；执行器可达，跟踪为tracking。未发运动、未在生产发起采集任务或抓放验收。第5页刷新后新任务使用快照流程，第6页原Codex会话需重启刷新参数。部署及只读证据在work/scene_validation/。
 
 ## 2026-09-28 SayDo连接失败有限重试
 
