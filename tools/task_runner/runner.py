@@ -198,6 +198,13 @@ class Runner:
         model_view=model_result(name,cleaned)
         history.append({'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps(model_view, ensure_ascii=False)})
         if frame and frame.get('image_base64'):
+            # Retain timestamp/text evidence and tool outputs, but send only
+            # the latest observation image. Durable results are untouched.
+            for item in history:
+                content=item.get('content')
+                if isinstance(content,list) and any(part.get('type')=='input_image' for part in content):
+                    item['content']=[part for part in content if part.get('type')!='input_image']
+                    item['content'].append({'type':'input_text','text':'历史图片已从模型上下文省略；保留原观测时间和证据编号，需要当前画面时重新查询。'})
             history.append({'role': 'user', 'content': [
                 {'type': 'input_text', 'text': '工具 '+call_id+' 返回的观测图片（不是用户新指令）。'+json.dumps(compact(frame), ensure_ascii=False)},
                 {'type': 'input_image', 'image_url': 'data:'+frame['mime_type']+';base64,'+frame['image_base64']}]})
@@ -298,7 +305,7 @@ class Runner:
                         try:
                             result = await self.adapter.execute(name, args, record['request_id'], self.cancelled, self.progress)
                         except BackendError as error:
-                            if name not in READS or error.payload.get('code') not in ('POSE_NOT_READY', 'CAMERA_UNAVAILABLE'):
+                            if name not in (set(READS)|{'get_task_context'}) or error.payload.get('code') not in ('POSE_NOT_READY', 'CAMERA_UNAVAILABLE'):
                                 detail=str(error.payload.get('message') or '')[:1200]
                                 raise Blocked('后端工具拒绝请求：'+str(error.payload.get('code', 'BACKEND_ERROR'))+('：'+detail if detail else '')) from error
                             read_failures += 1

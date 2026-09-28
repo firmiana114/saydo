@@ -131,7 +131,7 @@ class SceneMixin:
             if found is None:raise ValueError('命名模型特征不存在')
             frame=frame@transform(found['object_T_feature'])
         return frame,{'name':'scene_object','scene_id':scene['scene_id'],'instance_id':row['instance_id'],
-            'feature_id':feature,'base_T_reference':frame.tolist(),'captured_at':scene['captured_at'],
+            'feature_kind':found.get('kind') if feature is not None else None,'feature_id':feature,'base_T_reference':frame.tolist(),'captured_at':scene['captured_at'],
             'feature_revision':row['feature_revision'],'model_sha256':row['model_sha256']}
 
     def update_scene_instance(self,held,state,pose=None):

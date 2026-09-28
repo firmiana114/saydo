@@ -16,7 +16,7 @@ from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from object_catalog import select_object
 from scene_features import object_features
-from object_motion_geometry import plan_object_motion, segment_samples, validate_tcp, object_error
+from object_motion_geometry import plan_object_motion, segment_samples, validate_tcp, object_error, validate_feature_reference
 from object_motion_store import ObjectPlanStore
 from placement_geometry import check_tcp_workspace
 from reorientation_geometry import model_geometry
@@ -147,6 +147,7 @@ class ObjectMotionMixin:
                 config,arm,tool,geometry,checker=self.motion_context(held)
                 binding=self.motion_binding(config)
                 frame,context,arm=self.resolve_motion_frame(goal,held,config,arm,tool)
+                validate_feature_reference(goal,geometry['vertices'],context.get('feature_kind'))
                 plan=plan_object_motion(held,geometry['vertices'],arm,config,goal,frame,
                     lambda points,timeout:check_waypoints(checker,tool,arm,points,timeout),self.check_cancel,release,retreat,
                     report.setdefault('search_attempts',[]))

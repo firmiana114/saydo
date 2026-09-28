@@ -36,6 +36,17 @@ class MotionValidationTests(unittest.TestCase):
         ok,detail=self.parse(protocol());self.assertTrue(ok);self.assertTrue(detail['verified'])
         self.assertEqual(detail['fk_checks'][0]['position_error_mm'],0)
 
+    def test_linear_branch_jump_rejected_but_joint_endpoint_allowed(self):
+        data=protocol().replace('IK 0 0 0 0 0 0 0 0 0','IK 0 0 38.3 0 0 0 0 0 0')
+        self.points[0]['method']='linear'
+        ok,detail=self.parse(data)
+        self.assertFalse(ok);self.assertFalse(detail['verified'])
+        self.assertEqual(detail['continuity_failure']['joint_index'],1)
+        self.points[0]['method']='joint_pose'
+        self.assertTrue(self.parse(data)[0])
+        self.points[0]['method']='linear'
+        self.assertTrue(self.parse(data.replace('38.3','9.9'))[0])
+
     def test_ik_success_and_false_residual_cannot_hide_wrong_fk(self):
         for pose in ['.16 0 0 0 0 0','0 0 0 0 0 .1']:
             ok,detail=self.parse(protocol(pose))

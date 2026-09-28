@@ -63,7 +63,16 @@ def parse_kinematics(result, arm, waypoints):
         solutions=np.asarray([[float(x) for x in row[3:]] for row in ik])
         if not np.isfinite(solutions).all():return fail('逆解关节角不是有限数值')
         differences=np.abs(np.diff(np.vstack([np.asarray(arm['joint'])/1000,solutions]),axis=0))
-        detail.update(verified=True,joint_solutions_deg=solutions.tolist(),max_joint_step_deg=float(differences.max()),joint_travel_deg=float(differences.sum()))
+        detail.update(joint_solutions_deg=solutions.tolist(),max_joint_step_deg=float(differences.max()),joint_travel_deg=float(differences.sum()))
+        # Cartesian samples are at most 10 mm / 5 degrees apart. A large
+        # branch change is not a valid continuous movel path, even if FK passes.
+        for index, waypoint in enumerate(waypoints):
+            if waypoint.get('method') == 'linear' and differences[index].max() > 10.:
+                joint=int(np.argmax(differences[index]))
+                detail['continuity_failure']={'sample_index':index,'joint_index':joint+1,
+                    'delta_deg':float(differences[index,joint]),'limit_deg':10.}
+                return fail(f'直线采样关节解不连续：采样{index+1}关节{joint+1}变化{differences[index,joint]:.2f}°，超过10°；请更换接近路点或姿态，不能直接执行该直线')
+        detail.update(verified=True,linear_joint_continuity_checked=any(w.get('method')=='linear' for w in waypoints))
         return True,detail
     except (ValueError,TypeError,IndexError,KeyError) as error:
         return fail('离线正解回验数据无效：'+str(error))

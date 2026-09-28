@@ -7,7 +7,7 @@ from unittest.mock import Mock,patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 from grasp_geometry import controller_pose,rotation_error
-from object_motion_geometry import plan_object_motion,object_error
+from object_motion_geometry import plan_object_motion,object_error,validate_feature_reference
 from object_motion_store import ObjectPlanStore
 from tools.robot_agent.motion_contract import checked_goal,DEFAULT_GOAL
 
@@ -23,6 +23,19 @@ def fixture():
 
 
 class ObjectGeometryTests(unittest.TestCase):
+    def test_hole_reference_rejects_centre_and_accepts_oriented_lower_end(self):
+        _,vertices,_,_=fixture()
+        goal=checked_goal({'target_position_m':[0,0,.05],'target_rpy_deg':[0,0,0]})
+        with self.assertRaisesRegex(ValueError,'下端'):validate_feature_reference(goal,vertices,'hole_entry')
+        goal['reference_point_object_m']=[0,0,-.06]
+        validate_feature_reference(goal,vertices,'hole_entry')
+        goal['target_rpy_deg']=[180,0,0]
+        with self.assertRaises(ValueError):validate_feature_reference(goal,vertices,'hole_support')
+        goal['reference_point_object_m']=[0,0,.06]
+        validate_feature_reference(goal,vertices,'hole_support')
+        goal['reference_point_object_m']=[0,0,0]
+        validate_feature_reference(goal,vertices,None)
+
     def plan(self,goal,**kw):
         held,vertices,arm,config=fixture()
         return plan_object_motion(held,vertices,arm,config,goal,np.eye(4),Mock(return_value=(True,{'verified':True})),lambda:None,**kw)

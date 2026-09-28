@@ -18,6 +18,10 @@ REORIENT_ARGS = {'object_id': STRING, 'hold_id': STRING, 'orientation_version': 
     'max_rotation_step_deg':{'type':'number','minimum':1,'maximum':15}}
 VISION = {'select_object': 'select_object', 'start_tracking': 'start_tracking', 'choose_tracking_target': 'choose_target'}
 DEFINITIONS = {
+    'get_task_context': ('批量只读查询：一次取得多个物品的几何及夹法，并可包含当前机器人状态、最新图片、场景快照。独立查询优先合并，避免逐项调用。各读数非原子同步；运动前仍由后端核验。', {
+        'object_ids':{'type':'array','items':STRING,'maxItems':8,'uniqueItems':True},
+        'include_profiles':{'type':'boolean'},'include_robot':{'type':'boolean'},
+        'include_frame':{'type':'boolean'},'scene_id':{'type':['string','null'],'minLength':1,'maxLength':200}}),
     'get_status': ('查询跟踪状态、物品、候选选择、夹持记录及放置配置版本。', {}),
     'get_camera_frame': ('获取一秒内的真实相机图片与时间戳；框选坐标为 640×360 像素。', {}),
     'get_robot_state': ('只读查询真实关节、TCP、错误和夹爪反馈。位置米，关节度，RPY弧度。', {}),

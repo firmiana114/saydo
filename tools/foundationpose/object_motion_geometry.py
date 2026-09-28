@@ -48,6 +48,27 @@ def object_error(actual, target, point, pose_mode):
             'orientation_error_deg':float(np.rad2deg(object_rotation_error(actual[:3,:3],target[:3,:3],pose_mode)))}
 
 
+def validate_feature_reference(goal, vertices, feature_kind):
+    """Named hole targets refer to the leading lower surface, never the centre.
+
+    No silent coordinate correction: the caller must resubmit explicit semantics.
+    This checks geometry only, not occupancy, fit or environment collision.
+    """
+    if feature_kind not in ('hole_entry','hole_middle','hole_support'):return
+    rows=list(goal['waypoints'])+[{'position_m':goal['target_position_m'],'rpy_deg':goal['target_rpy_deg']}]
+    point=np.asarray(goal['reference_point_object_m'],dtype=float)
+    rotation=None
+    for row in rows:
+        if row['rpy_deg'] is not None:rotation=rotation_from_rpy_deg(row['rpy_deg'])
+        if row['position_m'] is None:continue
+        if rotation is None:raise ValueError('孔位目标须显式指定物品朝向，以核对下端参考点')
+        heights=np.asarray(vertices)@rotation[2,:]
+        if abs(float(rotation[2,:]@point)-float(heights.min()))>.001:
+            raise ValueError('孔位参考点错误：reference_point_object_m必须是目标朝向下的物品下端，不能使用中心；请读取reference_points/包围盒。+Z朝上的试管使用axis_z_min，接近高度相对此下端计算')
+    if feature_kind=='hole_entry' and rows and rows[0]['position_m'] is not None and rows[0]['position_m'][2]<0:
+        raise ValueError('孔口接近位置不能位于孔口下方；先以下端对齐孔口，再单独规划下降至支撑点')
+
+
 def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, release, retreat):
     current=controller_pose(arm['pose']);attachment=transform(held['object_T_tcp']);obj=current@np.linalg.inv(attachment)
     point=np.asarray(goal['reference_point_object_m']);low,high=point_limits(vertices)

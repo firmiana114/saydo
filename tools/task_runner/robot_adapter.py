@@ -89,6 +89,16 @@ class RobotAdapter:
     async def execute(self, name, args, request_id, cancelled, progress):
         if cancelled.is_set():
             raise Cancelled()
+        if name == 'get_task_context':
+            queries=[]
+            for object_id in args['object_ids']:
+                queries.append(('geometry:'+object_id,'get_object_geometry',{'object_id':object_id}))
+                if args['include_profiles']:queries.append(('profiles:'+object_id,'get_grasp_profiles',{'object_id':object_id}))
+            if args['include_robot']:queries.append(('robot','get_robot_state',{}))
+            if args['include_frame']:queries.append(('candidate_frame','get_camera_frame',{}))
+            if args['scene_id'] is not None:queries.append(('scene','get_scene_snapshot',{'scene_id':args['scene_id']}))
+            values=await asyncio.gather(*(self.execute(tool,params,request_id,cancelled,progress) for _,tool,params in queries))
+            return dict(zip((key for key,_,_ in queries),values))
         if name in READS:
             path = '/api/agent/'+READS[name]
             if name in ('get_grasp_profiles','get_object_geometry'):
@@ -365,4 +375,30 @@ def model_result(name, value):
         if 'held_object' in payload and isinstance(current,dict) and payload.get('held_object')==current.get('held_object') and 'held_object' in current:
             current.pop('held_object');current['held_object_source']='task.result.held_object'
         result['context_note']='成功动作已核验；历史路径/候选省略，完整报告按task.task_id查询；不得重放成功动作。'
+    def trim(value):
+        if isinstance(value,list):return [trim(v) for v in value]
+        if not isinstance(value,dict):return value
+        reduced={k:trim(v) for k,v in value.items() if k not in
+            ('configuration_binding','flange_T_grip_tcp','target_requests','search_attempts','controller_readback')}
+        # Inspection API and durable journal retain detailed trajectories.
+        if 'plan_id' in reduced and 'waypoints' in reduced:
+            reduced['waypoint_count']=value.get('waypoint_count',len(value['waypoints']))
+            reduced.pop('waypoints',None)
+            reduced['details_available_via']='get_task_diagnostics'
+        features=reduced.get('features')
+        if isinstance(features,list):
+            for feature in features:
+                matrix=feature.get('object_T_feature')
+                if matrix and all(abs(matrix[i][j]-(i==j))<1e-9 for i in range(3) for j in range(3)):
+                    feature['position_object_m']=[matrix[i][3] for i in range(3)]
+                    feature['rotation_object']='identity'
+                    feature.pop('object_T_feature')
+        return reduced
+    result=trim(result)
+    # Same snapshot/plan can be echoed by both task result and status.
+    task=result.get('task',{});payload=task.get('result',{}) if isinstance(task,dict) else {}
+    grasp=result.get('status',{}).get('grasp',{})
+    for key in ('scene_snapshot','object_motion_plan','reorientation_plan','held_object'):
+        if key in payload and key in grasp and payload[key]==grasp[key]:
+            grasp.pop(key);grasp[key+'_source']='task.result.'+key
     return result
