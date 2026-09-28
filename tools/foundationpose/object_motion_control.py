@@ -193,6 +193,9 @@ class ObjectMotionMixin:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             config,arm,tool,geometry,checker=self.motion_context(held,True);self.robot.motion_log=report.setdefault('motion_events',[])
             self.check_object_plan_binding(plan,config)
+            if plan['goal']['reference_frame']=='scene_object':
+                _,context=self.scene_reference(plan['goal'])
+                validate_feature_reference(plan['goal'],geometry['vertices'],context.get('feature_kind'))
             expected=controller_pose(plan['current_arm']['pose']);actual=controller_pose(arm['pose'])
             if np.max(np.abs(np.asarray(arm['joint'])-plan['current_arm']['joint']))>500 or np.linalg.norm(actual[:3,3]-expected[:3,3])>.002 or rotation_error(actual[:3,:3],expected[:3,:3])>np.deg2rad(2):
                 raise ValueError('机械臂已离开方案起点，请重新规划')
