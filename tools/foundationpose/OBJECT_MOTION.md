@@ -8,7 +8,7 @@
 | --- | --- |
 | `get_object_geometry` | 物品ID；返回模型坐标范围、模式、模型摘要和原点/Z轴两端等参考点 |
 | `plan_held_object_motion` | 当前物品ID、hold_id、orientation_version、goal、request_id；只读采样并生成持物方案，不运动 |
-| `plan_release` | 同上，另有基座坐标退出向量 retreat_vector_base_m；goal=null 表示在当前位置松爪 |
+| `plan_release` | 同上，另有基座坐标退出向量 retreat_vector_base_m；goal=null 以当前位置作为最终放置位姿，仍先上移再下降 |
 | `execute_plan` | plan_id、request_id；执行服务器保存的方案，不接受客户端重新传入路径或临时修改参数 |
 | `get_task_diagnostics` | task_id；返回持久化任务及对应的新运动报告；旧任务没有此类报告时明确标记不可用 |
 
@@ -54,3 +54,5 @@
 方案存于 `work/grasp/object_motion_plans.sqlite`；规划/执行报告存于 `work/grasp/object_motion_jobs/`，通过任务内的精确引用读取。诊断含候选失败原因、关节目标、到位误差、松爪反馈和异常阶段，不新增跨物品的模型配置。服务重启不会恢复夹持记录或自动重放计划。SayDo重启遇到未确认的execute_plan会锁住新动作，并按原task_id只读核对。
 
 更新部署后，第5页的新任务使用新工具；已经运行的第6页Codex会话需重新启动会话以刷新MCP工具清单。不要为刷新清单中断仍在执行的物理任务。
+
+统一放置由plan_release生成：最终目标沿Base +Z上方100 mm预放置点→保持最终朝向直线下降→确认到位后松爪→可选退出。高度由config/grasp/trial.json的release_preplacement_height_m配置，缺省0.1 m（允许0.01～0.3 m）。同一个物品参考点定义两端位置，不按模型名或特征类型分支。旧区域放置保留区域选点，approach_height_m同样配置为0.1 m。

@@ -48,27 +48,6 @@ def object_error(actual, target, point, pose_mode):
             'orientation_error_deg':float(np.rad2deg(object_rotation_error(actual[:3,:3],target[:3,:3],pose_mode)))}
 
 
-def validate_feature_reference(goal, vertices, feature_kind):
-    """Named hole targets refer to the leading lower surface, never the centre.
-
-    No silent coordinate correction: the caller must resubmit explicit semantics.
-    This checks geometry only, not occupancy, fit or environment collision.
-    """
-    if feature_kind not in ('hole_entry','hole_middle','hole_support'):return
-    rows=list(goal['waypoints'])+[{'position_m':goal['target_position_m'],'rpy_deg':goal['target_rpy_deg']}]
-    point=np.asarray(goal['reference_point_object_m'],dtype=float)
-    rotation=None
-    for row in rows:
-        if row['rpy_deg'] is not None:rotation=rotation_from_rpy_deg(row['rpy_deg'])
-        if row['position_m'] is None:continue
-        if rotation is None:raise ValueError('孔位目标须显式指定物品朝向，以核对下端参考点')
-        heights=np.asarray(vertices)@rotation[2,:]
-        if abs(float(rotation[2,:]@point)-float(heights.min()))>.001:
-            raise ValueError('孔位参考点错误：reference_point_object_m必须是目标朝向下的物品下端，不能使用中心；请读取reference_points/包围盒。+Z朝上的试管使用axis_z_min，接近高度相对此下端计算')
-    if feature_kind=='hole_entry' and rows and rows[0]['position_m'] is not None and rows[0]['position_m'][2]<0:
-        raise ValueError('孔口接近位置不能位于孔口下方；先以下端对齐孔口，再单独规划下降至支撑点')
-
-
 def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, release, retreat):
     current=controller_pose(arm['pose']);attachment=transform(held['object_T_tcp']);obj=current@np.linalg.inv(attachment)
     point=np.asarray(goal['reference_point_object_m']);low,high=point_limits(vertices)
@@ -91,20 +70,29 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
             rotations=orientation_variants(requested_rotation,held,previous_tcp);rotation=rotations[spin%len(rotations)]
         else:rotation=requested_rotation
         target_requests.append({'reference_position_base_m':reference.tolist(),'requested_rotation_base':requested_rotation.tolist()})
-        steps=fractions(obj[:3,:3],rotation,goal['max_rotation_step_deg'])
-        origin_obj=obj.copy()
-        for k,f in enumerate(steps,1):
-            rot=interpolate(origin_obj[:3,:3],rotation,f)
-            reference_k=previous_ref+f*(reference-previous_ref)
-            target_obj=object_at_reference(reference_k,rot,point);tcp=target_obj@attachment
-            w=pose_waypoint(f'object_{segment+1}_{k}',tcp);w['method']='linear' if goal['path_mode']=='linear' else 'joint_pose'
-            quantized=controller_pose(w['controller_pose']);validate_tcp(quantized,held,vertices,config)
-            w['object_pose']=target_obj.tolist();w['reference_position_base_m']=reference_k.tolist()
-            validation.extend(segment_samples(previous_tcp,quantized,held,vertices,config,w['method'],w['name']))
-            if np.linalg.norm(quantized[:3,3]-previous_tcp[:3,3])>1e-7 or rotation_error(quantized[:3,:3],previous_tcp[:3,:3])>1e-6:
-                waypoints.append(w)
-            previous_tcp=quantized
-        obj=object_at_reference(reference,rotation,point)
+        method='linear' if goal['path_mode']=='linear' else 'joint_pose'
+        stages=[(reference,method,f'object_{segment+1}')]
+        if release and segment==len(rows)-1:
+            height=float(config.get('release_preplacement_height_m',.1))
+            if not np.isfinite(height) or not .01<=height<=.3:raise ValueError('预放置高度须为10至300毫米')
+            stages=[(reference+np.array([0,0,height]),method,'release_preplacement'),
+                    (reference,'linear','release_descent')]
+        for stage_ref,stage_method,label in stages:
+            previous_ref=obj[:3,3]+obj[:3,:3]@point
+            steps=fractions(obj[:3,:3],rotation,goal['max_rotation_step_deg'])
+            origin_obj=obj.copy()
+            for k,f in enumerate(steps,1):
+                rot=interpolate(origin_obj[:3,:3],rotation,f)
+                reference_k=previous_ref+f*(stage_ref-previous_ref)
+                target_obj=object_at_reference(reference_k,rot,point);tcp=target_obj@attachment
+                w=pose_waypoint(f'{label}_{k}',tcp);w['method']=stage_method
+                quantized=controller_pose(w['controller_pose']);validate_tcp(quantized,held,vertices,config)
+                w['object_pose']=target_obj.tolist();w['reference_position_base_m']=reference_k.tolist()
+                validation.extend(segment_samples(previous_tcp,quantized,held,vertices,config,w['method'],w['name']))
+                if np.linalg.norm(quantized[:3,3]-previous_tcp[:3,3])>1e-7 or rotation_error(quantized[:3,:3],previous_tcp[:3,:3])>1e-6:
+                    waypoints.append(w)
+                previous_tcp=quantized
+            obj=object_at_reference(stage_ref,rotation,point)
     if goal['position_mode']=='adaptive' and previous_tcp[2,3]<=config['table_z_m']+.10:
         raise ValueError('自适应姿态最终TCP须高于桌面10厘米')
     if len(waypoints)>MAX_WAYPOINTS:raise ValueError('方案超过64个运动路点，请拆分任务')
@@ -125,8 +113,9 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
             'position_tolerance_m':POSITION_TOLERANCE,'orientation_tolerance_deg':ANGLE_TOLERANCE_DEG,
             'gripper_action':'open_after_arrival' if release else 'keep_holding','max_execution_duration_s':90,
             'validation_scope':{'ik_fk':True,'self_collision_at_samples':True,'tcp_workspace':True,'object_table_clearance':True,
-                'linear_path_sampled':goal['path_mode']=='linear','joint_intermediate_path_checked':False,
+                'linear_path_sampled':release or goal['path_mode']=='linear','joint_intermediate_path_checked':False,
                 'gripper_collision_checked':False,'environment_collision_checked':False,'object_support_checked':False},
+            'release_preplacement_height_m':float(config.get('release_preplacement_height_m',.1)) if release else None,
             'release_semantics':'target pose before opening; settled pose after release not verified' if release else None}
 
 

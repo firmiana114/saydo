@@ -239,11 +239,11 @@ class PlacementControlTests(unittest.TestCase):
         robot = self.robot();self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
         plan = self.service.status['placement_plan']
-        self.assertEqual([x[0] for x in self.commands], ['joint', 'linear', 'open', 'linear', 'linear'])
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'joint', 'linear', 'open', 'linear', 'linear'])
         self.assertEqual(self.commands[-3], ('open', 1000))
         self.assertEqual(self.commands[-1][1], plan['waypoints'][-1]['controller_pose'])
         self.assertIsNone(self.service.held_object)
-        robot.move_joint_pose.assert_called_once();robot.move_joints.assert_not_called();robot.set_register.assert_not_called()
+        self.assertEqual(robot.move_joint_pose.call_count,2);robot.move_joints.assert_not_called();robot.set_register.assert_not_called()
         report = json.loads(next((self.root / 'work/grasp/placement_jobs').glob('*.json')).read_text())
         self.assertTrue(report['release_confirmed']);self.assertFalse(report['contact_confirmed'])
         self.assertTrue(all(check['settled'] for check in report['arrival_checks']))
@@ -342,7 +342,7 @@ class PlacementControlTests(unittest.TestCase):
         robot.move_linear.side_effect = fail_after_open
         self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'failed')
-        self.assertEqual([x[0] for x in self.commands], ['joint', 'linear', 'open', 'withdraw_failed'])
+        self.assertEqual([x[0] for x in self.commands], ['joint', 'joint', 'linear', 'open', 'withdraw_failed'])
         self.assertIsNone(self.service.held_object)
         self.assertIn('grip_tcp', self.service.status['error'])
         robot.stop.assert_called()
@@ -359,7 +359,7 @@ class PlacementControlTests(unittest.TestCase):
         self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'completed', self.service.status.get('error'))
         report = json.loads(next((self.root/'work/grasp/placement_jobs').glob('*.json')).read_text())
-        arrival = controller_pose(report['arrival_checks'][0]['actual_arm_state']['pose'])
+        arrival = controller_pose(next(row for row in report['arrival_checks'] if row['stage']=='保持朝向下降至释放高度')['actual_arm_state']['pose'])
         withdrawal = next(w for w in report['executed_waypoints'] if w['name'] == 'withdraw')
         actual_target = controller_pose(withdrawal['controller_pose'])
         np.testing.assert_allclose(actual_target[:3, 3],

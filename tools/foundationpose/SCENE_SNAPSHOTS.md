@@ -52,7 +52,7 @@ get_object_geometry新增features（每项id/kind/object_T_feature）、feature_
 {"units":"metres","features":[{"id":"place_center","kind":"surface","object_T_feature":[[1,0,0,0],[0,1,0,0],[0,0,1,0.05],[0,0,0,1]]}]}
 ```
 
-现有试管架hole_positions.json自动适配为40孔×3特征（A01.entry、A01.middle、A01.support等），保留原几何文件，不复制成跨物品配置。未标记试管架有绕Z轴180度歧义，孔位ID只属于此次估计坐标，不能保证实物标签身份。特征不代表已验证孔位空闲、实物尺寸/接触或插入成功。
+所有命名特征统一读取各物品目录的features.json；原专用孔位数据已一次性迁移，运行时不再识别专用文件格式。特征只是模型坐标数据，不代表已验证占用、接触或物理编号。
 
 ## 生命周期与验证边界
 

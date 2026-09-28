@@ -7,7 +7,7 @@ from unittest.mock import Mock,patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 from grasp_geometry import controller_pose,rotation_error
-from object_motion_geometry import plan_object_motion,object_error,validate_feature_reference
+from object_motion_geometry import plan_object_motion,object_error
 from object_motion_store import ObjectPlanStore
 from tools.robot_agent.motion_contract import checked_goal,DEFAULT_GOAL
 
@@ -23,19 +23,6 @@ def fixture():
 
 
 class ObjectGeometryTests(unittest.TestCase):
-    def test_hole_reference_rejects_centre_and_accepts_oriented_lower_end(self):
-        _,vertices,_,_=fixture()
-        goal=checked_goal({'target_position_m':[0,0,.05],'target_rpy_deg':[0,0,0]})
-        with self.assertRaisesRegex(ValueError,'下端'):validate_feature_reference(goal,vertices,'hole_entry')
-        goal['reference_point_object_m']=[0,0,-.06]
-        validate_feature_reference(goal,vertices,'hole_entry')
-        goal['target_rpy_deg']=[180,0,0]
-        with self.assertRaises(ValueError):validate_feature_reference(goal,vertices,'hole_support')
-        goal['reference_point_object_m']=[0,0,.06]
-        validate_feature_reference(goal,vertices,'hole_support')
-        goal['reference_point_object_m']=[0,0,0]
-        validate_feature_reference(goal,vertices,None)
-
     def plan(self,goal,**kw):
         held,vertices,arm,config=fixture()
         return plan_object_motion(held,vertices,arm,config,goal,np.eye(4),Mock(return_value=(True,{'verified':True})),lambda:None,**kw)
@@ -82,8 +69,28 @@ class ObjectGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(controller_pose(p['waypoints'][-1]['controller_pose'])[:3,3],expected[:3,3],atol=1e-6)
         with self.assertRaises(ValueError):plan_object_motion(h,v,a,c,{'target_position_m':[.4,0,.3],'reference_point_object_m':[.01,0,0]},np.eye(4),reachable,lambda:None)
 
+    def test_generic_release_uses_base_vertical_and_same_reference(self):
+        h,v,a,c=fixture();frame=np.eye(4);frame[:3,:3]=Rotation.from_euler('x',30,degrees=True).as_matrix()
+        for point in ([0,0,0],[0,0,-.06]):
+            goal={'target_position_m':[.3,0,.3],'target_rpy_deg':[0,20,0],'reference_point_object_m':point}
+            p=plan_object_motion(h,v,a,c,goal,frame,Mock(return_value=(True,{'verified':True})),lambda:None,release=True)
+            pre,last=p['waypoints'][-2:]
+            self.assertTrue(pre['name'].startswith('release_preplacement'));self.assertEqual(last['method'],'linear')
+            np.testing.assert_allclose(np.array(pre['reference_position_base_m'])-last['reference_position_base_m'],[0,0,.1],atol=1e-12)
+            np.testing.assert_allclose(np.array(pre['object_pose'])[:3,:3],np.array(last['object_pose'])[:3,:3],atol=1e-12)
+            np.testing.assert_allclose(last['reference_position_base_m'],(frame@np.r_[goal['target_position_m'],1])[:3])
+            self.assertEqual(p['reference_point_object_m'],point)
+        c['release_preplacement_height_m']=float('nan')
+        with self.assertRaises(ValueError):plan_object_motion(h,v,a,c,goal,frame,Mock(),lambda:None,release=True)
+
+    def test_preplacement_workspace_checked_and_height_configurable(self):
+        h,v,a,c=fixture();c['release_preplacement_height_m']=.12
+        p=plan_object_motion(h,v,a,c,{'target_position_m':[.4,0,.3]},np.eye(4),Mock(return_value=(True,{'verified':True})),lambda:None,release=True)
+        np.testing.assert_allclose(np.array(p['waypoints'][-2]['reference_position_base_m'])-p['waypoints'][-1]['reference_position_base_m'],[0,0,.12])
+        with self.assertRaises(ValueError):self.plan({'target_position_m':[.4,0,.95]},release=True)
+
     def test_release_current_pose_and_retreat(self):
-        p=self.plan(None,release=True,retreat=[0,0,.05]);self.assertEqual(p['kind'],'release');self.assertEqual(p['waypoint_count'],0)
+        p=self.plan(None,release=True,retreat=[0,0,.05]);self.assertEqual(p['kind'],'release');self.assertEqual(p['waypoint_count'],2)
         self.assertAlmostEqual(p['retreat_waypoint']['position_m'][2],.30)
         self.assertFalse(p['validation_scope']['object_support_checked'])
         with self.assertRaises(ValueError):self.plan(None,release=True,retreat=[.3,.3,0])

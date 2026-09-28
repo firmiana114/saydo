@@ -12,7 +12,7 @@ from pose_symmetry import object_bounds
 
 DEFAULTS = {
     'region_xy_m': None, 'release_gap_m': .003,
-    'approach_height_m': .05, 'retreat_height_m': .05,
+    'approach_height_m': .1, 'retreat_height_m': .05,
     'transfer_speed_percent': 10, 'descent_speed_percent': 5,
     'planning_timeout_s': 20, 'search_step_m': .025, 'linear_sample_step_m': .02,
     'position_tolerance_m': .002, 'orientation_tolerance_deg': 2,
@@ -170,7 +170,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
     release_z = table + settings['release_gap_m'] - lower[2]
     # Round upwards to a controller micrometre, never below the requested gap.
     release_z = np.ceil(release_z * 1e6) / 1e6
-    hover_z = max(current[2, 3], release_z + settings['approach_height_m'])
+    hover_z = release_z + settings['approach_height_m']
     low, high = region_bounds(settings)
     low = np.maximum(low - lower[:2], np.asarray(config['workspace_min_m'])[:2])
     high = np.minimum(high - upper[:2], np.asarray(config['workspace_max_m'])[:2])

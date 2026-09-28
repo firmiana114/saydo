@@ -1,3 +1,10 @@
+## 2026-09-28 泛化放置流程（替代下述孔位专用检查）
+
+- 删除validate_feature_reference及孔位分支/试管策略提示；中心或其他模型参考点均允许，位置语义必须由任务结合模型几何明确。
+- plan_release统一生成Base +Z上方预放置点（trial.json release_preplacement_height_m缺省0.1 m）→最终朝向不变的直线下降→到位后松爪→可选退出。goal=null仍以上述流程返回当前位姿，不再原地立即松爪。预放置阶段可分段调姿，下降固定最终朝向；两端采用同一物品参考点。旧区域放置保留区域选点，approach_height_m设0.1 m且不再以当前高度代替预放置高度。
+- 运行时仅读取通用features.json，不再适配hole_positions.json；现有模型特征一次性迁移为普通reference数据，保留原文件备查，120个坐标及尺寸不变。迁移脚本在work/generic_placement_validation/，不是运行工具。配置与模型数据不提交Git。
+- 验证和部署状态待本轮补齐；当前线上有夹持记录，未重启或修改线上配置/模型数据。
+
 ## 2026-09-28 响应协议/读取错误重试补齐
 
 - 等待响应头或HTTP 200正文期间的RemoteProtocolError、ReadError与ResponseTimeout共用每轮5次尝试预算；上传中断、HTTP拒绝、无阶段证据和本地协议错误不扩展重试。前端区分超时与响应传输失败，原异常类型保留在诊断中。不完整响应不派发工具，不重放已完成动作。

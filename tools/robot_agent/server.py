@@ -150,7 +150,7 @@ def create_server(backend):
     @server.tool(annotations=read)
     async def plan_release(object_id: str, hold_id: str, orientation_version: OrientationVersion,
                            goal: MotionGoal | None, retreat_vector_base_m: Retreat, request_id: str) -> CallToolResult:
-        """Plan explicit gripper release at the current held-object pose (goal=null), or after moving to goal. Requires a deterministic fixed position policy. retreat_vector_base_m is the post-open TCP displacement in Base, norm<=0.3m; zero means no retreat. No motion while planning. execute_plan will OPEN THE GRIPPER after verified arrival and retreat only after confirmed opening. Target is object pose before release; support, settling and gripper/environment collision are not independently verified."""
+        """Plan placement: approach the final object reference point from 100 mm (configured) above along Base +Z, achieve final orientation, descend linearly with constant orientation, then release. goal=null uses the current object pose as final target but STILL ascends then descends. Requires a deterministic fixed position policy. retreat_vector_base_m is the post-open TCP displacement in Base, norm<=0.3m; zero means no retreat. No motion while planning. execute_plan will OPEN THE GRIPPER after verified arrival and retreat only after confirmed opening. Target is object pose before release; support, settling and gripper/environment collision are not independently verified."""
         return await action('plan_release',request_id,{'object_id':object_id,'hold_id':hold_id,'orientation_version':orientation_version,
             'goal':goal.model_dump() if goal is not None else None,'retreat_vector_base_m':retreat_vector_base_m})
 

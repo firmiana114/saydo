@@ -81,7 +81,7 @@ class ObjectControlTests(unittest.TestCase):
         args=self.args();args.update(goal=None,retreat_vector_base_m=[0,0,.05])
         plan=self.planned(args,True);before=controller_pose(self.arm['pose'])
         status=self.execute(plan,'release-001');self.assertEqual(status['state'],'completed',status.get('error'))
-        self.assertIsNone(self.service.held_object);self.assertEqual([x[0] for x in self.calls],['open','movel'])
+        self.assertIsNone(self.service.held_object);self.assertEqual([x[0] for x in self.calls],['movej','movel','open','movel'])
         np.testing.assert_allclose(controller_pose(self.arm['pose'])[:3,3],before[:3,3]+[0,0,.05],atol=1e-6)
         result=status['execution_result'];self.assertTrue(result['release_confirmed']);self.assertFalse(result['object_settled_pose_verified'])
 
@@ -89,9 +89,18 @@ class ObjectControlTests(unittest.TestCase):
         args=self.args({'target_position_m':[.4,-.1,.3],'path_mode':'linear'});args['retreat_vector_base_m']=[0,0,.05]
         plan=self.planned(args,True);self.fail='open';status=self.execute(plan)
         self.assertEqual(status['state'],'failed');self.assertIsNone(self.service.held_object)
-        self.assertEqual([x[0] for x in self.calls],['movel','open']);self.robot.stop.assert_called_once()
+        self.assertEqual([x[0] for x in self.calls],['movel','movel','open']);self.robot.stop.assert_called_once()
         self.service.retain_reorientation_hold.assert_not_called()
         with self.assertRaises(ValueError):self.service.start_execute_object_plan(plan['plan_id'],'another-id')
+
+    def test_descent_failure_never_opens_gripper(self):
+        plan=self.planned(self.args({'target_position_m':[.4,-.1,.3]}),True)
+        def fail_descent(*args):raise RuntimeError('descent failed')
+        self.robot.move_linear.side_effect=fail_descent
+        status=self.execute(plan)
+        self.assertEqual(status['state'],'failed')
+        self.robot.move_gripper.assert_not_called()
+        self.robot.stop.assert_called_once()
 
     def test_start_config_and_hold_changes_reject_before_motion(self):
         for case in ['start','config','hold','preview','recording']:
@@ -122,7 +131,12 @@ class ObjectControlTests(unittest.TestCase):
 
     def test_release_retreat_failure_does_not_restore_or_reclose(self):
         args=self.args();args.update(goal=None,retreat_vector_base_m=[0,0,.05])
-        plan=self.planned(args,True);self.fail='move';status=self.execute(plan)
+        plan=self.planned(args,True)
+        original=self.robot.move_linear.side_effect
+        def fail_retreat(*args):
+            if self.opened:raise RuntimeError('retreat failed')
+            return original(*args)
+        self.robot.move_linear.side_effect=fail_retreat;status=self.execute(plan)
         self.assertEqual(status['state'],'failed');self.assertIsNone(self.service.held_object)
         self.robot.move_gripper.assert_called_once_with(1000);self.service.retain_reorientation_hold.assert_not_called()
         ref=status['diagnostics_ref'];report=json.loads((self.root/'work/grasp'/ref['directory']/ref['file']).read_text())

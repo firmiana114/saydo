@@ -116,11 +116,12 @@ class SceneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'抓取前'):self.service.start_scene_capture(TARGETS,True,'held-test')
         self.robot.query.assert_not_called()
 
-    def test_legacy_hole_metadata_stays_uncalibrated(self):
-        data={'units':'metres','registration_note':'180-degree ambiguity','slots':[{'id':'A01','upper_entry_center_m':[0,0,.085],
-            'middle_entry_center_m':[0,0,.047],'bottom_support_point_m':[0,0,.012],'hole_diameter_m':.02}]}
-        (self.models/'reference/hole_positions.json').write_text(json.dumps(data))
-        features=object_features(self.models,'reference');self.assertEqual(len(features['features']),3)
+    def test_generic_features_preserve_uncalibrated_geometry(self):
+        pose=np.eye(4);pose[2,3]=.085
+        data={'units':'metres','notes':['orientation ambiguity'],'features':[{'id':'target','object_T_feature':pose.tolist(),'diameter_m':.02}]}
+        (self.models/'reference/features.json').write_text(json.dumps(data))
+        features=object_features(self.models,'reference');self.assertEqual(len(features['features']),1)
         self.assertFalse(features['features'][0]['physical_fit_verified']);self.assertIn('ambiguity',features['feature_notes'][0])
+        self.assertEqual(features['features'][0]['diameter_m'],.02)
 
 if __name__=='__main__':unittest.main()

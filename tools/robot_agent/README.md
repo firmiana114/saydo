@@ -24,7 +24,7 @@
 | `reset_arm` | `observation` 返回记录的观测姿态；`zero` 返回七关节零位（不是编码器标定）；保持夹爪开合 |
 | `get_object_geometry` | 模型坐标范围、原点/Z轴端点、5D/6D模式及模型摘要 |
 | `plan_held_object_motion` | 指定物品参考点、位置/朝向、坐标系、中间路点，生成只读持物方案 |
-| `plan_release` | 规划到目标后松爪及可选退出；goal=null表示当前位置释放 |
+| `plan_release` | 规划到目标后松爪及可选退出；goal=null以当前位置作为最终目标，仍先上移再下降 |
 | `execute_plan` | 核验并执行服务器保存的plan_id，单次消费，不接受临时路径覆盖 |
 | `get_task_diagnostics` | 任务结果及精确关联的新运动诊断报告 |
 | `capture_scene_snapshot` / `get_scene_snapshot` | 动作前一次采集全部目标，固定Base位姿；查询实例状态及有效性 |
@@ -121,3 +121,5 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 动作测试使用模拟控制器；覆盖实际 HTTP 认证、任务去重/冲突/重启、物品和夹持绑定、停止失败锁定、最新画面和过期位姿。MCP SDK 测试覆盖原生图片块、19 个工具的模式和参数、任务查询及错误语义。实机联调仅调用观察/状态工具，不以真实抓取、放置、复位或停止作为自动验收。
 
 2026-09-22 验证：175 项后端测试、11 项 MCP/客户端/安装器测试和 7 组前端检查通过。真实相机和机械臂读取成功；GPT-6 Astra/high 通过实际 MCP 工具读取状态并识别相机朝向天花板。当前无目标物品，位姿接口明确返回 `POSE_NOT_READY`，不把不存在的位姿交给 Agent。有效目标位姿和真实动作效果需在适当场景下单独验收。完整结果见根目录 `HANDOFF_REPORT.md`。
+
+统一放置由plan_release生成：最终目标沿Base +Z上方100 mm预放置点→保持最终朝向直线下降→确认到位后松爪→可选退出。高度由config/grasp/trial.json的release_preplacement_height_m配置，缺省0.1 m（允许0.01～0.3 m）。同一个物品参考点定义两端位置，不按模型名或特征类型分支。旧区域放置保留区域选点，approach_height_m同样配置为0.1 m。
