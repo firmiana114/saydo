@@ -27,7 +27,7 @@ class DetectionTests(unittest.TestCase):
         detector=LLMBoxDetector(request=lambda payload:(payloads.append(payload) or response()))
         boxes=detector.detect(self.frame(),'无把手纸杯',lambda:False)
         self.assertEqual(boxes[0]['box'],[16,26,104,124])
-        p=payloads[0];self.assertEqual(p['model'],'gpt-5.6-terra');self.assertEqual(p['reasoning'],{'effort':'low'})
+        p=payloads[0];self.assertEqual(p['model'],'gpt-6-sol');self.assertEqual(p['reasoning'],{'effort':'low'})
         self.assertFalse(p['store']);self.assertEqual(p['tools'][0]['name'],'report_regions')
         self.assertIn('无把手纸杯',p['input'][0]['content'][0]['text'])
 

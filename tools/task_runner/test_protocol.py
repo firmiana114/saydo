@@ -69,7 +69,7 @@ class RegistryTests(unittest.TestCase):
             path = Path(directory)/'.env'
             path.write_text('SAYDO_LLM_API_KEY="test"\n');path.chmod(0o600)
             config = Config.load(path)
-            self.assertEqual(config.model, 'gpt-5.6-terra')
+            self.assertEqual(config.model, 'gpt-6-sol')
             self.assertEqual(config.fallback_model, '')
             self.assertEqual(config.mode, 'execute')
 

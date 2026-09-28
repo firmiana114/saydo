@@ -7,7 +7,7 @@ import re
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-UI_MODELS = ('gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra')
+UI_MODELS = ('gpt-5.5', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra')
 UI_REASONING_EFFORTS = ('low', 'medium', 'high')
 
 
@@ -38,7 +38,7 @@ def read_env(path):
 class Config:
     api_key: str = field(repr=False)
     responses_url: str = 'https://trendengine.site/v1/responses'
-    model: str = 'gpt-5.6-terra'
+    model: str = 'gpt-6-sol'
     fallback_model: str = ''
     reasoning_effort: str = 'medium'
     llm_proxy: str | None = None

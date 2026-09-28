@@ -17,6 +17,8 @@ class ModelPicker{
   if(!saved)try{saved=JSON.parse(this.storage?.getItem('saydo.task-llm')||'null');}catch(_){}
   const fill=(element,values,format)=>element.replaceChildren(...values.map(value=>{const option=document.createElement('option');option.value=value;option.textContent=format(value);return option;}));
   fill(this.model,options.models,value=>value);fill(this.effort,options.reasoning_efforts,value=>labels[value]||value);
+  const migratedModel={'gpt-5.6-sol':'gpt-6-sol','gpt-5.6-terra':'gpt-6-sol','gpt-5.6-luna':'gpt-6-luna'}[saved?.model];
+  if(migratedModel&&options.models.includes(migratedModel))saved={...saved,model:migratedModel};
   const defaultModel=options.models.includes(data.model)?data.model:options.models[0];
   const defaultEffort=options.reasoning_efforts.includes(data.reasoning_effort)?data.reasoning_effort:'medium';
   this.model.value=options.models.includes(saved?.model)?saved.model:defaultModel;

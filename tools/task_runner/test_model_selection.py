@@ -26,7 +26,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((record['model'],record['reasoning_effort']),(model,effort))
                     self.assertEqual((llm.models[-1],llm.efforts[-1]),(model,effort))
                     self.assertTrue(all(e.get('reasoning_effort')==effort for e in record['events'] if e['event'] in ('llm_started','llm')))
-            self.assertEqual((config.model,config.reasoning_effort),('gpt-5.6-terra','medium'))
+            self.assertEqual((config.model,config.reasoning_effort),('gpt-6-sol','medium'))
 
     async def test_selection_is_frozen_for_all_rounds(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -40,15 +40,15 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_selection_disables_automatic_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            config=Config(api_key='test',fallback_model='gpt-5.6-luna')
+            config=Config(api_key='test',fallback_model='gpt-6-luna')
             llm=FakeLLM(ModelUnavailable('no channel'));runner=Runner(config,Store(directory),llm,FakeAdapter)
-            ident=runner.submit('查询',model='gpt-5.6-terra',reasoning_effort='low');await runner.worker
-            self.assertEqual(llm.models,['gpt-5.6-terra']);self.assertEqual(runner.store.get(ident)['state'],'failed')
+            ident=runner.submit('查询',model='gpt-6-sol',reasoning_effort='low');await runner.worker
+            self.assertEqual(llm.models,['gpt-6-sol']);self.assertEqual(runner.store.get(ident)['state'],'failed')
 
     async def test_invalid_values_never_create_run(self):
         with tempfile.TemporaryDirectory() as directory:
             runner=Runner(Config(api_key='test'),Store(directory),FakeLLM(),FakeAdapter)
-            for options in ({'model':'gpt-6-luna'},{'model':'untrusted-model'},{'reasoning_effort':'ultra'},{'reasoning_effort':True}):
+            for options in ({'model':'gpt-6-terra'},{'model':'untrusted-model'},{'reasoning_effort':'ultra'},{'reasoning_effort':True}):
                 with self.assertRaises(ValueError):runner.submit('test',**options)
             self.assertEqual(runner.store.recent(),[])
 

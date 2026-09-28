@@ -88,7 +88,7 @@ python tools/foundationpose/live_tracker.py --host 127.0.0.1 --port 8089 --auto-
 
 启动、自动识别和连接 MCP 不发送机械臂动作。`--grasp-mode preview` 可关闭抓取/姿态调整/放置/复位执行，预览和观察仍可用；停止工具仍可发停止命令。不要在活动任务或需保留夹持记录时重启后端。
 
-MSI 已恢复 `codex` 入口，默认 `gpt-5.6-sol / medium`。入口链接到本目录 `codex_launcher.py`，再启动 `~/.local/lib/codex/0.156.0/bin/codex` 官方 CLI；从项目权限600的 `.env` 读取模型密钥、Responses地址和模型代理，仅在当前进程环境传递密钥，不写入仓库、命令参数或 `auth.json`。自定义提供方使用 API Key，无需 ChatGPT 登录。CLI 升级时需同步更新启动脚本中的官方二进制路径。
+MSI 已恢复 `codex` 入口，当前专用配置为 `gpt-6-astra / low`（保留操作员选择），也可显式选择已验证的 `gpt-6-sol` 或 `gpt-6-luna`。入口链接到本目录 `codex_launcher.py`，再启动 `~/.local/lib/codex/0.156.0/bin/codex` 官方 CLI；从项目权限600的 `.env` 读取模型密钥、Responses地址和模型代理，仅在当前进程环境传递密钥，不写入仓库、命令参数或 `auth.json`。自定义提供方使用 API Key，无需 ChatGPT 登录。CLI 升级时需同步更新启动脚本中的官方二进制路径。
 
 在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器固定使用 `~/.local/share/saydo-codex/codex-home` 作为 `CODEX_HOME`，配置文件、会话与普通 `~/.codex` 分开；切换至同级 `workspace`，不在源码目录启动。专用配置保存提供方、默认模型及MCP服务登记，工具目录由服务提供。
 

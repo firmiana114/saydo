@@ -244,11 +244,11 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['state'], 'failed')
 
     async def test_disabled_fallback_never_switches_from_terra(self):
-        self.config.model = 'gpt-5.6-terra'
+        self.config.model = 'gpt-6-sol'
         self.config.fallback_model = ''
         llm = FakeLLM(ModelUnavailable('unavailable'))
         result, _ = await self.execute(llm)
-        self.assertEqual(llm.models, ['gpt-5.6-terra'])
+        self.assertEqual(llm.models, ['gpt-6-sol'])
         self.assertEqual(result['state'], 'failed')
 
     async def test_global_stop_cancels_active_model_decision(self):

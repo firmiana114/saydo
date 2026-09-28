@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tools.task_runner.config import Config
 
-MODEL = 'gpt-5.6-terra'
+MODEL = 'gpt-6-sol'
 EFFORT = 'low'
 TIMEOUT_S = 20
 MAX_FRAME_AGE_S = 30

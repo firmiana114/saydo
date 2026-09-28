@@ -719,7 +719,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--models-root', type=Path, default=ROOT / 'work/object_models')
-    parser.add_argument('--detector', choices=('llm', 'ssdlite'), default='llm', help='Bounding-box detector; default gpt-5.6-terra/low')
+    parser.add_argument('--detector', choices=('llm', 'ssdlite'), default='llm', help='Bounding-box detector; default gpt-6-sol/low')
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
