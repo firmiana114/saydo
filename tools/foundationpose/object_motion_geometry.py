@@ -165,6 +165,8 @@ def plan_object_motion(held,vertices,arm,config,goal,frame,reachable,cancelled,r
                     valid,detail=reachable(plan['validation_points'],min(3.,max(.05,deadline-time.monotonic())))
                     if not valid:
                         attempt['failure']=detail.get('failure')
+                        attempt['beam_max_width']=max((row['candidates'] for row in detail.get('beam_widths',[])),default=0)
+                        attempt['search_ik_calls']=detail.get('search_ik_calls')
                         attempt['initial_fk_error']=detail.get('initial_fk_error')
                         attempt['continuity_failure']=detail.get('continuity_failure')
                         raise ValueError(detail.get('reason','逆解/正解或自身碰撞检查失败'))

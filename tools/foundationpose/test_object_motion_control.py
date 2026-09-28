@@ -47,8 +47,11 @@ class ObjectControlTests(unittest.TestCase):
             return config,copy.deepcopy(self.arm),{'flange_T_grip_tcp':np.eye(4).tolist()},self.geometry,self.root/'checker'
         self.service.motion_context=Mock(side_effect=context)
         def verify(plan,config,report,arm,points,timeout=3):
-            self.counter+=1;raw=[self.counter*1000,0,0,0,0,0,0];self.joint_targets[tuple(raw)]=points[-1]['controller_pose']
-            return {'verified':True,'joint_solutions_deg':[[v/1000 for v in raw]]}
+            solutions=[]
+            for point in points:
+                self.counter+=1;raw=[self.counter*1000,0,0,0,0,0,0]
+                self.joint_targets[tuple(raw)]=point['controller_pose'];solutions.append([v/1000 for v in raw])
+            return {'verified':True,'joint_solutions_deg':solutions}
         self.service.verify_motion_targets=Mock(side_effect=verify)
         self.service.retain_reorientation_hold=Mock(return_value=True)
         self.patch1=patch('object_motion_control.check_waypoints',return_value=(True,{'verified':True}))
@@ -104,6 +107,18 @@ class ObjectControlTests(unittest.TestCase):
         self.assertEqual(status['state'],'failed')
         self.robot.move_gripper.assert_not_called()
         self.robot.stop.assert_called_once()
+
+    def test_remaining_descent_checked_before_any_motion(self):
+        args=self.args();args['retreat_vector_base_m']=[0,0,.05]
+        plan=self.planned(args,True)
+        def reject_future(plan,config,report,arm,points):
+            self.assertTrue(any(p['name'].startswith('release_descent') for p in points))
+            self.assertTrue(any(p['name'].startswith('release_retreat') for p in points))
+            raise ValueError('remaining descent has no continuous solution')
+        self.service.verify_motion_targets.side_effect=reject_future
+        status=self.execute(plan)
+        self.assertEqual(status['state'],'failed')
+        self.robot.move_linear.assert_not_called();self.robot.move_joints.assert_not_called();self.robot.move_gripper.assert_not_called()
 
     def test_start_config_and_hold_changes_reject_before_motion(self):
         for case in ['start','config','hold','preview','recording']:

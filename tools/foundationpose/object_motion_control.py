@@ -227,6 +227,18 @@ class ObjectMotionMixin:
                 end=controller_pose(target['controller_pose'])
                 points=segment_samples(controller_pose(start['pose']),end,None if released else held,
                     geometry['vertices'],config,target['method'],target['name'])
+                current_endpoint_index=len(points)-1
+                # Revalidate the remaining suffix from real feedback. movel is
+                # solved by the controller; do not assume it chose the offline branch.
+                if not released:
+                    last=end
+                    for future in plan['waypoints'][report['active_waypoint_index']:]:
+                        future_pose=controller_pose(future['controller_pose'])
+                        points.extend(segment_samples(last,future_pose,held,geometry['vertices'],config,future['method'],future['name']))
+                        last=future_pose
+                    if plan.get('retreat_waypoint'):
+                        future=plan['retreat_waypoint'];future_pose=controller_pose(future['controller_pose'])
+                        points.extend(segment_samples(last,future_pose,None,None,config,'linear',future['name']))
                 detail=self.verify_motion_targets(plan,config,report,start,points)
                 self.check_cancel()
                 if not self.actuated and time.time()>plan['expires_at']:raise ValueError('方案已过期，请重新规划')
@@ -247,8 +259,8 @@ class ObjectMotionMixin:
                     self.robot.move_linear(target['controller_pose'],plan['speed_percent'],self.cancelled,observed)
                 else:
                     solutions=detail.get('joint_solutions_deg') if isinstance(detail,dict) else None
-                    if not solutions or len(solutions[-1])!=7 or not np.isfinite(solutions[-1]).all():raise ValueError('缺少已验证的关节解，不能执行关节方案')
-                    joint_target=np.rint(np.asarray(solutions[-1])*1000).astype(int).tolist()
+                    if not solutions or len(solutions)<=current_endpoint_index or len(solutions[current_endpoint_index])!=7 or not np.isfinite(solutions[current_endpoint_index]).all():raise ValueError('缺少已验证的关节解，不能执行关节方案')
+                    joint_target=np.rint(np.asarray(solutions[current_endpoint_index])*1000).astype(int).tolist()
                     report.setdefault('commanded_joint_targets',[]).append({'stage':target['name'],'joint_raw':joint_target})
                     self.actuated=True;report['robot_motion_sent']=True
                     self.robot.move_joints(joint_target,plan['speed_percent'],self.cancelled,observed)

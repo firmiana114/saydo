@@ -43,6 +43,12 @@ def parse_kinematics(result, arm, waypoints):
         detail['initial_fk_error']={'position_mm':initial_distance*1000,'orientation_deg':float(np.rad2deg(initial_angle))}
         if initial_distance>POSITION_TOLERANCE_M or initial_angle>ORIENTATION_TOLERANCE_RAD:
             return fail('离线模型/工具与当前机械臂反馈不一致，不能进行逆解回验')
+        detail['candidate_rejections']=[dict(zip(('sample_index','ik','limits','self_collision','fk','continuity'),map(int,row[1:]))) for row in lines if len(row)==7 and row[0]=='REJECT']
+        detail['beam_widths']=[{'sample_index':int(row[1]),'candidates':int(row[2])} for row in lines if len(row)==3 and row[0]=='BEAM']
+        failures=[row for row in lines if len(row)==4 and row[0]=='SEARCH_FAIL']
+        if failures:
+            index=int(failures[-1][1]);location(index,failures[-1][2]);detail['search_ik_calls']=int(failures[-1][3])
+            return fail(f"{detail.get('failure',{}).get('waypoint','未知阶段')}：{failures[-1][2]}，多分支搜索未获得完整连续路径")
         seen=set()
         for row in verified:
             if len(row)!=8: return fail('正解回验数据长度错误')
@@ -90,13 +96,13 @@ def check_waypoints(executable, tool, arm, waypoints, timeout=3.):
     if not waypoints:raise ValueError('至少需要一个待验证航点')
     joints=np.asarray(arm['joint'],dtype=float)
     if joints.shape!=(7,) or not np.isfinite(joints).all():raise ValueError('起始关节角无效')
-    values=[*pose_values(tool['flange_T_grip_tcp']),*(joints/1000),len(waypoints)]
+    values=[*pose_values(tool['flange_T_grip_tcp']),*(joints/1000),len(waypoints),max(1,min(2800,int(timeout*850)))]
     for waypoint in waypoints:
         values.extend(pose_values(controller_pose(waypoint['controller_pose'])))
         values.append(10 if waypoint.get('method')=='linear' else 360)
-    result=subprocess.run([str(executable),'--multi-seed-v1'],input=' '.join(str(x) for x in values)+'\n',text=True,capture_output=True,timeout=timeout)
-    if 'CAPABILITY MULTI_SEED_V1' not in result.stdout.splitlines():
-        return False,{'verified':False,'reason':'离线检查器尚未支持多初值协议，请重新构建，不发送运动'}
+    result=subprocess.run([str(executable),'--beam-ik-v1'],input=' '.join(str(x) for x in values)+'\n',text=True,capture_output=True,timeout=timeout)
+    if 'CAPABILITY BEAM_IK_V1' not in result.stdout.splitlines():
+        return False,{'verified':False,'reason':'离线检查器尚未支持多分支路径搜索协议，请重新构建，不发送运动'}
     return parse_kinematics(result,arm,waypoints)
 
 

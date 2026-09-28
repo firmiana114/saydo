@@ -46,7 +46,13 @@ class MotionValidationTests(unittest.TestCase):
         self.assertTrue(ok);self.assertEqual(d['seed_search'][0]['valid_candidates'],2)
         with patch('motion_validation.subprocess.run',return_value=SimpleNamespace(stdout=protocol(),stderr='',returncode=0)):
             ok,d=check_waypoints('fixture',{'flange_T_grip_tcp':np.eye(4).tolist()},self.arm,self.points)
-        self.assertFalse(ok);self.assertIn('多初值协议',d['reason'])
+        self.assertFalse(ok);self.assertIn('多分支路径搜索协议',d['reason'])
+
+    def test_beam_failure_never_accepts_valid_prefix(self):
+        data=protocol()+'BEAM 0 2\nSEARCH_FAIL 0 no_continuous_solution 62\n'
+        ok,d=self.parse(data,1)
+        self.assertFalse(ok);self.assertFalse(d['verified'])
+        self.assertEqual(d['failure']['kind'],'no_continuous_solution');self.assertEqual(d['search_ik_calls'],62)
 
     def test_verified_success(self):
         ok,detail=self.parse(protocol());self.assertTrue(ok);self.assertTrue(detail['verified'])
@@ -155,6 +161,8 @@ class MotionValidationTests(unittest.TestCase):
                 valid,detail=check_waypoints(os.environ['SAYDO_IK_CHECKER'],{'flange_T_grip_tcp':tool.tolist()},
                     {'joint':joints,'pose':pose},[{'name':'pregrasp','controller_pose':target}])
                 self.assertEqual(valid,expected,detail)
-                if not expected:self.assertGreater(detail['fk_checks'][0]['position_error_mm'],150)
+                if not expected:
+                    self.assertFalse(detail['verified'])
+                    self.assertIn(detail['failure']['kind'],('fk_residual','no_continuous_solution'))
 
 if __name__=='__main__':unittest.main()
