@@ -34,7 +34,7 @@ class ObjectGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(controller_pose(plan['waypoints'][-1]['controller_pose'])[:3,3],[.4,-.18,.34])
         plan=self.plan({'target_rpy_deg':[90,0,0],'reference_point_object_m':[0,0,.04]})
         reference=start[:3,3]+start[:3,:3]@np.array([0,0,.04])
-        self.assertEqual(len(plan['waypoints']),6)
+        self.assertEqual(len(plan['waypoints']),7)
         last=start[:3,:3]
         for waypoint in plan['waypoints']:
             obj=np.array(waypoint['object_pose']);np.testing.assert_allclose(obj[:3,3]+obj[:3,:3]@[0,0,.04],reference,atol=1e-12)

@@ -20,7 +20,7 @@ class AgentReorientationTests(unittest.TestCase):
         self.grasp.held_object={'hold_id':'h','object_id':'bottle','model_sha256':'mesh','orientation_version':0,
             'current_object_rotation':np.eye(3).tolist()}
         self.arguments={'object_id':'bottle','hold_id':'h','orientation_version':0,'target_rpy_deg':[10,20,90],'position_mode':'adaptive'}
-        def worker(held,rotation,preview,mode):
+        def worker(held,rotation,preview,mode,step=15):
             self.calls.append((copy.deepcopy(held),rotation,preview,mode))
             target=np.eye(4);target[:3,:3]=rotation
             if not preview:
@@ -28,6 +28,24 @@ class AgentReorientationTests(unittest.TestCase):
             self.grasp.update(state='reorient_preview' if preview else 'completed',busy=False,
                 reorientation_plan={'base_T_object_target':target.tolist(),'orientation_tolerance_deg':1.5})
         self.grasp.run_reorient=worker
+
+    def test_recovery_metadata_and_exact_legacy_diagnostic_link(self):
+        from pathlib import Path
+        import json
+        directory=self.grasp.root/'work/grasp/reorient_jobs';directory.mkdir(parents=True,exist_ok=True)
+        (directory/'123.json').write_text(json.dumps({'failed_stage':'step-2'}))
+        recovery={'can_replan':False,'outcome_unknown':True,'failed_waypoint_index':2}
+        def worker(*args):self.grasp.update(state='failed',busy=False,recovery=recovery,diagnostics_ref={'directory':'reorient_jobs','file':'123.json'})
+        self.grasp.run_reorient=worker
+        self.request('reorient',arguments=self.arguments);task=self.wait()
+        self.assertEqual(task['result']['recovery'],recovery);self.assertTrue(task['outcome_unknown'])
+        result=self.api.get('/api/agent/task-diagnostics',{'task_id':[task['task_id']]})
+        self.assertEqual(result['diagnostics']['failed_stage'],'step-2')
+
+    def test_backend_rejects_step_above_fifteen_before_start(self):
+        from agent_api import AgentError
+        with self.assertRaises(AgentError):self.request('reorient',arguments={**self.arguments,'max_rotation_step_deg':16})
+        self.assertEqual(self.calls,[])
 
     def test_conversion_matches_web_xyz_convention(self):
         for angles in ([0,0,90],[90,0,0],[12,-47,150],[-180,90,180]):

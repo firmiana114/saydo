@@ -62,9 +62,19 @@ POST /api/task-runs/stop                {}，工作台全局停止
 
 `finish_task` 的 `succeeded` 必须引用本轮全部真实成功动作，并在结束前核对后端状态；`answered` 只表示已回答问题或解释预览，不表示实际操作完成。页面显示“已核验的动作”，与模型给出的说明区分。控制器完成仍不能独立证明接触桌面、无滑动或长期放置稳定。
 
-姿态工具 `preview_reorient` / `reorient` 沿用 [MCP 参数约定](../robot_agent/README.md#姿态调整参数)，其中 `request_id` 由执行器生成。执行器等待任务后核对同一夹持身份、版本递增及实际朝向误差；预览不递增版本。成功结果提供新版本供后续放置使用；失败、中断、版本不一致或朝向误差超限时不继续动作。
+姿态工具 `preview_reorient` / `reorient` 沿用 [MCP 参数约定](../robot_agent/README.md#姿态调整参数)，其中 `request_id` 由执行器生成。执行器等待任务后核对同一夹持身份、版本递增及实际朝向误差；预览不递增版本。成功结果提供新版本供后续放置使用；中断、版本不一致或核验失败不继续动作；后端明确返回可恢复的调姿失败时按下述有限重规划流程处理。
 
-通用持物链路使用 `plan_held_object_motion` / `plan_release` 生成方案，再用 `execute_plan` 执行。另提供 `get_object_geometry` 和 `get_task_diagnostics`；详见 [目标参数与执行边界](../foundationpose/OBJECT_MOTION.md)。规划失败以PLAN_FAILED证据交回模型，可在用户目标范围内更换路点重新规划；真实执行失败、结果未知或到位核验失败仍阻断后续动作。执行器核对物品参考点位置、朝向、夹持版本及松爪/退出结果，重启后不会重放未确认方案。preview模式允许生成方案，execute_plan只在execute模式开放。
+通用持物链路使用 `plan_held_object_motion` / `plan_release` 生成方案，再用 `execute_plan` 执行。另提供 `get_object_geometry` 和 `get_task_diagnostics`；详见 [目标参数与执行边界](../foundationpose/OBJECT_MOTION.md)。规划失败以PLAN_FAILED证据交回模型，可在用户目标范围内更换路点重新规划；真实执行失败只在后端确认可恢复时继续重新规划；结果未知或客户端到位核验失败仍阻断。执行器核对物品参考点位置、朝向、夹持版本及松爪/退出结果，重启后不会重放未确认方案。preview模式允许生成方案，execute_plan只在execute模式开放。
+
+## 有限调姿恢复
+
+旧、新调姿入口共用每段最大15°的后端限制（分段预留0.2°以覆盖控制器RPY量化，实际段数可能增加），旧入口新增max_rotation_step_deg，允许10°/5°等更小步长；固定TCP与固定物品参考点的语义保留各自区别。旧入口也执行已核验的movej关节解，不再一次movej_p直达大角度目标。各段端点检查不等于完整连续环境碰撞检查。
+
+规划失败会作为PLAN_FAILED证据交回模型。已发运动失败须先停止、采样确认停稳及夹持，复核控制器无错、关节启用、工具/模型/配置和实际物品范围；只有recovery.can_replan=true才作为MOTION_REPLAN_REQUIRED交回模型。结果含失败路点序号、完成段数、实际位姿、新夹持版本和原目标约束。旧reorient日志也通过get_task_diagnostics精确关联。
+
+预算由RobotAdapter在单个用户任务的目标周期内累计：最多5次规划、3次执行请求。旧reorient内部会重新规划，因此同时占规划与执行名额；明确未发运动且可恢复时退回执行名额。改变步长、切换工具、换request_id/plan_id不重置；成功到达目标后下一目标开始新周期。执行失败后只能用新方案继续原目标，不能改最终朝向/指定位置、放宽fixed约束或直接reset/place跳过恢复。首次明确失败前的只读搜索也计入本周期规划次数。手动前端/MCP不由该SayDo实例计数，MCP指令要求相同预算。
+
+失败记录标为recoverable_failure，保留在任务日志但不算成功动作；恢复未完成不能报告succeeded。未知结果、记录故障、停止不明、控制器错误、夹持失效、释放类失败及用户取消均不自动继续。600秒整任务期限、网络连接重试和用户停止保持原规则，重启不恢复旧任务。
 
 ## 前端模型与推理强度
 

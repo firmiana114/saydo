@@ -13,6 +13,7 @@ from .robot_adapter import Blocked
 
 def call(name, args=None, ident='call-1'):
     args = dict(args or {})
+    if name in ('reorient','preview_reorient'):args.setdefault('max_rotation_step_deg',15)
     if name in ('grasp','preview_grasp'):
         args.setdefault('scene_id','fixture-scene');args.setdefault('instance_id','source')
     if name != 'finish_task':

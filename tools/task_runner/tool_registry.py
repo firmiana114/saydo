@@ -13,7 +13,8 @@ ACTIONS = {'capture_scene_snapshot':'capture_scene_snapshot','preview_grasp': 'p
 MOTIONS = {'grasp', 'place', 'reset_arm', 'reorient', 'execute_plan'}
 REORIENT_ARGS = {'object_id': STRING, 'hold_id': STRING, 'orientation_version': INT,
     'target_rpy_deg': {'type': 'array', 'items': {'type': 'number', 'minimum': -180, 'maximum': 180}, 'minItems': 3, 'maxItems': 3},
-    'position_mode': {'type': 'string', 'enum': ['fixed', 'adaptive']}}
+    'position_mode': {'type': 'string', 'enum': ['fixed', 'adaptive']},
+    'max_rotation_step_deg':{'type':'number','minimum':1,'maximum':15}}
 VISION = {'select_object': 'select_object', 'start_tracking': 'start_tracking', 'choose_tracking_target': 'choose_target'}
 DEFINITIONS = {
     'get_status': ('查询跟踪状态、物品、候选选择、夹持记录及放置配置版本。', {}),
@@ -31,7 +32,7 @@ DEFINITIONS = {
     'preview_place': ('等待放置预览结束；使用真实查询的夹持和配置版本，不运动。', {'hold_id': STRING, 'orientation_version': INT, 'placement_revision': STRING}),
     'place': ('实际放置、释放、后撤并等待结束；保留当前朝向，使用已配置区域。不能替换过期身份或版本。', {'hold_id': STRING, 'orientation_version': INT, 'placement_revision': STRING}),
     'preview_reorient': ('预览已夹持物品的目标朝向，不运动不松爪。target_rpy_deg=[X,Y,Z] 是物品相对Base基座的绝对角度（度），Rz·Ry·Rx；不是相对增量或TCP朝向。5D物品仅约束该旋转对应的Z轴指向，自身绕轴转角自由，由后端搜索。fixed仅固定TCP终点位置，adaptive允许移位。引用当前物品、夹持编号和朝向版本。模型坐标决定直立方向，不假设零角度就是直立。', REORIENT_ARGS),
-    'reorient': ('调整已夹持物品至相对Base的绝对目标朝向并继续夹持，等待结束。target_rpy_deg=[X,Y,Z]，单位度，Rz·Ry·Rx，不是旋转增量或TCP朝向。5D物品仅约束目标Z轴指向，由后端自由搜索绕轴方位。fixed固定TCP终点位置，adaptive允许移位。请求的物品、夹持及版本必须匹配；之后使用返回的新版本放置或继续调整。失败不自动重试。', REORIENT_ARGS),
+    'reorient': ('调整已夹持物品至相对Base的绝对目标朝向并继续夹持，等待结束。target_rpy_deg=[X,Y,Z]，单位度，Rz·Ry·Rx，不是旋转增量或TCP朝向。5D物品仅约束目标Z轴指向，由后端自由搜索绕轴方位。fixed固定TCP终点位置，adaptive允许移位。请求的物品、夹持及版本必须匹配；之后使用返回的新版本放置或继续调整。后端分段最大15度，可将max_rotation_step_deg改为10或5；失败仅在recovery.can_replan=true时按新版本重新规划原目标，不重复抓取。', REORIENT_ARGS),
     'reset_arm': ('实际返回观测姿态或七关节零位并等待；保持夹爪开合。zero不是编码器标定。', {'target': {'type': 'string', 'enum': ['observation', 'zero']}}),
     'stop_robot': ('软件停止机械臂和夹爪，不松爪；需要明确停止意图，不用于普通状态检查。', {}),
     'capture_scene_snapshot': ('所有抓取前先声明本任务全部source及reference目标（不同实例用不同instance_id）。静止采集一份RGB-D并依次定位所有模型，固定为Base坐标，无运动。environment_static必须true；box=null使用唯一自动候选，多候选/质量差时整个快照失败，可先查看画面再指定box重采。成功后用scene_id与instance_id抓取，后续相机移动不改变静态目标位置。抓取后禁止再采；后端重启/标定改变/30分钟过期失效。', {'targets':TARGETS,'environment_static':{'type':'boolean','const':True}}),
@@ -43,7 +44,7 @@ DEFINITIONS = {
     'plan_release': ('规划在当前物品位姿(goal=null)或目标位姿释放并退出，不运动。retreat_vector_base_m为松爪后TCP在Base的位移向量，长度最多0.3m，零向量不退出。只能fixed位置策略。execute_plan将松开夹爪；目标是释放前物品位姿，不保证释放后稳定停留，不提供完整支撑/夹指/环境碰撞验证。',
         {'object_id':STRING,'hold_id':STRING,'orientation_version':INT,'goal':{**GOAL_SCHEMA,'type':['object','null']},
          'retreat_vector_base_m':{**VECTOR,'items':{'type':'number','minimum':-.3,'maximum':.3}}}),
-    'execute_plan': ('执行已规划且不可修改的方案。release类型会松爪，须符合用户释放意图；只接受plan_id，不接受替换坐标。方案一次使用，绑定当前夹持/模型/标定/配置及起点。成功持物移动后版本加1；失败不得自动续跑或换编号重放。', {'plan_id':STRING}),
+    'execute_plan': ('执行已规划且不可修改的方案。release类型会松爪，须符合用户释放意图；只接受plan_id，不接受替换坐标。方案一次使用，绑定当前夹持/模型/标定/配置及起点。成功持物移动后版本加1；失败只有recovery.can_replan=true时可生成新方案继续，旧plan_id不能重放。', {'plan_id':STRING}),
     'finish_task': ('结束本次任务。从工具结果的 evidence_call_id 字段复制证据编号，不要使用后端 task_id 或编造编号。succeeded 必须引用全部真实成功动作证据；answered 仅说明已提供信息；blocked 表示无法完成。summary 区分控制器事实与视觉判断。',
         {'outcome': {'type': 'string', 'enum': ['succeeded', 'answered', 'blocked']},
          'summary': {'type': 'string', 'minLength': 1, 'maxLength': 2000},

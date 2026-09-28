@@ -25,6 +25,7 @@ from grasp_geometry import controller_pose, transform
 from tools.robot_agent.motion_contract import checked_goal, identity, vector
 from object_motion_control import public_object_plan
 from tools.robot_agent.scene_contract import checked_targets
+from rotation_steps import checked_step
 
 
 class AgentError(ValueError):
@@ -103,14 +104,16 @@ class AgentAPI:
             if task['operation']=='capture_scene_snapshot':
                 result.update(scene_id=status.get('scene_id'),scene_snapshot=status.get('scene_snapshot'))
             if task['operation'] in ('plan_held_object_motion','plan_release','execute_plan'):
-                result.update({k:status.get(k) for k in ('execution_result','diagnostics_ref')})
+                result.update({k:status.get(k) for k in ('execution_result','diagnostics_ref','recovery')})
                 result['object_motion_plan']=public_object_plan(status.get('object_motion_plan'))
             if task['operation'] in ('reorient', 'preview_reorient'):
                 result['reorientation_plan'] = status.get('reorientation_plan')
+                result.update({k:status.get(k) for k in ('diagnostics_ref','recovery')})
             result['held_object'] = self.grasp.held_snapshot()
             task.update(state=status.get('state', 'running'), terminal=terminal,
                         updated_at=time.time(), result=json_value(result),
                         verification='controller_feedback_only; object placement/contact/slip not independently verified')
+            if terminal and (result.get('recovery') or {}).get('outcome_unknown'):task['outcome_unknown']=True
             self.save_task(task)
             if terminal:
                 self.active = None
@@ -229,7 +232,7 @@ class AgentAPI:
                    'plan_release': {'object_id','hold_id','orientation_version','goal','retreat_vector_base_m'},
                    'execute_plan': {'plan_id'}}
         allowed=schemas.get(operation)
-        valid=isinstance(args,dict) and allowed is not None and (set(args)==allowed or operation in ('grasp','preview_grasp') and set(args)=={'object_id','scene_id','instance_id'})
+        valid=isinstance(args,dict) and allowed is not None and (set(args)==allowed or operation in ('grasp','preview_grasp') and set(args)=={'object_id','scene_id','instance_id'} or operation in ('reorient','preview_reorient') and set(args)==allowed|{'max_rotation_step_deg'})
         if not valid:
             raise AgentError('INVALID_ARGUMENTS', '未知的动作或参数。')
         if operation in ('grasp', 'preview_grasp') and (not isinstance(args['object_id'], str) or not args['object_id'].strip()):
@@ -245,6 +248,7 @@ class AgentAPI:
             try:
                 rotation = rotation_from_rpy_deg(args['target_rpy_deg']).tolist()
                 checked_position_request(args['position_mode'])
+                checked_step(args.get('max_rotation_step_deg',15.))
             except ValueError as error:
                 raise AgentError('INVALID_ARGUMENTS', str(error)) from error
         if operation in ('plan_held_object_motion','plan_release'):
@@ -297,7 +301,7 @@ class AgentAPI:
                             or args['orientation_version'] != held['orientation_version']):
                         raise AgentError('HOLD_CHANGED', '物品、夹持关系或朝向已变化，先读取状态并重新规划。')
                     value = {k: held[k] for k in ['object_id', 'hold_id', 'model_sha256', 'orientation_version']}
-                    value.update(rotation=rotation, position_mode=args['position_mode'])
+                    value.update(rotation=rotation, position_mode=args['position_mode'],max_rotation_step_deg=args.get('max_rotation_step_deg',15.))
                     self.grasp.start_reorient(value, preview=operation == 'preview_reorient')
                 else:
                     held = self.grasp.held_snapshot()
@@ -369,9 +373,10 @@ class AgentAPI:
         if path == '/api/agent/task-diagnostics':
             task=self.get_task(params.get('task_id',[''])[0]);ref=(task.get('result') or {}).get('diagnostics_ref')
             if not ref:return {'task':task,'diagnostics_available':False,'note':'该任务没有关联的新诊断文件；已有结果及错误见task。'}
-            if ref.get('directory')!='object_motion_jobs' or not re.fullmatch(r'[0-9]+_[a-f0-9]{6}\.json',ref.get('file','')):
+            patterns={'object_motion_jobs':r'[0-9]+_[a-f0-9]{6}\.json','reorient_jobs':r'[0-9]+\.json'}
+            if ref.get('directory') not in patterns or not re.fullmatch(patterns[ref['directory']],ref.get('file','')):
                 raise AgentError('DIAGNOSTICS_INVALID','诊断引用无效')
-            path=self.grasp.root/'work/grasp/object_motion_jobs'/ref['file']
+            path=self.grasp.root/'work/grasp'/ref['directory']/ref['file']
             if path.is_symlink() or path.stat().st_size>2*1024*1024:raise AgentError('DIAGNOSTICS_INVALID','诊断文件无效或过大')
             return {'task_id':task['task_id'],'diagnostics_available':True,'diagnostics':json.loads(path.read_text())}
         if path.startswith('/api/agent/tasks/'):

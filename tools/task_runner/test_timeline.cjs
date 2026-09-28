@@ -51,3 +51,5 @@ const retryRows=entries({timeline_version:1,state:'running',events:[
  {seq:1,event:'llm_connection_retry',text:'1秒后进行第2/5次尝试。'},
  {seq:2,event:'llm_started',invocation:2,turn:1,model:'gpt-6-sol',at:1,connection_attempt:2,max_connection_attempts:5}]},2);
 assert.equal(retryRows[0].title,'连接重试');assert(retryRows[0].text.includes('第2/5次'));assert(retryRows[1].title.includes('连接尝试 2/5'));
+const recoveryRows=entries({timeline_version:1,state:'running',events:[{seq:1,event:'motion_recovery',text:'已停稳，重新规划',retry_budget:{planning_attempts:2,execution_attempts:1}},{seq:2,event:'tool_finished',name:'execute_plan',state:'recoverable_failure',seconds:1}]});
+assert(recoveryRows[0].text.includes('规划 2/5'));assert(recoveryRows[1].text.includes('允许重新规划'));

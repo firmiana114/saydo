@@ -12,6 +12,7 @@ from grasp_geometry import transform, controller_pose, pose_values, minimum_tabl
 from object_catalog import select_object
 from motion_validation import check_waypoints as endpoint_reachability
 from pose_symmetry import object_bounds, orientation_variants
+from rotation_steps import checked_step,interpolate,fractions
 
 
 @lru_cache(maxsize=8)
@@ -98,14 +99,21 @@ def reorientation_waypoints(held, vertices, rotation, current_raw, config, setti
         raise ValueError('自适应姿态的最终末端高度必须高于桌面 10 厘米')
     validate_object_pose(current,held,vertices,config,adaptive)
     validate_object_pose(target_tcp,held,vertices,config,adaptive)
-    target=pose_waypoint('reorient',target_tcp);target['controller_pose'][:3]=list(current_raw[:3])
+    step=checked_step(settings.get('max_rotation_step_deg',15.));waypoints=[]
+    parts=fractions(current[:3,:3],target_tcp[:3,:3],step)
+    if len(parts)>64:raise ValueError('调姿方案超过64段，请增大步长或拆分明确的目标')
+    for index,fraction in enumerate(parts,1):
+        pose=current.copy();pose[:3,:3]=interpolate(current[:3,:3],target_tcp[:3,:3],fraction)
+        validate_object_pose(pose,held,vertices,config,adaptive)
+        target=pose_waypoint('reorient' if len(parts)==1 else f'reorient_{index}',pose)
+        target['controller_pose'][:3]=list(current_raw[:3]);target['method']='joint_pose';waypoints.append(target)
     angle=np.arccos(np.clip((np.trace(current[:3,:3].T@target_tcp[:3,:3])-1)/2,-1,1))
     return {'base_T_object_target':(target_tcp@np.linalg.inv(attachment)).tolist(),
             'object_T_tcp':attachment.tolist(),'fixed_tcp_position_m':current[:3,3].tolist(),
             'fixed_tcp_position_raw':list(current_raw[:3]),'current_arm':{'pose':list(current_raw)},
-            'rotation_angle_deg':float(np.rad2deg(angle)),'waypoints':[target],
+            'rotation_angle_deg':float(np.rad2deg(angle)),'waypoints':waypoints,'max_rotation_step_deg':step,
             'tcp_position_fixed':True,'position_constraint_scope':'endpoints_only',
-            'motion_command':'movej_p','gripper_action':'keep_holding'}
+            'motion_command':'movej_verified_joint_solutions','gripper_action':'keep_holding'}
 
 
 def checked_position_request(mode):

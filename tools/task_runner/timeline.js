@@ -3,7 +3,7 @@
 'use strict';
 const tools={capture_scene_snapshot:'采集全部场景目标',get_scene_snapshot:'读取场景快照',get_object_geometry:'读取物品几何特征',plan_held_object_motion:'规划持物运动',plan_release:'规划释放',execute_plan:'执行运动方案',get_status:'读取系统状态',get_camera_frame:'查看相机画面',get_robot_state:'读取机械臂状态',list_objects:'读取物品模型',get_object_pose:'读取物品位姿',get_grasp_profiles:'读取夹法参数',select_object:'选择物品',start_tracking:'初始化跟踪',choose_tracking_target:'选择跟踪目标',preview_grasp:'预览抓取',grasp:'抓取物品',preview_place:'预览放置',place:'放置物品',preview_reorient:'预览物品姿态',reorient:'调整物品姿态',reset_arm:'机械臂复位',stop_robot:'停止机械臂'};
 const effortLabels={low:'低',medium:'中',high:'高'};
-const outcomes={completed:'完成',failed:'失败',cancelled:'已取消',unavailable:'暂不可用',blocked:'需要处理',interrupted:'已中断'};
+const outcomes={recoverable_failure:'失败，允许重新规划',completed:'完成',failed:'失败',cancelled:'已取消',unavailable:'暂不可用',blocked:'需要处理',interrupted:'已中断'};
 const seconds=value=>Number.isFinite(value)?value.toFixed(1)+' 秒':'耗时未记录';
 const requestPhases={preparing:'准备请求',connecting:'连接服务',tls:'建立加密连接',uploading:'上传请求',waiting_headers:'等待响应头',reading_body:'读取响应正文',parsing:'校验模型响应',completed:'已完成'};
 function requestDetails(d){
@@ -36,6 +36,9 @@ function entries(run,now=Date.now()/1000){
    continue;
   }else if(event.event==='llm_connection_retry'){
    row.title='连接重试';row.text=event.text;
+  }else if(event.event==='motion_recovery'){
+   row.title='调姿恢复检查';row.text=event.text;
+   if(event.retry_budget)row.text+=` 规划 ${event.retry_budget.planning_attempts}/5，执行 ${event.retry_budget.execution_attempts}/3。`;
   }else if(event.event==='model_message'){
    row.title='模型说明';row.text=event.text;
   }else if(event.event==='tool_started'){

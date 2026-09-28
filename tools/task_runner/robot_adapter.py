@@ -6,6 +6,7 @@ import time
 from urllib.parse import quote
 from tools.robot_agent.client import RobotBackend, BackendError
 from .tool_registry import READS, ACTIONS, MOTIONS, VISION
+from .motion_retry import MotionRetry,RetryLimit
 
 
 class Blocked(RuntimeError):
@@ -38,6 +39,7 @@ class RobotAdapter:
         self.motion_inflight = False
         self.active_request = None
         self.scene_ids=set()
+        self.motion_retry=MotionRetry()
 
     async def request(self, path, value=None, cancelled=None):
         if cancelled is not None and cancelled.is_set():
@@ -123,6 +125,8 @@ class RobotAdapter:
             raise Blocked('必须先在本任务采集全部目标，再引用返回的scene_id抓取')
         if cancelled.is_set():
             raise Cancelled()
+        try:self.motion_retry.before(name,args,state['grasp'].get('held_object'))
+        except RetryLimit as error:raise Blocked(str(error)) from error
         if name=='capture_scene_snapshot':self.scene_ids.clear()
         self.active_request = request_id
         self.motion_inflight = name in MOTIONS
@@ -151,11 +155,21 @@ class RobotAdapter:
             raise Blocked('后端报告结果未知，需人工核对', uncertain=True)
         expected = 'completed' if name in MOTIONS else {'capture_scene_snapshot':'scene_ready','preview_grasp':'preview', 'preview_place':'placement_preview', 'preview_reorient':'reorient_preview','plan_held_object_motion':'object_motion_planned','plan_release':'object_motion_planned'}[name]
         if result.get('state') != expected:
-            if name in ('plan_held_object_motion','plan_release','capture_scene_snapshot') and result.get('state') in ('failed','rejected'):
+            if name in ('preview_reorient','plan_held_object_motion','plan_release','capture_scene_snapshot') and result.get('state') in ('failed','rejected'):
                 latest=await self.status()
                 return {'task':result,'status':latest,'verified':False,
                         'error':{'code':'PLAN_FAILED','message':str(result.get('error') or result.get('result',{}).get('error') or result.get('state'))},
-                        'motion_sent':False,'note':'只读规划失败，可查看诊断并在用户目标范围内重新规划；没有执行运动。'}
+                        'motion_sent':False,'retry_budget':self.motion_retry.snapshot(),'note':'只读规划失败，可查看诊断并在用户目标范围内重新规划；没有执行运动。'}
+            recovery=result.get('result',{}).get('recovery') or {}
+            if name in ('reorient','execute_plan') and result.get('state')=='failed' and recovery.get('can_replan') is True:
+                latest=await self.status();self.check_idle(latest);current=latest['grasp'].get('held_object')
+                if not current or any(current.get(k)!=recovery.get(k) for k in ('hold_id','object_id','orientation_version')):raise Blocked('恢复检查后夹持版本已变化',uncertain=True)
+                if recovery.get('release_attempted') or recovery.get('stationary_confirmed') is not True or recovery.get('grip_confirmed') is not True or any(recovery.get('controller_errors') or [1]):raise Blocked('恢复条件未通过',uncertain=True)
+                try:self.motion_retry.recover(recovery)
+                except RetryLimit as error:raise Blocked(str(error)) from error
+                return {'task':result,'status':latest,'verified':False,'recoverable_failure':True,'retry_budget':self.motion_retry.snapshot(),
+                    'error':{'code':'MOTION_REPLAN_REQUIRED','message':result['result'].get('error')},
+                    'note':'原动作失败；已确认停稳、夹持和设备状态。按新orientation_version重新规划原目标；可调整步长/路点，不重做抓取或重放旧方案。'}
             raise Blocked('后端任务未成功：'+str(result.get('state')))
         latest = await self.status()
         if name=='capture_scene_snapshot':
@@ -173,7 +187,13 @@ class RobotAdapter:
             self.verify_reorientation(name, args, result, latest)
         if name=='execute_plan':
             self.verify_object_execution(args,result,latest)
-        return {'task': result, 'status': latest, 'verified': name in MOTIONS,
+        plan=result.get('result',{}).get('object_motion_plan') or result.get('result',{}).get('reorientation_plan')
+        if name in ('plan_held_object_motion','plan_release','preview_reorient') and plan:
+            try:self.motion_retry.plan(plan)
+            except RetryLimit as error:return {'task':result,'status':latest,'verified':False,'error':{'code':'GOAL_CONSTRAINT_CHANGED','message':str(error)},'retry_budget':self.motion_retry.snapshot()}
+        budget=self.motion_retry.snapshot()
+        if name in ('reorient','execute_plan') and result.get('state')=='completed':self.motion_retry.reset()
+        return {'task': result, 'status': latest,'retry_budget':budget, 'verified': name in MOTIONS,
                 'verification_scope': 'controller_feedback_only; not independent contact/slip/visual verification'}
 
     @staticmethod

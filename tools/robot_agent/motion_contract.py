@@ -17,7 +17,7 @@ GOAL_PROPERTIES = {
     'target_rpy_deg':{**RPY,'type':['array','null']},
     'path_mode':{'type':'string','enum':['joint','linear']},
     'position_mode':{'type':'string','enum':['fixed','adaptive']},
-    'max_rotation_step_deg':{'type':'number','minimum':1,'maximum':45},
+    'max_rotation_step_deg':{'type':'number','minimum':1,'maximum':15},
     'waypoints':{'type':'array','items':WAYPOINT,'maxItems':8},
 }
 GOAL_SCHEMA = {'type':'object','properties':GOAL_PROPERTIES,'required':list(GOAL_PROPERTIES),'additionalProperties':False}
@@ -60,7 +60,7 @@ def checked_goal(value, release=False):
     if result['target_position_m'] is not None:result['target_position_m']=vector(result['target_position_m'],'target_position_m')
     if result['target_rpy_deg'] is not None:result['target_rpy_deg']=vector(result['target_rpy_deg'],'target_rpy_deg',180.)
     step=result['max_rotation_step_deg']
-    if type(step) not in (int,float) or not math.isfinite(step) or not 1<=step<=45:raise ValueError('旋转步长须为1–45度')
+    if type(step) not in (int,float) or not math.isfinite(step) or not 1<=step<=15:raise ValueError('旋转步长须为1–15度')
     rows=result['waypoints']
     if not isinstance(rows,list) or len(rows)>8:raise ValueError('中间路点最多8个')
     for row in rows:

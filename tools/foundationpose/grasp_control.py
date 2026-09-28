@@ -26,11 +26,12 @@ from gripper_diagnostics import CloseDiagnostics, contact_failure_message, feedb
 from motion_speed import MotionSpeedMixin, checked_speed
 from object_motion_control import ObjectMotionMixin
 from scene_control import SceneMixin
+from motion_recovery import MotionRecoveryMixin
 from object_catalog import select_object
 from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
 
-class GraspController(SceneMixin, ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, PlacementMixin, GraspProfilesMixin):
+class GraspController(MotionRecoveryMixin, SceneMixin, ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()

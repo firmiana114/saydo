@@ -67,7 +67,7 @@ class ObjectMotionMixin:
             self.cancelled.clear();self.actuated=False;self.robot=None
             self.object_plan_store()
             self.status.update(state='object_motion_planning',operation='plan_release' if release else 'plan_held_object_motion',
-                busy=True,error=None,plan=None,object_motion_plan=None,execution_result=None,diagnostics_ref=None,
+                busy=True,error=None,plan=None,object_motion_plan=None,execution_result=None,diagnostics_ref=None,recovery=None,
                 target_object_id=held['object_id'],
                 message='正在规划物品目标位姿和释放退出' if release else '正在规划持物目标位置与朝向')
             self.thread=threading.Thread(target=self.run_object_plan,args=(held,goal,release,retreat,request_id),daemon=True);self.thread.start()
@@ -81,7 +81,7 @@ class ObjectMotionMixin:
             plan=self.object_plan_store().claim(plan_id,request_id)
             self.cancelled.clear();self.actuated=False;self.robot=None
             self.status.update(state='object_motion_checking',operation='execute_plan',busy=True,error=None,plan=None,
-                object_motion_plan=plan,target_object_id=plan['hold']['object_id'],execution_result=None,diagnostics_ref=None,message='检查方案起点、夹持及配置是否仍一致')
+                object_motion_plan=plan,target_object_id=plan['hold']['object_id'],recovery=None,execution_result=None,diagnostics_ref=None,message='检查方案起点、夹持及配置是否仍一致')
             self.thread=threading.Thread(target=self.run_object_execution,args=(plan,request_id),daemon=True);self.thread.start()
         return {'accepted':True,'plan_id':plan_id}
 
@@ -218,6 +218,7 @@ class ObjectMotionMixin:
                 return a
             def move(target,released=False):
                 nonlocal previous_feedback
+                report['active_stage']=target['name']
                 start=read_state(released)
                 before=controller_pose(start['pose']);previous=controller_pose(previous_feedback['pose'])
                 if np.max(np.abs(np.asarray(start['joint'])-previous_feedback['joint']))>500 or np.linalg.norm(before[:3,3]-previous[:3,3])>.002 or rotation_error(before[:3,:3],previous[:3,:3])>np.deg2rad(2):raise ValueError('机械臂离开本段规划起点')
@@ -254,8 +255,10 @@ class ObjectMotionMixin:
                     plan['position_tolerance_m'],np.deg2rad(plan['orientation_tolerance_deg']))
                 if joint_target is not None and np.max(np.abs(np.asarray(reached['joint'])-joint_target))>500:raise ValueError('关节方案未到达所选关节解')
                 previous_feedback=copy.deepcopy(reached)
+                report['completed_waypoints']=report.get('completed_waypoints',0)+1
                 return reached
-            for target in plan['waypoints']:arm=move(target)
+            for index,target in enumerate(plan['waypoints'],1):
+                report['active_waypoint_index']=index;arm=move(target)
             from reorientation_geometry import pose_waypoint
             final_tcp=transform(plan['base_T_object_target'])@transform(held['object_T_tcp'])
             final_check={'stage':'verify_object_target'};report.setdefault('arrival_checks',[]).append(final_check)
@@ -302,15 +305,16 @@ class ObjectMotionMixin:
         except Exception as error:
             report.update(error=str(error),traceback=traceback.format_exc())
             if self.actuated:
-                try:self.robot.stop()
+                try:self.robot.stop();report['stop_acknowledged']=True
                 except Exception as stop_error:report['stop_error']=str(stop_error)
                 if not report['release_attempted']:
                     self.retain_reorientation_hold(held,config,report)
             try:self.object_plan_store().finish(plan['plan_id'],'failed')
             except Exception as store_error:report['plan_recording_error']=str(store_error)
-            self.update(state='cancelled' if self.cancelled.is_set() else 'failed',error=str(error),message='方案执行失败：'+str(error),execution_result=None)
+            recovery=self.assess_motion_recovery(held,config,report) if 'config' in locals() else {'can_replan':False}
+            self.update(state='cancelled' if self.cancelled.is_set() else 'failed',error=str(error),message='方案执行失败：'+str(error),execution_result=None,recovery=recovery)
         finally:
             if lock is not None:lock.close()
             try:self.update(diagnostics_ref=self.save_object_job(report))
-            except Exception as error:self.update(state='failed',error='诊断记录失败：'+str(error),execution_result=None)
+            except Exception as error:self.update(state='failed',error='诊断记录失败：'+str(error),execution_result=None,recovery={'can_replan':False,'outcome_unknown':True})
             self.update(busy=False)

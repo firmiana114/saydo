@@ -53,7 +53,7 @@ class ReorientationSpeedTests(unittest.TestCase):
     def test_runner_uses_global_speed_instead_of_legacy_reorientation_speed(self):
         self.config['arm_speed_percent']=20;self.path.write_text(json.dumps(self.config))
         self.service.reorientation_hardware=Mock(return_value=(self.arm,{'flange_T_grip_tcp':np.eye(4).tolist()}))
-        with patch('reorientation_control.RobotClient'),patch('reorientation_control.model_geometry',return_value=self.mesh),patch('reorientation_control.plan_reorientation',return_value={'offset_distance_m':0}) as plan:
+        with patch('reorientation_control.RobotClient'),patch('reorientation_control.model_geometry',return_value=self.mesh),patch('reorientation_control.plan_reorientation',return_value={'offset_distance_m':0,'waypoints':[]}) as plan:
             self.service.run_reorient(self.held,np.eye(3).tolist(),preview=True)
         self.assertEqual(self.service.status['state'],'reorient_preview')
         self.assertEqual(plan.call_args.args[5]['arm_speed_percent'],20)

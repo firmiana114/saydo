@@ -45,7 +45,7 @@ class MotionGoal(BaseModel):
     target_rpy_deg: RPYDegrees | None = None
     path_mode: Literal['joint','linear']='joint'
     position_mode: Literal['fixed','adaptive']='fixed'
-    max_rotation_step_deg: Annotated[float,Field(strict=True,ge=1,le=45)]=15.
+    max_rotation_step_deg: Annotated[float,Field(strict=True,ge=1,le=15)]=15.
     waypoints: Annotated[list[MotionWaypoint],Field(max_length=8)] = Field(default_factory=list)
 
 
@@ -58,7 +58,7 @@ Preview tools do not move hardware. Actual grasp/place/reset/reorient/execute_pl
 Poses identify their frame and units. Never reuse a stale image pose as a robot target. The backend reacquires a fresh observation for grasping. Placement uses the saved rectangle and current held-object orientation; reset preserves the gripper opening. Reorient changes an already held object to absolute Base-frame angles, preserves holding, and increments orientation_version; read the new version before the next action. Never guess that model zero angles mean upright.
 General held-object tools: get_object_geometry explains model coordinates. plan_held_object_motion can translate, rotate, or move to a full object pose, with staged rotation and waypoints; plan_release plans opening at the current or target object pose plus an explicit Base-frame retreat. Neither planning tool moves hardware. Poll the plan task, inspect its kind/limits, then execute_plan once using plan_id and a new request_id when the user's task authorizes that movement/release. Plans expire and cannot survive backend restart. Every successful held motion increments orientation_version; read fresh state before the next plan. Null pose components retain the preceding target; object reference points are not TCP positions. Use get_robot_state.held_object_pose for the current pose derived from the saved rigid attachment, not as independent vision evidence. Never claim generic release provides support, settling, rack insertion, or complete environment/gripper collision checking. get_task_diagnostics exposes exact rejection/stage evidence.
 Before any grasp, capture_scene_snapshot must declare ALL task source and reference instances and reach scene_ready. Pass scene_id/instance_id to grasp; never grasp first and then initialize the placement target. For later static goals use reference_frame=scene_object with scene_id/reference_instance_id and optional reference_feature_id from get_object_geometry. Frozen Base poses survive camera motion; held/released instances no longer have a usable static pose. Do not recapture while holding.
-A completed controller task does not independently prove object placement, table contact, or absence of slipping. Observe again before claiming the user's goal is achieved. Backend errors must be reported; do not relax limits, clear errors, or recover holding records automatically.'''
+A completed controller task does not independently prove object placement, table contact, or absence of slipping. Observe again before claiming the user's goal is achieved. Backend errors must be reported; do not relax limits, clear errors, or recover holding records automatically. Every orientation API enforces <=15-degree segments (smaller 10/5-degree steps allowed). Failed motion may only be replanned if task.result.recovery.can_replan=true with the returned new hold version. Never replay the failed plan or repeat a successful grasp. Keep the original goal and position constraints; at most five planning and three execution attempts per goal; SayDo enforces these client-side budgets. Release failures and cancellation must end automatic recovery.'''
 
 
 def create_server(backend):
@@ -194,17 +194,19 @@ def create_server(backend):
 
     @server.tool(annotations=read)
     async def preview_reorient(object_id: str, hold_id: str, orientation_version: OrientationVersion,
-                               target_rpy_deg: RPYDegrees, position_mode: Literal['fixed', 'adaptive'], request_id: str) -> CallToolResult:
-        """Preview an already held object's absolute orientation in robot Base coordinates, without motion/release. target_rpy_deg=[x,y,z] in degrees uses Rz(z) Ry(y) Rx(x); it is NOT a relative rotation or TCP orientation. fixed preserves the TCP endpoint position only; adaptive allows translation. Copy object_id/hold_id/orientation_version from current held_object. Model axes define orientation; [0,0,0] does not necessarily mean upright. Returns a durable task: query get_task; retry only with the same request_id and arguments."""
+                               target_rpy_deg: RPYDegrees, position_mode: Literal['fixed', 'adaptive'], request_id: str,
+                       max_rotation_step_deg: Annotated[float,Field(strict=True,ge=1,le=15)]=15.) -> CallToolResult:
+        """Preview an already held object's absolute orientation in robot Base coordinates, without motion/release. target_rpy_deg=[x,y,z] in degrees uses Rz(z) Ry(y) Rx(x); it is NOT a relative rotation or TCP orientation. fixed preserves the TCP endpoint position only; adaptive allows translation. Every rotation is segmented at max_rotation_step_deg (default/maximum 15). Copy object_id/hold_id/orientation_version from current held_object. Model axes define orientation; [0,0,0] does not necessarily mean upright. Returns a durable task: query get_task; retry only with the same request_id and arguments."""
         return await action('preview_reorient', request_id, {'object_id':object_id,'hold_id':hold_id,
-            'orientation_version':orientation_version,'target_rpy_deg':target_rpy_deg,'position_mode':position_mode})
+            'orientation_version':orientation_version,'target_rpy_deg':target_rpy_deg,'position_mode':position_mode,'max_rotation_step_deg':max_rotation_step_deg})
 
     @server.tool(annotations=write)
     async def reorient(object_id: str, hold_id: str, orientation_version: OrientationVersion,
-                       target_rpy_deg: RPYDegrees, position_mode: Literal['fixed', 'adaptive'], request_id: str) -> CallToolResult:
-        """Physically orient the held OBJECT to absolute Base-frame [x,y,z] angles in degrees, Rz Ry Rx, and keep holding. Requires user intent. Not a relative rotation or a TCP target. fixed preserves only final TCP position; adaptive may translate. Use the current held object's identity/version. Returns an async task; query get_task, then read the updated orientation_version before placing or reorienting again. No gripper force/opening overrides; do not automatically retry failed motion."""
+                       target_rpy_deg: RPYDegrees, position_mode: Literal['fixed', 'adaptive'], request_id: str,
+                       max_rotation_step_deg: Annotated[float,Field(strict=True,ge=1,le=15)]=15.) -> CallToolResult:
+        """Physically orient the held OBJECT to absolute Base-frame [x,y,z] angles in degrees, Rz Ry Rx, and keep holding. Requires user intent. Not a relative rotation or a TCP target. fixed preserves only final TCP position; adaptive may translate. Use the current held object's identity/version. Returns an async task; query get_task, then read the updated orientation_version before placing or reorienting again. Backend enforces rotation segments <=15 degrees; max_rotation_step_deg may reduce to 10 or 5. No gripper force/opening overrides. After failure, only recovery.can_replan=true permits planning again with the returned hold version; never replay the same failed plan."""
         return await action('reorient', request_id, {'object_id':object_id,'hold_id':hold_id,
-            'orientation_version':orientation_version,'target_rpy_deg':target_rpy_deg,'position_mode':position_mode})
+            'orientation_version':orientation_version,'target_rpy_deg':target_rpy_deg,'position_mode':position_mode,'max_rotation_step_deg':max_rotation_step_deg})
 
     @server.tool(annotations=write)
     async def reset_arm(target: Literal['observation', 'zero'], request_id: str) -> CallToolResult:

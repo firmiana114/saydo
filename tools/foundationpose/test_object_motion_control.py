@@ -75,7 +75,7 @@ class ObjectControlTests(unittest.TestCase):
         plan=self.planned(self.args({'target_position_m':[.4,-.1,.3],'target_rpy_deg':[0,0,30]}))
         status=self.execute(plan);self.assertEqual(status['state'],'completed',status.get('error'))
         self.assertEqual(self.service.held_object['orientation_version'],1)
-        self.assertEqual([x[0] for x in self.calls],['movej','movej'])
+        self.assertEqual([x[0] for x in self.calls],['movej','movej','movej'])
         self.robot.move_joint_pose.assert_not_called();self.robot.move_gripper.assert_not_called()
         self.assertTrue(all(x[2]==25 for x in self.calls));self.calls.clear()
         args=self.args();args.update(goal=None,retreat_vector_base_m=[0,0,.05])

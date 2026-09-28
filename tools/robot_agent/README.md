@@ -45,11 +45,11 @@
 
 ## 姿态调整参数
 
-`preview_reorient` 和 `reorient` 均需要6项参数：`object_id`、`hold_id`、`orientation_version`、`target_rpy_deg`、`position_mode`、`request_id`。前三项从最新 `get_status.grasp.held_object` 读取；`target_rpy_deg=[X,Y,Z]` 为物品模型相对零偏移 Base 基座的绝对朝向，单位度，每项在−180到180之间，转换顺序为 `Rz(Z) @ Ry(Y) @ Rx(X)`。不是相对增量，也不是TCP朝向，不能默认零角度等于物品直立。
+`preview_reorient` 和 `reorient` 基础参数为6项，另支持max_rotation_step_deg（默认15，范围1–15）：`object_id`、`hold_id`、`orientation_version`、`target_rpy_deg`、`position_mode`、`request_id`。前三项从最新 `get_status.grasp.held_object` 读取；`target_rpy_deg=[X,Y,Z]` 为物品模型相对零偏移 Base 基座的绝对朝向，单位度，每项在−180到180之间，转换顺序为 `Rz(Z) @ Ry(Y) @ Rx(X)`。不是相对增量，也不是TCP朝向，不能默认零角度等于物品直立。
 
 `position_mode` 必须为 `fixed` 或 `adaptive`：前者只固定TCP最终位置，不保证中途位置恒定；后者允许现有后端搜索移位。后端从匹配的夹持记录取得模型摘要，继续核对实际模型、工具、夹持、工作区/桌面、运动学与到位反馈，不接受速度、力度或开度覆盖。
 
-工具返回异步任务编号，使用 `get_task` 等待。预览终态为 `reorient_preview`，不修改夹持朝向版本；成功执行为 `completed`，保持同一 `hold_id`，`orientation_version` 加1。结果包含 `reorientation_plan` 与最新 `held_object.current_object_rotation`，后者是基座坐标系中的物品旋转矩阵。后续放置/调整使用新版本；旧请求重复提交仍按原 `request_id` 返回原任务，不会再次运动。实际动作失败后不得自动重复尝试。
+工具返回异步任务编号，使用 `get_task` 等待。预览终态为 `reorient_preview`，不修改夹持朝向版本；成功执行为 `completed`，保持同一 `hold_id`，`orientation_version` 加1。结果包含 `reorientation_plan` 与最新 `held_object.current_object_rotation`，后者是基座坐标系中的物品旋转矩阵。后续放置/调整使用新版本；旧请求重复提交仍按原 `request_id` 返回原任务，不会再次运动。实际动作失败后禁止重放原方案；只有result.recovery.can_replan=true才允许按新夹持版本重新规划原目标。旧入口也按最大15度分段，通过正逆解核验的关节解用movej逐段执行，保留固定TCP终点语义。MCP客户端须遵守每目标5次规划/3次执行预算；SayDo在程序中强制计数。
 
 ## 夹法参数输出
 

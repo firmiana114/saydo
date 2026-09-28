@@ -17,6 +17,7 @@ from grasp_robot import RobotClient
 from motion_validation import wait_for_pose
 from reorientation_visual import model_appearance
 from pose_symmetry import object_bounds
+from rotation_steps import checked_step
 from reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request
 
 
@@ -81,7 +82,7 @@ class ReorientationMixin:
                                       if geometry['holding'] else None)
         geometry['preview_mode'] = 'adaptive_or_fixed_orientation'
         geometry['minimum_final_clearance_m'] = .10
-        geometry['motion_command'] = 'movej_p'
+        geometry['motion_command'] = 'movej_verified_joint_solutions'
         return geometry
 
     def start_reorient(self, value, preview=False):
@@ -99,11 +100,12 @@ class ReorientationMixin:
             if 'max_shift_m' in value:
                 raise ValueError('自适应位置已取消位移上限，请刷新页面后重试')
             position_mode=checked_position_request(value.get('position_mode','fixed'))
+            step=checked_step(value.get('max_rotation_step_deg',15.))
             self.cancelled.clear();self.actuated=False;self.robot=None
             self.status.update(state='reorient_planning',operation='reorient',busy=True,error=None,plan=None,
-                               reorientation_plan=None,target_object_id=held['object_id'],
+                               reorientation_plan=None,recovery=None,diagnostics_ref=None,target_object_id=held['object_id'],
                                message='正在检查目标姿态与最终离桌高度…' if position_mode=='adaptive' else '正在检查固定终点位置下的目标姿态…')
-            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview,position_mode),daemon=True)
+            self.thread = threading.Thread(target=self.run_reorient,args=(held,rotation.tolist(),preview,position_mode,step),daemon=True)
             self.thread.start()
         return {'accepted':True,'mode':'preview' if preview or self.mode=='preview' else 'execute'}
 
@@ -192,7 +194,7 @@ class ReorientationMixin:
                 if self.held_object is None or self.held_object['hold_id'] != held['hold_id']:
                     raise ValueError('核对期间夹持记录已变化')
                 self.held_object = updated
-            record.update(retained=True, current_arm=arm, controller_errors=arm.get('err'),
+            record.update(retained=True, stationary_observed=True, current_arm=arm, controller_errors=arm.get('err'),
                           orientation_version=updated['orientation_version'])
             return True
         except Exception as error:
@@ -252,7 +254,7 @@ class ReorientationMixin:
             (directory/f'{time.time_ns()}.json').write_text(json.dumps(recovery,ensure_ascii=False,indent=2))
         return recovery['restored']
 
-    def run_reorient(self, held, rotation, preview=False, position_mode='fixed'):
+    def run_reorient(self, held, rotation, preview=False, position_mode='fixed', max_rotation_step_deg=15.):
         mode='preview' if preview else self.mode
         report={'started_at':time.time(),'operation':'reorient','mode':mode,'held_object':held,
                 'requested_rotation':rotation,'position_mode':position_mode,'robot_motion_sent':False,'active_stage':'姿态调整前检查'}
@@ -264,7 +266,10 @@ class ReorientationMixin:
             config=held_clearance_config(json.loads(self.config_path.read_text()), held)
             settings=reorientation_settings(reorientation_speed_settings(config,
                 json.loads((self.root/'config/grasp/reorientation.json').read_text())))
+            settings['max_rotation_step_deg']=checked_step(max_rotation_step_deg)
             report['settings']=settings
+            report['configuration_binding']=self.motion_binding(config)
+            if held.get('scene_id'):self.validate_scene(held['scene_id'],config)
             self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=mode=='execute')
             self.robot.motion_log=report.setdefault('motion_events',[])
             self.check_cancel()
@@ -289,7 +294,7 @@ class ReorientationMixin:
             self.update(reorientation_plan=plan)
             self.check_cancel()
             if mode!='execute':
-                self.update(state='reorient_preview',message=f"方案已生成：末端移位 {plan['offset_distance_m']*100:.1f} 厘米后调整至指定姿态，继续夹持；未发送运动。")
+                self.update(state='reorient_preview',message=f"方案已生成：共{len(plan['waypoints'])}个路点，旋转段最大{settings['max_rotation_step_deg']:g}度；末端移位 {plan['offset_distance_m']*100:.1f} 厘米，未发送运动。")
                 return
             if np.max(np.abs(np.asarray(self.arm_state()['joint'])-arm['joint']))>30:
                 raise ValueError('机械臂在姿态调整规划后发生移动')
@@ -298,23 +303,28 @@ class ReorientationMixin:
         except Exception as error:
             retained = False
             if self.actuated:
-                try:self.robot.stop()
+                try:self.robot.stop();report['stop_acknowledged']=True
                 except Exception as stop_error:report['stop_error']=str(stop_error)
                 retained = self.retain_reorientation_hold(held, config, report)
             detail=f"{report['active_stage']}：{error}"
             report.update(error=detail,error_type=type(error).__name__,traceback=traceback.format_exc())
             message = detail
             if retained:
-                message += '；夹持记录已保留，可重新选择目标姿态后再试。'
+                message += '；夹持记录已保留，是否可自动重新规划见恢复检查。'
                 if any(report['hold_retention'].get('controller_errors') or []):
                     message += '控制器仍有错误，执行前需先恢复设备状态。'
+            recovery=self.assess_motion_recovery(held,config,report) if 'config' in locals() else {'can_replan':False}
             self.update(state='cancelled' if self.cancelled.is_set() else 'failed',message=message,error=detail,
-                        reorientation_plan=None, reorientation_retry_available=retained or self.held_object is not None)
+                        recovery=recovery,reorientation_plan=None, reorientation_retry_available=retained or self.held_object is not None)
         finally:
             report['result']={**self.status,'busy':False}
             try:
                 directory.mkdir(parents=True,exist_ok=True)
-                (directory/f'{time.time_ns()}.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+                filename=f'{time.time_ns()}.json'
+                (directory/filename).write_text(json.dumps(report,ensure_ascii=False,indent=2))
+                self.update(diagnostics_ref={'directory':'reorient_jobs','file':filename})
+            except Exception as error:
+                self.update(state='failed',error='诊断记录失败：'+str(error),recovery={'can_replan':False,'outcome_unknown':True})
             finally:
                 if robot_lock is not None:robot_lock.close()
                 self.update(busy=False)
@@ -329,13 +339,15 @@ class ReorientationMixin:
         if points.ndim!=2 or points.shape[1]!=3 or not len(points) or not np.isfinite(points).all():
             raise ValueError('缺少有效的物品模型，不能监测运动中桌面碰撞')
         attachment_inv=np.linalg.inv(transform(held['object_T_tcp']))
-        report['motion_validation_scope']='movej_p_endpoints_and_live_feedback_not_full_path'
-        reached = None
-        for target in plan['waypoints']:
+        report['motion_validation_scope']='segmented_verified_movej_endpoints_and_live_feedback_not_full_path'
+        reached = None;deadline=time.monotonic()+90
+        for index,target in enumerate(plan['waypoints'],1):
+            report['active_waypoint_index']=index
             end = np.asarray(target['position_m'])
             translating = target['name']=='translate'
             def read_motion_state():
                 self.check_cancel()
+                if time.monotonic()>deadline:raise TimeoutError('调姿执行超过90秒预算')
                 actual = self.arm_state()
                 pose = controller_pose(actual['pose'])
                 # A controller-planned joint move may curve in Cartesian space and change orientation in transit.
@@ -354,18 +366,24 @@ class ReorientationMixin:
             reached=watchdog()
             if np.linalg.norm(reached[:3,3]-start)>tolerance:
                 raise ValueError('末端已离开本段规划起点')
-            self.verify_motion_targets(plan,config,report,self.arm_state(),[target])
+            detail=self.verify_motion_targets(plan,config,report,self.arm_state(),[target])
+            solutions=detail.get('joint_solutions_deg') if isinstance(detail,dict) else None
+            if not solutions or len(solutions[-1])!=7 or not np.isfinite(solutions[-1]).all():raise ValueError('缺少已验证的关节解')
+            joint_target=np.rint(np.asarray(solutions[-1])*1000).astype(int).tolist()
             self.actuated = True
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            self.robot.move_joint_pose(target['controller_pose'],settings['arm_speed_percent'],self.cancelled,watchdog)
+            report.setdefault('commanded_joint_targets',[]).append({'stage':target['name'],'joint_raw':joint_target})
+            self.robot.move_joints(joint_target,settings['arm_speed_percent'],self.cancelled,watchdog)
             def arrival_state():
                 return read_motion_state()
             check={'stage':report['active_stage']}
             report.setdefault('arrival_checks',[]).append(check)
             actual=wait_for_pose(arrival_state,target['controller_pose'],self.check_cancel,check,
                                  tolerance,np.deg2rad(settings['orientation_tolerance_deg']))
+            if np.max(np.abs(np.asarray(actual['joint'])-joint_target))>500:raise ValueError('未到达所选关节解')
             reached=controller_pose(actual['pose'])
+            report['completed_waypoints']=report.get('completed_waypoints',0)+1
             start=end
         if plan.get('position_mode')=='adaptive' and reached[2,3]<=plan['table_z_m']+plan['minimum_final_clearance_m']:
             raise ValueError('实际末端最终高度未高于桌面 10 厘米，停止本次任务')

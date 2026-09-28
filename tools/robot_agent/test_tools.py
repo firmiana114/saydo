@@ -89,7 +89,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             for name in ('preview_reorient','reorient'):
                 result=await client.call_tool(name,args)
                 self.assertFalse(result.is_error)
-                self.assertEqual(backend.calls[-1][1],{'operation':name,'request_id':args['request_id'],'arguments':{k:v for k,v in args.items() if k!='request_id'}})
+                self.assertEqual(backend.calls[-1][1],{'operation':name,'request_id':args['request_id'],'arguments':{**{k:v for k,v in args.items() if k!='request_id'},'max_rotation_step_deg':15.}})
             count=len(backend.calls)
             for override in ({'target_rpy_deg':[0,0]}, {'target_rpy_deg':[0,0,181]}, {'target_rpy_deg':[0,True,0]}, {'orientation_version':True}, {'position_mode':'anywhere'}):
                 result=await client.call_tool('reorient',{**args,**override})

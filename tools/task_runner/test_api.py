@@ -48,7 +48,7 @@ class APITests(unittest.TestCase):
         for _ in range(100):
             _, body = self.request('GET', '/api/task-runs/'+ident)
             run = json.loads(body)
-            if run['state'] != 'running':
+            if run['state'] != 'running' and run.get('events') and run['events'][-1]['event']=='final':
                 break
             time.sleep(.01)
         self.assertEqual(run['state'], 'succeeded')

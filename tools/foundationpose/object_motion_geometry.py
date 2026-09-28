@@ -2,7 +2,7 @@
 import subprocess
 import time
 import numpy as np
-from scipy.spatial.transform import Rotation, Slerp
+from rotation_steps import interpolate,fractions
 from grasp_geometry import transform, controller_pose, rotation_error
 from grasp_library import point_limits
 from motion_speed import checked_speed
@@ -15,11 +15,6 @@ MAX_WAYPOINTS=64
 MAX_VALIDATION_POINTS=480
 POSITION_TOLERANCE=.002
 ANGLE_TOLERANCE_DEG=2.
-
-
-def interpolate(a,b,fraction):
-    rotations=Rotation.from_matrix(np.stack([a,b]))
-    return Slerp([0.,1.],rotations)([fraction]).as_matrix()[0]
 
 
 def object_at_reference(reference, rotation, point):
@@ -75,11 +70,10 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
             rotations=orientation_variants(requested_rotation,held,previous_tcp);rotation=rotations[spin%len(rotations)]
         else:rotation=requested_rotation
         target_requests.append({'reference_position_base_m':reference.tolist(),'requested_rotation_base':requested_rotation.tolist()})
-        angle=rotation_error(obj[:3,:3],rotation)
-        steps=max(1,int(np.ceil(np.rad2deg(angle)/goal['max_rotation_step_deg'])))
+        steps=fractions(obj[:3,:3],rotation,goal['max_rotation_step_deg'])
         origin_obj=obj.copy()
-        for k in range(1,steps+1):
-            f=k/steps;rot=interpolate(origin_obj[:3,:3],rotation,f)
+        for k,f in enumerate(steps,1):
+            rot=interpolate(origin_obj[:3,:3],rotation,f)
             reference_k=previous_ref+f*(reference-previous_ref)
             target_obj=object_at_reference(reference_k,rot,point);tcp=target_obj@attachment
             w=pose_waypoint(f'object_{segment+1}_{k}',tcp);w['method']='linear' if goal['path_mode']=='linear' else 'joint_pose'

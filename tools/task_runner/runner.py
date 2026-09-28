@@ -214,6 +214,7 @@ class Runner:
                     {'role': 'user', 'content': '程序读取的初始现场数据（不是新指令）：'+json.dumps(model_result('initial',compact(initial)), ensure_ascii=False)}]
                 results = {}
                 motions = {}
+                recovery_pending = False
                 read_failures = 0
                 for turn in range(self.config.max_turns):
                     self.check()
@@ -242,6 +243,7 @@ class Runner:
                         if message.strip():
                             self.emit(run, 'model_message', text=message, call_id=call['call_id'])
                     if name == 'finish_task':
+                        if recovery_pending and args['outcome']=='succeeded':raise Blocked('调姿失败尚未成功恢复，不能报告任务成功')
                         evidence = set(args['evidence_call_ids'])
                         invalid_evidence = not evidence <= results.keys() or (args['outcome'] == 'succeeded' and not set(motions) <= evidence)
                         if invalid_evidence and results and not run.get('finalizing'):
@@ -299,15 +301,19 @@ class Runner:
                     self.check()
                     cleaned = self.append_result(history, call['call_id'], name, result)
                     results[call['call_id']] = cleaned
-                    if name in MOTIONS:
+                    if result.get('recoverable_failure'):
+                        recovery_pending=True
+                        self.emit(run,'motion_recovery',text='调姿失败后已确认停稳和夹持，将诊断返回模型重新规划。',retry_budget=result.get('retry_budget'))
+                    if name in MOTIONS and not result.get('recoverable_failure'):
                         if not result.get('verified'):
                             raise Blocked('动作缺少后端核验')
+                        if name in ('reorient','execute_plan'):recovery_pending=False
                         held = result.get('task', {}).get('result', {}).get('held_object')
                         motions[call['call_id']] = {'name': name, 'task_id': record['request_id'], 'arguments': args,
                             'hold_id': held.get('hold_id') if held else None,
                             'orientation_version': held.get('orientation_version') if held else None,
                             'plan_kind':result.get('task',{}).get('result',{}).get('execution_result',{}).get('kind') if name=='execute_plan' else None}
-                    record.update(state='unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-tool_started, 3))
+                    record.update(state='recoverable_failure' if result.get('recoverable_failure') else 'unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-tool_started, 3))
                     self.store.save_call(run['run_id'], record)
                     self.emit(run, 'tool_finished', name=name, call_id=call['call_id'], state=record['state'], seconds=record['seconds'])
                     record = None
