@@ -15,6 +15,11 @@ class ConnectionNotSent(LLMError):
     pass
 
 
+class ResponseTimeout(LLMError):
+    """No complete model response; partial output must never be dispatched."""
+    pass
+
+
 class ModelUnavailable(LLMError):
     pass
 
@@ -50,6 +55,9 @@ class LLMClient:
                 if self.can_retry_connection(error,diagnostics):
                     diagnostics.data['retryable_connection_failure']=True
                     raise ConnectionNotSent(diagnostics.failure_message(isinstance(error,(TimeoutError,httpx.TimeoutException))).removesuffix('；未自动重试')) from error
+                if isinstance(error,(TimeoutError,httpx.ReadTimeout)) and diagnostics.data['phase'] in ('waiting_headers','reading_body') and diagnostics.data.get('http_status',200)==200:
+                    diagnostics.data['retryable_response_timeout']=True
+                    raise ResponseTimeout(diagnostics.failure_message(True).removesuffix('；未自动重试')) from error
                 raise LLMError(diagnostics.failure_message(isinstance(error,(TimeoutError,httpx.TimeoutException)))) from error
             diagnostics.mark('parsing')
             return self.parse_response(response,raw,diagnostics)

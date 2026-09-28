@@ -29,13 +29,13 @@ function entries(run,now=Date.now()/1000){
    const pending=!end&&run.state==='running';
    row.title=`LLM 调用 #${event.invocation} · 第 ${event.turn} 轮 · ${event.model}${event.reasoning_effort?` · 推理${effortLabels[event.reasoning_effort]||event.reasoning_effort}`:''}`;
    row.text=end?`${outcomes[end.outcome]||end.outcome} · 调用耗时 ${seconds(end.seconds)}`:pending?`等待响应 · 已用 ${seconds(Math.max(0,now-event.at))}`:'已中断 · 耗时未完整记录';
-   if(event.connection_attempt>1)row.title+=` · 连接尝试 ${event.connection_attempt}/${event.max_connection_attempts}`;
+   if(event.connection_attempt>1)row.title+=` · 请求尝试 ${event.connection_attempt}/${event.max_connection_attempts}`;
    row.text+=requestDetails(end?.diagnostics||event.diagnostics);
    row.kind=pending?'llm-pending':'llm';
   }else if(event.event==='llm'){
    continue;
-  }else if(event.event==='llm_connection_retry'){
-   row.title='连接重试';row.text=event.text;
+  }else if(['llm_connection_retry','llm_response_retry'].includes(event.event)){
+   row.title=event.event==='llm_response_retry'?'模型响应重试':'连接重试';row.text=event.text;
   }else if(event.event==='planning_argument_error'){
    row.title='规划参数需修正';row.text=event.text;
    if(event.retry_budget)row.text+=` 规划尝试 ${event.retry_budget.planning_attempts}/5。`;

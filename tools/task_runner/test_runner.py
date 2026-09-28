@@ -241,7 +241,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_llm_timeout_does_not_mark_motion_unknown_or_send_stop(self):
         self.config.run_timeout = .02
-        result, runner = await self.execute(FakeLLM('wait'))
+        result, runner = await self.execute(FakeLLM(LLMError('模型请求已尝试5次，达到上限')))
         self.assertFalse(runner.uncertain)
         self.assertEqual(self.adapter.stops, 0)
         self.assertEqual(result['state'], 'failed')

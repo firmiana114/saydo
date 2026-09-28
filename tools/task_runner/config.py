@@ -47,7 +47,7 @@ class Config:
     mode: str = 'execute'
     state_dir: Path = ROOT/'work/task_runner'
     max_turns: int = 20
-    run_timeout: float = 600
+    run_timeout: float = 600  # Backend/orchestration budget; bounded model waiting is excluded.
     action_timeout: float = 120
     vision_timeout: float = 90
     llm_timeout: float = 90

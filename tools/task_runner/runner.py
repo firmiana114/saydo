@@ -3,7 +3,7 @@ import asyncio
 import json
 from pathlib import Path
 import time
-from .llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent
+from .llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent, ResponseTimeout
 from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError, model_result
 from .tool_registry import schemas, validate, MOTIONS, READS
 from .config import UI_MODELS, UI_REASONING_EFFORTS
@@ -118,6 +118,19 @@ class Runner:
             raise Cancelled()
 
     async def model_response(self, history, run, turn):
+        # The 600 s budget covers backend work, not bounded model waiting.
+        # Each response attempt retains its own 90 s deadline and cancellation.
+        timer=getattr(self,'run_deadline',None)
+        deadline=timer.when() if timer is not None else None
+        before=time.monotonic()
+        if timer is not None:timer.reschedule(None)
+        try:
+            return await self._model_response(history,run,turn)
+        finally:
+            if timer is not None and not timer.expired():
+                timer.reschedule(deadline+time.monotonic()-before)
+
+    async def _model_response(self, history, run, turn):
         try:
             return await self.model_call(history, run, turn)
         except ModelUnavailable:
@@ -133,15 +146,15 @@ class Runner:
             self.check()
             try:
                 return await self.model_attempt(history,run,turn,attempt)
-            except ConnectionNotSent as error:
+            except (ConnectionNotSent,ResponseTimeout) as error:
                 self.check()
                 if attempt==CONNECTION_ATTEMPTS:
-                    raise LLMError(f'{error}；连接已尝试{CONNECTION_ATTEMPTS}次，达到上限') from error
+                    raise LLMError(f'{error}；模型请求已尝试{CONNECTION_ATTEMPTS}次，达到上限') from error
                 delay=CONNECTION_RETRY_DELAYS[attempt-1]
-                self.emit(run,'llm_connection_retry',turn=turn+1,failed_attempt=attempt,
+                self.emit(run,'llm_response_retry' if isinstance(error,ResponseTimeout) else 'llm_connection_retry',turn=turn+1,failed_attempt=attempt,
                     next_attempt=attempt+1,max_attempts=CONNECTION_ATTEMPTS,delay_s=delay,
-                    text=f'模型连接失败，请求尚未上传；{delay}秒后进行第{attempt+1}/{CONNECTION_ATTEMPTS}次尝试。')
-                # Cancellable wait: stopping/whole-task timeout prevents another request.
+                    text=('等待模型响应超时，未执行本次响应中的任何工具；' if isinstance(error,ResponseTimeout) else '模型连接失败，请求尚未上传；')+f'{delay}秒后进行第{attempt+1}/{CONNECTION_ATTEMPTS}次尝试。')
+                # Cancellable backoff; this never dispatches robot tools.
                 try:await asyncio.wait_for(self.cancelled.wait(),timeout=delay)
                 except TimeoutError:pass
                 self.check()
@@ -215,7 +228,7 @@ class Runner:
         record = None
         tool_started = None
         try:
-            async with asyncio.timeout(self.config.run_timeout):
+            async with asyncio.timeout(self.config.run_timeout) as self.run_deadline:
                 initial = await self.adapter.initial()
                 self.check()
                 history = [{'role': 'user', 'content': run['instruction']},
