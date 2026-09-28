@@ -237,7 +237,7 @@ class ObjectMotionMixin:
                         delta=end[:3,3]-start_pose[:3,3]
                         fraction=np.clip(np.dot(pose[:3,3]-start_pose[:3,3],delta)/max(np.dot(delta,delta),1e-12),0,1)
                         if np.linalg.norm(pose[:3,3]-start_pose[:3,3]-fraction*delta)>.01:raise ValueError('实际反馈偏离规划直线超过10毫米')
-                        if rotation_error(start_pose[:3,:3],end[:3,:3])<1e-6 and rotation_error(pose[:3,:3],end[:3,:3])>np.deg2rad(plan['orientation_tolerance_deg']):raise ValueError('直线段实际朝向偏离目标')
+                        if (target['name'].startswith(('transfer_','release_preplacement','release_descent')) or rotation_error(start_pose[:3,:3],end[:3,:3])<1e-6) and rotation_error(pose[:3,:3],end[:3,:3])>np.deg2rad(plan['orientation_tolerance_deg']):raise ValueError('直线段实际朝向偏离目标')
                     return feedback
                 joint_target=None
                 if target['method']=='linear':

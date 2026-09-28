@@ -89,6 +89,26 @@ class ObjectGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(np.array(p['waypoints'][-2]['reference_position_base_m'])-p['waypoints'][-1]['reference_position_base_m'],[0,0,.12])
         with self.assertRaises(ValueError):self.plan({'target_position_m':[.4,0,.95]},release=True)
 
+    def test_combined_goal_always_orients_before_translation(self):
+        for release in (False,True):
+            p=self.plan({'target_position_m':[.4,-.1,.3],'target_rpy_deg':[0,60,0],
+                         'waypoints':[{'position_m':[.35,-.1,.35],'rpy_deg':None}]},release=release)
+            point=np.array(p['reference_point_object_m']);start=np.array(p['base_T_object_start'])
+            start_ref=start[:3,3]+start[:3,:3]@point;target=np.array(p['base_T_object_target'])[:3,:3]
+            translating=False;orientation_steps=0
+            for w in p['waypoints']:
+                obj=np.array(w['object_pose']);ref=obj[:3,3]+obj[:3,:3]@point
+                if w['name'].startswith(('orient_','release_orientation')):
+                    self.assertFalse(translating)
+                    np.testing.assert_allclose(ref,start_ref,atol=1e-9);orientation_steps+=1
+                else:
+                    translating=True;self.assertEqual(w['method'],'linear')
+                    np.testing.assert_allclose(obj[:3,:3],target,atol=1e-9)
+            self.assertGreater(orientation_steps,1)
+            self.assertTrue(translating)
+        with self.assertRaisesRegex(ValueError,'中间路点不得'):
+            self.plan({'target_rpy_deg':[0,60,0],'waypoints':[{'position_m':[.3,0,.3],'rpy_deg':[0,20,0]}]})
+
     def test_release_current_pose_and_retreat(self):
         p=self.plan(None,release=True,retreat=[0,0,.05]);self.assertEqual(p['kind'],'release');self.assertEqual(p['waypoint_count'],2)
         self.assertAlmostEqual(p['retreat_waypoint']['position_m'][2],.30)

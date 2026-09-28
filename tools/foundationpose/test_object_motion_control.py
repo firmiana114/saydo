@@ -75,13 +75,13 @@ class ObjectControlTests(unittest.TestCase):
         plan=self.planned(self.args({'target_position_m':[.4,-.1,.3],'target_rpy_deg':[0,0,30]}))
         status=self.execute(plan);self.assertEqual(status['state'],'completed',status.get('error'))
         self.assertEqual(self.service.held_object['orientation_version'],1)
-        self.assertEqual([x[0] for x in self.calls],['movej','movej','movej'])
+        self.assertEqual([x[0] for x in self.calls],['movej','movej','movej','movel'])
         self.robot.move_joint_pose.assert_not_called();self.robot.move_gripper.assert_not_called()
         self.assertTrue(all(x[2]==25 for x in self.calls));self.calls.clear()
         args=self.args();args.update(goal=None,retreat_vector_base_m=[0,0,.05])
         plan=self.planned(args,True);before=controller_pose(self.arm['pose'])
         status=self.execute(plan,'release-001');self.assertEqual(status['state'],'completed',status.get('error'))
-        self.assertIsNone(self.service.held_object);self.assertEqual([x[0] for x in self.calls],['movej','movel','open','movel'])
+        self.assertIsNone(self.service.held_object);self.assertEqual([x[0] for x in self.calls],['movel','movel','open','movel'])
         np.testing.assert_allclose(controller_pose(self.arm['pose'])[:3,3],before[:3,3]+[0,0,.05],atol=1e-6)
         result=status['execution_result'];self.assertTrue(result['release_confirmed']);self.assertFalse(result['object_settled_pose_verified'])
 
@@ -95,7 +95,10 @@ class ObjectControlTests(unittest.TestCase):
 
     def test_descent_failure_never_opens_gripper(self):
         plan=self.planned(self.args({'target_position_m':[.4,-.1,.3]}),True)
-        def fail_descent(*args):raise RuntimeError('descent failed')
+        original=self.robot.move_linear.side_effect
+        def fail_descent(*args):
+            if self.robot.motion_stage.startswith('release_descent'):raise RuntimeError('descent failed')
+            return original(*args)
         self.robot.move_linear.side_effect=fail_descent
         status=self.execute(plan)
         self.assertEqual(status['state'],'failed')

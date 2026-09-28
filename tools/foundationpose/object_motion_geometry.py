@@ -58,6 +58,16 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
     rows=list(goal['waypoints'])
     if goal['target_position_m'] is not None or goal['target_rpy_deg'] is not None or not rows:
         rows.append({'position_m':goal['target_position_m'],'rpy_deg':goal['target_rpy_deg']})
+    # One final orientation for the whole operation; intermediate points may
+    # change position only. Resolve it before any translation can be planned.
+    rows=[dict(row) for row in rows]
+    orientations=[row['rpy_deg'] for row in rows if row['rpy_deg'] is not None]
+    if orientations:
+        final_rpy=orientations[-1]
+        if any(rotation_error(rotation_from_rpy_deg(r),rotation_from_rpy_deg(final_rpy))>1e-6 for r in orientations):
+            raise ValueError('中间路点不得改变最终目标朝向；先调姿，再保持朝向搬运')
+        rows[0]['rpy_deg']=final_rpy
+    chosen_rotation=None
     waypoints=[];validation=[];previous_tcp=current;target_requests=[]
     for segment,row in enumerate(rows):
         previous_ref=obj[:3,3]+obj[:3,:3]@point
@@ -66,16 +76,19 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
         requested_rotation=frame[:3,:3]@rotation_from_rpy_deg(row['rpy_deg']) if row['rpy_deg'] is not None else obj[:3,:3]
         # Only explicit orientation goals permit free-spin search. Position-only
         # moves keep the current representative/TCP orientation unchanged.
-        if row['rpy_deg'] is not None and held.get('pose_mode')=='5d':
+        if chosen_rotation is not None:rotation=chosen_rotation
+        elif row['rpy_deg'] is not None and held.get('pose_mode')=='5d':
             rotations=orientation_variants(requested_rotation,held,previous_tcp);rotation=rotations[spin%len(rotations)]
         else:rotation=requested_rotation
+        chosen_rotation=rotation.copy()
         target_requests.append({'reference_position_base_m':reference.tolist(),'requested_rotation_base':requested_rotation.tolist()})
         method='linear' if goal['path_mode']=='linear' else 'joint_pose'
-        stages=[(reference,method,f'object_{segment+1}')]
+        stages=[(previous_ref,method,f'orient_{segment+1}'),(reference,'linear',f'transfer_{segment+1}')]
         if release and segment==len(rows)-1:
             height=float(config.get('release_preplacement_height_m',.1))
             if not np.isfinite(height) or not .01<=height<=.3:raise ValueError('预放置高度须为10至300毫米')
-            stages=[(reference+np.array([0,0,height]),method,'release_preplacement'),
+            stages=[(previous_ref,method,'release_orientation'),
+                    (reference+np.array([0,0,height]),'linear','release_preplacement'),
                     (reference,'linear','release_descent')]
         for stage_ref,stage_method,label in stages:
             previous_ref=obj[:3,3]+obj[:3,:3]@point
@@ -108,12 +121,12 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
             'current_arm':arm,'base_T_object_start':start_obj.tolist(),'base_T_object_target':obj.tolist(),
             'reference_point_object_m':point.tolist(),'target_reference_position_base_m':final_ref.tolist(),
             'reference_frame_pose':frame.tolist(),'target_requests':target_requests,'waypoints':waypoints,
-            'waypoint_count':len(waypoints),'position_constraint_scope':'commanded_waypoint_endpoints','validation_points':validation,'retreat_waypoint':retreat_target,
+            'waypoint_count':len(waypoints),'position_constraint_scope':'commanded_waypoint_endpoints','stage_policy':'orient_then_translate_then_release','validation_points':validation,'retreat_waypoint':retreat_target,
             'retreat_vector_base_m':retreat.tolist(),'speed_percent':checked_speed(config['arm_speed_percent']),
             'position_tolerance_m':POSITION_TOLERANCE,'orientation_tolerance_deg':ANGLE_TOLERANCE_DEG,
             'gripper_action':'open_after_arrival' if release else 'keep_holding','max_execution_duration_s':90,
             'validation_scope':{'ik_fk':True,'self_collision_at_samples':True,'tcp_workspace':True,'object_table_clearance':True,
-                'linear_path_sampled':release or goal['path_mode']=='linear','joint_intermediate_path_checked':False,
+                'linear_path_sampled':True,'joint_intermediate_path_checked':False,
                 'gripper_collision_checked':False,'environment_collision_checked':False,'object_support_checked':False},
             'release_preplacement_height_m':float(config.get('release_preplacement_height_m',.1)) if release else None,
             'release_semantics':'target pose before opening; settled pose after release not verified' if release else None}
