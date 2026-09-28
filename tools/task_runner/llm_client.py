@@ -15,7 +15,12 @@ class ConnectionNotSent(LLMError):
     pass
 
 
-class ResponseTimeout(LLMError):
+class ResponseFailure(LLMError):
+    """Retryable transport failure while awaiting a complete model response."""
+    pass
+
+
+class ResponseTimeout(ResponseFailure):
     """No complete model response; partial output must never be dispatched."""
     pass
 
@@ -58,6 +63,9 @@ class LLMClient:
                 if isinstance(error,(TimeoutError,httpx.ReadTimeout)) and diagnostics.data['phase'] in ('waiting_headers','reading_body') and diagnostics.data.get('http_status',200)==200:
                     diagnostics.data['retryable_response_timeout']=True
                     raise ResponseTimeout(diagnostics.failure_message(True).removesuffix('；未自动重试')) from error
+                if isinstance(error,(httpx.RemoteProtocolError,httpx.ReadError)) and diagnostics.data['phase'] in ('waiting_headers','reading_body') and diagnostics.data.get('http_status',200)==200:
+                    diagnostics.data['retryable_response_failure']=True
+                    raise ResponseFailure(diagnostics.failure_message(False).removesuffix('；未自动重试')) from error
                 raise LLMError(diagnostics.failure_message(isinstance(error,(TimeoutError,httpx.TimeoutException)))) from error
             diagnostics.mark('parsing')
             return self.parse_response(response,raw,diagnostics)

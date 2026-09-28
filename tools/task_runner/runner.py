@@ -3,7 +3,7 @@ import asyncio
 import json
 from pathlib import Path
 import time
-from .llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent, ResponseTimeout
+from .llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent, ResponseTimeout, ResponseFailure
 from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError, model_result
 from .tool_registry import schemas, validate, MOTIONS, READS
 from .config import UI_MODELS, UI_REASONING_EFFORTS
@@ -146,14 +146,17 @@ class Runner:
             self.check()
             try:
                 return await self.model_attempt(history,run,turn,attempt)
-            except (ConnectionNotSent,ResponseTimeout) as error:
+            except (ConnectionNotSent,ResponseFailure) as error:
                 self.check()
                 if attempt==CONNECTION_ATTEMPTS:
                     raise LLMError(f'{error}；模型请求已尝试{CONNECTION_ATTEMPTS}次，达到上限') from error
                 delay=CONNECTION_RETRY_DELAYS[attempt-1]
-                self.emit(run,'llm_response_retry' if isinstance(error,ResponseTimeout) else 'llm_connection_retry',turn=turn+1,failed_attempt=attempt,
+                reason='模型连接失败，请求尚未上传；'
+                if isinstance(error,ResponseFailure):
+                    reason=('等待模型响应超时；' if isinstance(error,ResponseTimeout) else '模型响应传输失败；')+'未执行本次响应中的任何工具；'
+                self.emit(run,'llm_response_retry' if isinstance(error,ResponseFailure) else 'llm_connection_retry',turn=turn+1,failed_attempt=attempt,
                     next_attempt=attempt+1,max_attempts=CONNECTION_ATTEMPTS,delay_s=delay,
-                    text=('等待模型响应超时，未执行本次响应中的任何工具；' if isinstance(error,ResponseTimeout) else '模型连接失败，请求尚未上传；')+f'{delay}秒后进行第{attempt+1}/{CONNECTION_ATTEMPTS}次尝试。')
+                    text=reason+f'{delay}秒后进行第{attempt+1}/{CONNECTION_ATTEMPTS}次尝试。')
                 # Cancellable backoff; this never dispatches robot tools.
                 try:await asyncio.wait_for(self.cancelled.wait(),timeout=delay)
                 except TimeoutError:pass
