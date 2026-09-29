@@ -41,6 +41,10 @@ class GeometryTests(unittest.TestCase):
         inverted=copy.deepcopy(scene);inverted['instances'][1]['base_T_object'][1][1]=-1;inverted['instances'][1]['base_T_object'][2][2]=-1;variants.append((inverted,req))
         moved=copy.deepcopy(scene);moved['instances'][0]['state']='held';variants.append((moved,req))
         variants.append((scene,{**req,'free_slots':['unknown']}))
+        tilted=copy.deepcopy(scene);angle=np.deg2rad(3)
+        tilted['instances'][1]['base_T_object'][0][:3]=[np.cos(angle),0,np.sin(angle)]
+        tilted['instances'][1]['base_T_object'][2][:3]=[-np.sin(angle),0,np.cos(angle)]
+        variants.append((tilted,req))
         small=copy.deepcopy(scene)
         for f in small['instances'][1]['features']:f['diameter_m']=.005
         variants.append((small,req))

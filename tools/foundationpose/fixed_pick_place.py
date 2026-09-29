@@ -57,11 +57,15 @@ def placement_goals(scene, request, geometry):
             raise ValueError('孔位轴线/支撑深度与试管模型不一致：'+slot)
         target=s[:3,3]+[0,0,request['release_gap_m']]
         if target[2]>=e[2,3]:raise ValueError('释放位置没有进入孔内')
+        # The commanded descent is along Base Z, not a tilted hole axis. The
+        # tube's lateral offset while entering must fit the available radius.
+        lateral=(e[2,3]-target[2])*np.sqrt(max(0.,1-frame[2,2]**2))/frame[2,2]
+        if lateral>(hole_diameter-diameter)/2:continue
         goal=checked_goal({'reference_frame':'scene_object','scene_id':scene['scene_id'],
             'reference_instance_id':rack['instance_id'],'reference_point_object_m':[0,0,float(low[2])],
             'target_position_m':target.tolist(),'target_rpy_deg':[0,0,0],'path_mode':'joint','position_mode':'fixed'},True)
         goals.append((slot,goal,frame))
-    if not goals:raise ValueError('没有通过模型直径检查的孔位')
+    if not goals:raise ValueError('没有通过模型直径与竖直下降几何检查的孔位')
     return source,rack,goals
 
 
