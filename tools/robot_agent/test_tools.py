@@ -2,10 +2,12 @@
 import base64
 import json
 import unittest
+from unittest.mock import patch
 
 from mcp import Client
 from client import BackendError
 from server import create_server
+from global_camera import CameraUnavailable
 
 
 class FakeBackend:
@@ -18,13 +20,30 @@ class FakeBackend:
 
 
 class ToolsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_global_observation_is_native_image_without_robot_backend(self):
+        backend=FakeBackend()
+        frame={'image_base64':base64.b64encode(b'fixture').decode(),'mime_type':'image/jpeg',
+               'camera_role':'fixed_global','camera_serial':'344422070678','calibrated_to_robot_base':False}
+        with patch('server.capture_global',return_value=frame):
+            async with Client(create_server(backend)) as client:
+                result=await client.call_tool('observe_global',{})
+        self.assertFalse(result.is_error);self.assertEqual(result.content[0].type,'image')
+        self.assertEqual(result.structured_content['camera_role'],'fixed_global')
+        self.assertNotIn('image_base64',result.structured_content);self.assertEqual(backend.calls,[])
+        with patch('server.capture_global',side_effect=CameraUnavailable('missing')):
+            async with Client(create_server(backend)) as client:
+                result=await client.call_tool('observe_global',{})
+        self.assertTrue(result.is_error);self.assertEqual(len(result.content),1)
+        self.assertEqual(json.loads(result.content[0].text)['code'],'CAMERA_UNAVAILABLE')
+        self.assertEqual(backend.calls,[])
+
     async def test_complete_tool_catalog_and_annotations(self):
         async with Client(create_server(FakeBackend())) as client:
             tools=await client.list_tools()
             tools=tools.tools if hasattr(tools,'tools') else tools
             names={t.name:t for t in tools}
-            self.assertEqual(len(names),26)
-            for name in ['get_camera_frame','get_tracking_candidates_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
+            self.assertEqual(len(names),27)
+            for name in ['observe_global','get_camera_frame','get_tracking_candidates_frame','get_object_pose','get_robot_state','get_task','preview_grasp','preview_place','preview_reorient']:
                 self.assertTrue(names[name].annotations.read_only_hint)
             for name in ['grasp','place','reorient','reset_arm','stop_robot']:
                 self.assertFalse(names[name].annotations.read_only_hint)

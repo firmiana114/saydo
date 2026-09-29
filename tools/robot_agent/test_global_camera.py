@@ -1,0 +1,81 @@
+import base64
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+import unittest
+from unittest.mock import Mock, patch
+
+import global_camera as camera
+
+
+def image_result():
+    return {'camera_serial':'344422070678','camera_role':'fixed_global','captured_at':time.time(),
+            'mime_type':'image/jpeg','image_base64':base64.b64encode(b'\xff\xd8fixture').decode()}
+
+
+class GlobalCameraTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        interpreter = root/'python';interpreter.touch()
+        self.config = root/'global.json'
+        self.settings = {'serial':'344422070678','eye_in_hand_serial':'405622073572',
+                         'python':str(interpreter),'sdk_path':str(root)}
+        self.config.write_text(json.dumps(self.settings))
+
+    def test_fresh_image_identity_and_uncalibrated_contract(self):
+        with patch.object(camera.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps(image_result()))) as run:
+            result=camera.observe_global(self.config)
+        args=run.call_args.args[0]
+        self.assertEqual(args[-2:],['--capture','344422070678'])
+        self.assertEqual(run.call_args.kwargs['timeout'],12)
+        self.assertNotIn('shell',run.call_args.kwargs)
+        self.assertFalse(result['usable_for_robot_target']);self.assertFalse(result['calibrated_to_robot_base'])
+        self.assertTrue(result['observation_only']);self.assertFalse(result['motion_sent'])
+
+    def test_missing_configuration_and_same_camera_never_start_worker(self):
+        with patch.object(camera.subprocess,'run') as run:
+            with self.assertRaises(camera.CameraUnavailable):camera.observe_global(self.config.with_name('missing'))
+            self.config.write_text(json.dumps({**self.settings,'serial':self.settings['eye_in_hand_serial']}))
+            with self.assertRaises(camera.CameraUnavailable):camera.observe_global(self.config)
+            run.assert_not_called()
+
+    def test_stale_wrong_camera_and_invalid_images_rejected(self):
+        for changes in ({'captured_at':time.time()-2},{'captured_at':time.time()+3},
+                        {'camera_serial':'405622073572'},{'camera_role':'eye_in_hand'},
+                        {'image_base64':'not-base64'},{'mime_type':'image/png'}):
+            with self.subTest(changes=changes), patch.object(camera.subprocess,'run',
+                    return_value=Mock(returncode=0,stdout=json.dumps({**image_result(),**changes}))):
+                with self.assertRaises(camera.CameraUnavailable):camera.observe_global(self.config)
+
+    def test_timeout_and_device_errors_have_no_retry_or_fallback(self):
+        with patch.object(camera.subprocess,'run',side_effect=subprocess.TimeoutExpired('capture',12)) as run:
+            with self.assertRaises(camera.CameraUnavailable):camera.observe_global(self.config)
+            run.assert_called_once()
+        with patch.object(camera.subprocess,'run',return_value=Mock(returncode=1,stderr='device busy')) as run:
+            with self.assertRaisesRegex(camera.CameraUnavailable,'device busy'):camera.observe_global(self.config)
+            run.assert_called_once()
+
+    def test_worker_selects_only_fixed_color_stream_and_releases_on_error(self):
+        rs=Mock();device=Mock()
+        device.get_info.side_effect=lambda key: '344422070678' if key==rs.camera_info.serial_number else 'RealSense D435I'
+        rs.context.return_value.query_devices.return_value=[device]
+        rs.pipeline.return_value.start.return_value.get_device.return_value=device
+        rs.pipeline.return_value.wait_for_frames.side_effect=RuntimeError('no frame')
+        with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}),patch.object(camera,'ROOT',Path(self.tmp.name)):
+            with self.assertRaisesRegex(RuntimeError,'no frame'):camera.capture('344422070678')
+        rs.config.return_value.enable_device.assert_called_once_with('344422070678')
+        rs.config.return_value.enable_stream.assert_called_once_with(rs.stream.color,1280,720,rs.format.bgr8,15)
+        rs.pipeline.return_value.stop.assert_called_once()
+
+    def test_worker_never_uses_available_eye_in_hand_when_fixed_missing(self):
+        rs=Mock();device=Mock();device.get_info.return_value='405622073572'
+        rs.context.return_value.query_devices.return_value=[device]
+        with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}),patch.object(camera,'ROOT',Path(self.tmp.name)):
+            with self.assertRaisesRegex(ValueError,'不会改用'):camera.capture('344422070678')
+        rs.pipeline.assert_not_called()
+
+
+if __name__ == '__main__':unittest.main()

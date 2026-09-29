@@ -209,7 +209,7 @@ class Runner:
 
     @staticmethod
     def append_result(history, call_id, name, result):
-        frame = result if name == 'get_camera_frame' else result.get('candidate_frame')
+        frame = result if name in ('get_camera_frame', 'observe_global') else result.get('candidate_frame')
         cleaned = {**compact({k: v for k, v in result.items() if k != 'candidate_frame'}), 'evidence_call_id': call_id}
         model_view=model_result(name,cleaned)
         held=result.get('task',{}).get('result',{}).get('held_object') or {}

@@ -5,6 +5,7 @@ import math
 import time
 from urllib.parse import quote
 from tools.robot_agent.client import RobotBackend, BackendError
+from tools.robot_agent.global_camera import observe_global, CameraUnavailable
 from .tool_registry import READS, ACTIONS, MOTIONS, VISION
 from .motion_retry import MotionRetry,RetryLimit
 from .planning_validation import READONLY_PLANNING,validate_planning_arguments,goal_error_detail
@@ -111,6 +112,15 @@ class RobotAdapter:
     async def execute(self, name, args, request_id, cancelled, progress):
         if cancelled.is_set():
             raise Cancelled()
+        if name == 'observe_global':
+            try:
+                result = await asyncio.to_thread(observe_global)
+            except CameraUnavailable as error:
+                raise BackendError({'code':'CAMERA_UNAVAILABLE','message':str(error),
+                                    'camera_role':'fixed_global','motion_sent':False}) from error
+            if cancelled.is_set():
+                raise Cancelled()
+            return result
         if name == 'get_task_context':
             queries=[]
             for object_id in args['object_ids']:
