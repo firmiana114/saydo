@@ -127,7 +127,7 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 
 ## 固定机位全局观察
 
-`observe_global()` 返回独立固定 D435i 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=fixed_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过1秒的图片被拒绝。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
+`observe_global()` 返回独立固定相机（当前为 RealSense D405） 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=fixed_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过1秒的图片被拒绝。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
 
 它只用于全局外观观察：`calibrated_to_robot_base=false`、`usable_for_robot_target=false`。图片不能用于基座目标、毫米测量、眼在手框选、精确入孔/接触/无碰撞证明，不替代已有场景快照和运动反馈。`get_camera_frame` 继续读取眼在手相机。
 
@@ -135,13 +135,14 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 
 ```json
 {
-  "serial": "344422070678",
+  "serial": "218622270784",
+  "camera_name": "RealSense D405",
   "eye_in_hand_serial": "405622073572",
   "python": "/home/pc/saydo/work/foundationpose_env/bin/python",
   "sdk_path": "/home/pc/saydo/work/foundationpose_realsense_py311"
 }
 ```
 
-以上为MSI部署示例。运行环境需含 pyrealsense2、OpenCV、NumPy；两台相机序列号必须不同，固定机位不存在时拒绝采集。其他机器独立提供自己的配置与环境，不能仅将机器人HTTP地址指向MSI就远程访问此本机相机。配置文件每次调用重新读取；无需把实际配置提交Git。
+以上为MSI部署示例。运行环境需含 pyrealsense2、OpenCV、NumPy；两台相机序列号必须不同，型号和序列号均匹配才采集。目前支持D405与D435i的彩色流；旧配置缺少camera_name时按D435i兼容，切换相机须显式更新型号和序列号。固定机位不存在或型号不符时拒绝采集。其他机器独立提供自己的配置与环境，不能仅将机器人HTTP地址指向MSI就远程访问此本机相机。配置文件每次调用重新读取；无需把实际配置提交Git。
 
 SayDo第5页同样提供 `observe_global`，在read_only/preview/execute模式均可用，作为原生图片送入模型，普通任务结果只记录元数据。更新后重启空闲任务执行器生效；已有MCP会话需重新建立连接刷新工具目录。采集失败返回 CAMERA_UNAVAILABLE，无图片，不替换为旧图或眼在手图。

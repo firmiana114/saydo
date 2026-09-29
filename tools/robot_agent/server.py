@@ -99,7 +99,7 @@ def create_server(backend):
 
     @server.tool(annotations=read)
     async def observe_global() -> CallToolResult:
-        """Observe the whole workspace with the separate fixed D435i. Capture a new RGB image, with camera serial/role, host receipt time and resolution. No calibration to robot Base: qualitative appearance only, not robot coordinates, metric measurements, tracking boxes, contact/insertion or collision verification. Does not move hardware, switch the tracking camera, or replace scene capture. Never falls back to another camera or an old image."""
+        """Observe the whole workspace with the separate configured fixed camera. Capture a new RGB image, with camera serial/role, host receipt time and resolution. No calibration to robot Base: qualitative appearance only, not robot coordinates, metric measurements, tracking boxes, contact/insertion or collision verification. Does not move hardware, switch the tracking camera, or replace scene capture. Never falls back to another camera or an old image."""
         try:
             data = await asyncio.to_thread(capture_global)
             encoded = data.pop('image_base64')

@@ -11,7 +11,7 @@ import global_camera as camera
 
 
 def image_result():
-    return {'camera_serial':'344422070678','camera_role':'fixed_global','captured_at':time.time(),
+    return {'camera_serial':'344422070678','camera_role':'fixed_global','camera_name':'RealSense D435I','captured_at':time.time(),
             'mime_type':'image/jpeg','image_base64':base64.b64encode(b'\xff\xd8fixture').decode()}
 
 
@@ -29,7 +29,7 @@ class GlobalCameraTests(unittest.TestCase):
         with patch.object(camera.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps(image_result()))) as run:
             result=camera.observe_global(self.config)
         args=run.call_args.args[0]
-        self.assertEqual(args[-2:],['--capture','344422070678'])
+        self.assertEqual(args[-4:],['--capture','344422070678','--model','RealSense D435I'])
         self.assertEqual(run.call_args.kwargs['timeout'],12)
         self.assertNotIn('shell',run.call_args.kwargs)
         self.assertFalse(result['usable_for_robot_target']);self.assertFalse(result['calibrated_to_robot_base'])
@@ -42,9 +42,25 @@ class GlobalCameraTests(unittest.TestCase):
             with self.assertRaises(camera.CameraUnavailable):camera.observe_global(self.config)
             run.assert_not_called()
 
+    def test_d405_binding_and_reported_model_are_preserved(self):
+        self.config.write_text(json.dumps({**self.settings,'serial':'218622270784','camera_name':'RealSense D405'}))
+        frame={**image_result(),'camera_serial':'218622270784','camera_name':'RealSense D405'}
+        with patch.object(camera.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps(frame))) as run:
+            result=camera.observe_global(self.config)
+        self.assertEqual(result['camera_name'],'RealSense D405')
+        self.assertEqual(run.call_args.args[0][-4:],['--capture','218622270784','--model','RealSense D405'])
+
+    def test_worker_rejects_wrong_model_before_opening(self):
+        rs=Mock();device=Mock()
+        device.get_info.side_effect=lambda key: '218622270784' if key==rs.camera_info.serial_number else 'RealSense D435I'
+        rs.context.return_value.query_devices.return_value=[device]
+        with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}),patch.object(camera,'ROOT',Path(self.tmp.name)):
+            with self.assertRaisesRegex(ValueError,'不会改用'):camera.capture('218622270784','RealSense D405')
+        rs.pipeline.assert_not_called()
+
     def test_stale_wrong_camera_and_invalid_images_rejected(self):
         for changes in ({'captured_at':time.time()-2},{'captured_at':time.time()+3},
-                        {'camera_serial':'405622073572'},{'camera_role':'eye_in_hand'},
+                        {'camera_serial':'405622073572'},{'camera_role':'eye_in_hand'},{'camera_name':'RealSense D405'},
                         {'image_base64':'not-base64'},{'mime_type':'image/png'}):
             with self.subTest(changes=changes), patch.object(camera.subprocess,'run',
                     return_value=Mock(returncode=0,stdout=json.dumps({**image_result(),**changes}))):
