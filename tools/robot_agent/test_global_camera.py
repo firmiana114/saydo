@@ -59,7 +59,7 @@ class GlobalCameraTests(unittest.TestCase):
         rs.pipeline.assert_not_called()
 
     def test_stale_wrong_camera_and_invalid_images_rejected(self):
-        for changes in ({'captured_at':time.time()-2},{'captured_at':time.time()+3},
+        for changes in ({'captured_at':time.time()-3},{'captured_at':time.time()+3},
                         {'camera_serial':'405622073572'},{'camera_role':'eye_in_hand'},{'camera_name':'RealSense D405'},
                         {'image_base64':'not-base64'},{'mime_type':'image/png'}):
             with self.subTest(changes=changes), patch.object(camera.subprocess,'run',

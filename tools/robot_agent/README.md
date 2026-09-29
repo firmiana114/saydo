@@ -127,7 +127,7 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 
 ## 固定机位全局观察
 
-`observe_global()` 返回独立固定相机（当前为 RealSense D405） 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=fixed_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过1秒的图片被拒绝。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
+`observe_global()` 返回独立固定相机（当前为 RealSense D405） 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=fixed_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过2秒的图片被拒绝（D405关闭流约需1秒，帧龄如实包含释放设备耗时）。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
 
 它只用于全局外观观察：`calibrated_to_robot_base=false`、`usable_for_robot_target=false`。图片不能用于基座目标、毫米测量、眼在手框选、精确入孔/接触/无碰撞证明，不替代已有场景快照和运动反馈。`get_camera_frame` 继续读取眼在手相机。
 

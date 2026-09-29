@@ -52,11 +52,13 @@ def observe_global(config_path=CONFIG):
                 or data['camera_name'] != config['camera_name']):
             raise ValueError('相机身份不匹配')
         age = time.time()-data['captured_at']
-        if not 0 <= age <= 1:
+        # D405 stream shutdown takes about one second; include cleanup in the
+        # reported age rather than relabelling the image as newly captured.
+        if not 0 <= age <= 2:
             raise ValueError('相机帧已过期')
         if data['mime_type'] != 'image/jpeg' or not base64.b64decode(data['image_base64'], validate=True).startswith(b'\xff\xd8'):
             raise ValueError('相机图像无效')
-        data.update(frame_age_ms=round(age*1000), calibrated_to_robot_base=False,
+        data.update(frame_age_ms=round(age*1000), max_frame_age_ms=2000, calibrated_to_robot_base=False,
                     usable_for_robot_target=False, motion_sent=False, observation_only=True, usage_note=NOTE)
         return data
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
