@@ -1,3 +1,11 @@
+## 2026-09-29 重启后NVIDIA驱动恢复
+
+- 用户授权继续修复系统驱动，并要求重启前告知。当前内核7.0.0-34-generic缺失NVIDIA模块，原595.84模块仅在7.0.0-31内核中。按Ubuntu官方当前内核预编译模块方案，安装linux-modules-nvidia-595-open-7.0.0-34-generic并更新对应HWE元包；依赖统一更新为595.91.07，共16项升级、2项新增，无删除。未做全系统升级，未更改项目Python/CUDA环境。包清单和安装日志保存在work/driver_recovery/。
+- dpkg --audit无异常，modprobe nvidia及nvidia_uvm成功，nvidia-smi识别RTX4060 Laptop（8188MiB），原FoundationPose环境torch.cuda.is_available=true、实际GPU计算通过。无需重启整机，未执行重启。
+- 空闲且无夹持时重启8089为PID21530，眼在手D435i显式绑定405622073572，model_ready=true；连续图像序号330→332、camera_age_s约0.104，GPU模型和采集已恢复。8091 PID5248、8092 PID5251保持运行，任务接口无不确定阻断，终端页面200。全程未发送机械臂/夹爪动作。
+- 剩余独立问题：启动后的两次自动目标识别因LLM网络错误失败，状态lost；通过配置代理对模型接口的只读HEAD也返回ConnectError（7897代理端口仍监听）。尚未修复该网络问题，不能宣称已恢复目标跟踪或实机抓取。D405全局采图不依赖模型接口，正常可用。
+- 官方安装方法参考：https://ubuntu.com/server/docs/nvidia-drivers-installation/ 。
+
 ## 2026-09-29 全局机位更换为D405
 
 - MSI重启后SDK实际枚举：眼在手D435i仍为405622073572，全局机位改为D405（218622270784），均为USB3.2。USB设备节点中的标识与SDK序列号不同，绑定以SDK返回值为准。
