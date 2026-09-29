@@ -185,13 +185,14 @@ class ObjectMotionMixin:
             raise ValueError('实际物品参考点/朝向未到达目标：'+str(error))
         return error
 
-    def run_object_execution(self, plan, request_id):
+    def run_object_execution(self, plan, request_id, nested=False):
         held=copy.deepcopy(plan['hold']);report={'started_at':time.time(),'request_id':request_id,'operation':'execute_plan',
             'plan_id':plan['plan_id'],'plan':plan,'held_object':held,'robot_motion_sent':False,'gripper_command_attempted':False,'release_attempted':False,'release_confirmed':False}
         lock=None
         try:
-            lock=(self.root/'work/grasp/robot.lock').open('a')
-            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if not nested:
+                lock=(self.root/'work/grasp/robot.lock').open('a')
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             config,arm,tool,geometry,checker=self.motion_context(held,True);self.robot.motion_log=report.setdefault('motion_events',[])
             self.check_object_plan_binding(plan,config)
             expected=controller_pose(plan['current_arm']['pose']);actual=controller_pose(arm['pose'])
@@ -240,6 +241,9 @@ class ObjectMotionMixin:
                         future=plan['retreat_waypoint'];future_pose=controller_pose(future['controller_pose'])
                         points.extend(segment_samples(last,future_pose,None,None,config,'linear',future['name']))
                 detail=self.verify_motion_targets(plan,config,report,start,points)
+                fixed=plan.get('fixed_joint_targets',{}).get(target['name'])
+                if fixed is not None and np.max(np.abs(np.asarray(detail['joint_solutions_deg'][current_endpoint_index])*1000-fixed))>500:
+                    raise ValueError('固定流程关节构型复核不一致，不能更换路径')
                 self.check_cancel()
                 if not self.actuated and time.time()>plan['expires_at']:raise ValueError('方案已过期，请重新规划')
                 report['active_stage']=target['name'];self.robot.motion_stage=target['name']
@@ -260,7 +264,7 @@ class ObjectMotionMixin:
                 else:
                     solutions=detail.get('joint_solutions_deg') if isinstance(detail,dict) else None
                     if not solutions or len(solutions)<=current_endpoint_index or len(solutions[current_endpoint_index])!=7 or not np.isfinite(solutions[current_endpoint_index]).all():raise ValueError('缺少已验证的关节解，不能执行关节方案')
-                    joint_target=np.rint(np.asarray(solutions[current_endpoint_index])*1000).astype(int).tolist()
+                    joint_target=fixed if fixed is not None else np.rint(np.asarray(solutions[current_endpoint_index])*1000).astype(int).tolist()
                     report.setdefault('commanded_joint_targets',[]).append({'stage':target['name'],'joint_raw':joint_target})
                     self.actuated=True;report['robot_motion_sent']=True
                     self.robot.move_joints(joint_target,plan['speed_percent'],self.cancelled,observed)
@@ -268,6 +272,7 @@ class ObjectMotionMixin:
                 reached=wait_for_pose(observed,target['controller_pose'],self.check_cancel,record,
                     plan['position_tolerance_m'],np.deg2rad(plan['orientation_tolerance_deg']))
                 if joint_target is not None and np.max(np.abs(np.asarray(reached['joint'])-joint_target))>500:raise ValueError('关节方案未到达所选关节解')
+                if fixed is not None and np.max(np.abs(np.asarray(reached['joint'])-fixed))>500:raise ValueError('实际关节构型偏离固定路径')
                 previous_feedback=copy.deepcopy(reached)
                 report['completed_waypoints']=report.get('completed_waypoints',0)+1
                 return reached
@@ -305,8 +310,12 @@ class ObjectMotionMixin:
                 if plan['retreat_waypoint'] is not None:
                     # Correct only the explicitly planned relative retreat, then revalidate.
                     from reorientation_geometry import pose_waypoint
-                    retreat=controller_pose(arm['pose']);retreat[:3,3]+=plan['retreat_vector_base_m']
-                    target=pose_waypoint('release_retreat',retreat);target['method']='linear';move(target,True)
+                    if plan.get('fixed_joint_targets'):
+                        target=plan['retreat_waypoint']
+                    else:
+                        retreat=controller_pose(arm['pose']);retreat[:3,3]+=plan['retreat_vector_base_m']
+                        target=pose_waypoint('release_retreat',retreat);target['method']='linear'
+                    move(target,True)
                 result['retreat_confirmed']=True
                 self.update_scene_instance(held,'placed_unverified',actual_object)
             else:
@@ -331,4 +340,4 @@ class ObjectMotionMixin:
             if lock is not None:lock.close()
             try:self.update(diagnostics_ref=self.save_object_job(report))
             except Exception as error:self.update(state='failed',error='诊断记录失败：'+str(error),execution_result=None,recovery={'can_replan':False,'outcome_unknown':True})
-            self.update(busy=False)
+            if not nested:self.update(busy=False)

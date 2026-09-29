@@ -26,6 +26,7 @@ from tools.robot_agent.motion_contract import checked_goal, identity, vector
 from object_motion_control import public_object_plan
 from tools.robot_agent.scene_contract import checked_targets
 from rotation_steps import checked_step
+from fixed_pick_place import checked_request as checked_fixed_request
 
 
 class AgentError(ValueError):
@@ -106,6 +107,8 @@ class AgentAPI:
             if task['operation'] in ('plan_held_object_motion','plan_release','execute_plan'):
                 result.update({k:status.get(k) for k in ('execution_result','diagnostics_ref','recovery')})
                 result['object_motion_plan']=public_object_plan(status.get('object_motion_plan'))
+            if task['operation'] in ('plan_fixed_pick_place','execute_fixed_pick_place'):
+                result.update({k:status.get(k) for k in ('fixed_pick_place_plan','execution_result','diagnostics_ref','recovery')})
             if task['operation'] in ('reorient', 'preview_reorient'):
                 result['reorientation_plan'] = status.get('reorientation_plan')
                 result.update({k:status.get(k) for k in ('diagnostics_ref','recovery')})
@@ -230,11 +233,17 @@ class AgentAPI:
                    'reset': {'target'},
                    'plan_held_object_motion': {'object_id','hold_id','orientation_version','goal'},
                    'plan_release': {'object_id','hold_id','orientation_version','goal','retreat_vector_base_m'},
-                   'execute_plan': {'plan_id'}}
+                   'execute_plan': {'plan_id'},'execute_fixed_pick_place':{'plan_id'},
+                   'plan_fixed_pick_place':{'scene_id','source_instance_id','reference_instance_id','free_slots','release_gap_m','seed'}}
         allowed=schemas.get(operation)
         valid=isinstance(args,dict) and allowed is not None and (set(args)==allowed or operation in ('grasp','preview_grasp') and set(args)=={'object_id','scene_id','instance_id'} or operation in ('reorient','preview_reorient') and set(args)==allowed|{'max_rotation_step_deg'})
         if not valid:
             raise AgentError('INVALID_ARGUMENTS', '未知的动作或参数。')
+        if operation=='plan_fixed_pick_place':
+            try:checked_fixed_request(args)
+            except (ValueError,TypeError) as error:raise AgentError('INVALID_ARGUMENTS',str(error)) from error
+        if operation=='execute_fixed_pick_place' and (not isinstance(args['plan_id'],str) or not re.fullmatch('[a-f0-9]{32}',args['plan_id'])):
+            raise AgentError('INVALID_ARGUMENTS','无效固定方案编号')
         if operation in ('grasp', 'preview_grasp') and (not isinstance(args['object_id'], str) or not args['object_id'].strip()):
             raise AgentError('INVALID_ARGUMENTS', '必须指定非空的物品编号。')
         if operation in ('place', 'preview_place') and (not isinstance(args['hold_id'], str)
@@ -276,7 +285,7 @@ class AgentAPI:
                 raise AgentError('TASK_STATE_UNCERTAIN', '先处理任务记录故障，再开始动作。')
             if self.grasp.status['busy'] or self.grasp.status.get('stopping') or self.active:
                 raise AgentError('BUSY', '已有任务正在处理或停止状态尚未确认。')
-            if operation in ('grasp', 'place', 'reset', 'reorient','execute_plan') and self.grasp.mode != 'execute':
+            if operation in ('grasp', 'place', 'reset', 'reorient','execute_plan','execute_fixed_pick_place') and self.grasp.mode != 'execute':
                 raise AgentError('EXECUTION_DISABLED', '服务处于预览模式，执行工具不可发送动作。')
             task = {'task_id': task_id, 'operation': operation, 'arguments': args, 'session_id': self.session_id,
                     'state': 'starting', 'terminal': False, 'created_at': time.time(), 'updated_at': time.time()}
@@ -284,7 +293,9 @@ class AgentAPI:
                 db.execute('INSERT INTO tasks VALUES (?,?,?)', (task_id, fingerprint, json.dumps(task, ensure_ascii=False)))
             self.active = task_id
             try:
-                if operation in ('grasp', 'preview_grasp'):
+                if operation in ('plan_fixed_pick_place','execute_fixed_pick_place'):
+                    self.grasp.start_fixed_pick_place(args,task_id,execute=operation=='execute_fixed_pick_place')
+                elif operation in ('grasp', 'preview_grasp'):
                     extra={k:args[k] for k in ('scene_id','instance_id') if k in args}
                     self.grasp.start(preview=operation == 'preview_grasp', expected_object_id=args['object_id'],**extra)
                 elif operation=='capture_scene_snapshot':
