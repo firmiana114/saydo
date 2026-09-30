@@ -2,7 +2,11 @@
 
 - 用户确认验证通过后接入8089，启动时加载预热并用于本地检测。新增独立常驻工作进程，复用实验hf_env与固定版本4B权重，不将Transformers 5.17导入FoundationPose现有进程。启动校验权重、加载、预热后才报告ready，后续每次请求复用同一模型；模型生成不调用机器人或网络。
 - 默认验证CPU视觉编码器+GPU语言部分NF4，视觉编码器不量化。配置位于config/vision/qwen_local.json，物品描述/框面积约束分别位于各模型qwen_detection.json，原Grounding DINO配置保留。CLI新增--detector qwen；关闭8089时清理子进程，Linux父进程死亡时子进程随之终止。
-- 本机16项解析/设置/现有检测专项通过。常驻延迟、联合显存、完整SAM/FoundationPose链路与上线结果待补充，未授权本轮机械臂动作。
+- 9张人工标注基线图各测2轮，全部复用同一工作进程；试管12/12命中、负样本6/6正确，正样本耗时中位数1.306秒、平均IoU约0.907。此为小样本开发验证，不是泛化准确率。结果work/qwen_resident_validation/result.json包含该找框结果及后续旧管线联合显存失败，不能只看样本命中就将整份报告当成通过。
+- 原管线叠加常驻Qwen曾触发显存保护；移除Grounding DINO常驻、尝试CPU共享输出头、仅分批精修/评分特征、SAM半精度均未单独解决。错误堆栈最终定位到评分前transform_depth_to_xyzmap对全部252个候选同时展开原图深度的峰值分配。已在Qwen模式按32个候选分批处理该变换，合并后保留全部候选及完整跨候选评分。上游快照/权重、标定、质量阈值未修改；SAM采用FP16自动混合精度激活，精修及评分独立图像特征也分批。
+- 最终cpu_vision配置联合验证通过：两个双物品box=null场景分别17.10/16.63秒完成，全部quality.good；两次自动跟踪初始化约6.05秒，找框1.473/1.443秒，均tracking且同一Qwen PID未变。NVML采样整卡峰值6059MiB、最低剩余1750MiB，无保护触发/OOM；不是硬显存隔离或任意额外GPU负载保证。最终报告work/qwen_resident_validation/service_trial.json，失败版本另存*_failed.json。
+- 后端全量306项中2项旧HTTP测试夹具缺少local_detector属性导致清理失败，已修复兼容，相关9项复测全部通过；新增批处理测试覆盖全部候选顺序和深度变换字段合并。主服务最终PID174941，Qwen PID175062，--detector qwen与--auto-start；启动权重校验/加载7.87秒、预热0.876秒后ready，随后自动tracking，找框1.307秒、无错误。关闭服务会清理工作进程，不逐请求重新加载。
+- 当前依赖实验hf_env（torch2.5.1+cu124、Transformers5.17.0、bitsandbytes0.50.2、accelerate1.15.0）及该目录的固定权重，已成为运行依赖，不应清理。CPU视觉放置模式用于生产；cpu_vision_head保留为实验选项，未作为最终方案。全程仅图像/定位验证，无机械臂或夹爪动作；未验证实机抓放。
 
 ## 2026-09-30 试管架本地检测及一次SayDo实机任务
 
