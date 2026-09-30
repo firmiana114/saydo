@@ -40,9 +40,12 @@
 | `GET /api/cameras/<id>/status` | 单路状态 |
 | `POST /api/cameras/<id>/pause` | 释放单路预览 |
 | `GET /api/cameras/<id>/frame` | 等待请求之后的新帧并返回带身份/时间的 JPEG JSON；不会启动设备 |
+| `GET /api/cameras/<id>/calibration-frame` | 同样等待新帧；直接采集返回编码前PNG及实际内参，共享8089时如实返回JPEG与来源标记 |
 | `POST /api/pause` | 释放两路，兼容原标定及 8089 启动协调 |
 
 旧 `GET /stream`、`GET /snapshot.jpg` 仍指向 D435i。前台 Ctrl-C 或服务 SIGTERM 只结束本服务采集与连接，不停止机器人、不关闭 8089。
+
+双相机标定的单组脚本要求两台均为原生1280×720 PNG：采集阶段关闭8089，D435i与D405均由本服务直接采集，保存实际SDK内参/畸变及相机时间信息。参见 [单组采集说明](../handeye/DUAL_CAMERA_CAPTURE.md)。这不是硬件同步或标定求解。
 
 后台实例的 PID 和日志沿用 `work/camera_monitor/server.pid`、`work/camera_monitor/server.log`；不配置开机启动。
 
