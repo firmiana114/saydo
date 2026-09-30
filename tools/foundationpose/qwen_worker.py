@@ -30,7 +30,7 @@ def serve(config):
     torch.set_num_threads(4);torch.set_num_interop_threads(2)
     torch.cuda.set_per_process_memory_fraction(.5)
     free,_=torch.cuda.mem_get_info()
-    minimum=3300 if config['placement']=='cpu_vision' else 4400
+    minimum=2600 if config['placement']=='cpu_vision_head' else 3300 if config['placement']=='cpu_vision' else 4400
     if free/1024**2<minimum:raise RuntimeError('Insufficient free GPU memory for resident Qwen')
     directory=Path(config['model_dir']);source=json.loads((directory/'source.json').read_text())
     if source.get('revision')!=REVISION:raise ValueError('Qwen checkpoint revision mismatch')
@@ -42,6 +42,7 @@ def serve(config):
         if digest.hexdigest()!=expected:raise ValueError('Qwen checkpoint hash mismatch: '+name)
     processor=AutoProcessor.from_pretrained(directory,local_files_only=True,trust_remote_code=False,max_pixels=640*360)
     device_map={'':'cuda:0'} if config['placement']=='gpu' else {'model.visual':'cpu','model.language_model':'cuda:0','lm_head':'cuda:0'}
+    if config['placement']=='cpu_vision_head':device_map.update({'lm_head':'cpu','model.language_model.embed_tokens':'cpu'})
     quant=BitsAndBytesConfig(load_in_4bit=True,bnb_4bit_quant_type='nf4',bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.bfloat16,llm_int8_skip_modules=['model.visual','visual','lm_head'],
         llm_int8_enable_fp32_cpu_offload=config['placement']=='cpu_vision')

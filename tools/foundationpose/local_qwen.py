@@ -74,7 +74,7 @@ class LocalQwenDetector:
             if self.process is not None and self.process.poll() is None and self.ready:return
             if self.process is not None:self._stop_worker()
             p=self.root/'config/vision/qwen_local.json';config=json.loads(p.read_text())
-            if set(config)!={'python','model_dir','placement'} or config['placement'] not in ('cpu_vision','gpu'):raise ValueError('Qwen运行配置无效')
+            if set(config)!={'python','model_dir','placement'} or config['placement'] not in ('cpu_vision','cpu_vision_head','gpu'):raise ValueError('Qwen运行配置无效')
             if not all(isinstance(config[k],str) and Path(config[k]).is_absolute() and Path(config[k]).exists() for k in ('python','model_dir')):raise ValueError('Qwen环境/权重须为存在的绝对路径')
             directory=self.root/'work/qwen_detection';directory.mkdir(parents=True,exist_ok=True)
             env=dict(os.environ,HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1',TOKENIZERS_PARALLELISM='false')
