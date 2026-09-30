@@ -3,7 +3,9 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 from .config import Config
 from .llm_client import ModelUnavailable, LLMError
 from .runner import Runner
@@ -23,6 +25,13 @@ def call(name, args=None, ident='call-1'):
 
 def end(outcome='answered', evidence=None):
     return call('finish_task', {'outcome': outcome, 'summary': '任务结果', 'evidence_call_ids': evidence or []}, 'finish')
+
+
+def mock_global_camera(test):
+    mock=patch('tools.task_runner.robot_adapter.observe_global',side_effect=lambda:{
+        'image_base64':'AA==','mime_type':'image/png','captured_at':time.time(),
+        'camera_role':'fixed_global','camera_serial':'fixed-camera'})
+    mock.start();test.addCleanup(mock.stop)
 
 
 class FakeLLM:
@@ -53,6 +62,8 @@ class FakeAdapter:
         self.stops = 0
         self.state = {'session_id': 's', 'grasp': {'busy': False, 'mode': 'execute', 'held_object': None}}
         self.fail = None
+        self.global_error = None
+        self.global_requests = 0
 
     async def initial(self):
         return {'status': self.state, 'objects': {'objects': []}, 'robot': {}}
@@ -65,6 +76,11 @@ class FakeAdapter:
             raise Blocked('busy')
 
     async def execute(self, name, args, request_id, cancelled, progress):
+        if name=='observe_global':
+            self.global_requests+=1
+            if self.global_error:raise self.global_error
+            return {'image_base64':'AA==','mime_type':'image/png','captured_at':time.time(),
+                    'camera_role':'fixed_global','camera_serial':'fixed-camera'}
         self.sent.append((name, args, request_id))
         if self.fail:
             raise self.fail

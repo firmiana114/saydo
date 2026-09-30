@@ -1,3 +1,4 @@
+from .test_runner import mock_global_camera
 import asyncio
 import copy
 import tempfile
@@ -20,6 +21,7 @@ ARGS={'object_id':'b','hold_id':'h','orientation_version':0,'goal':GOAL,'retreat
 
 
 class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):mock_global_camera(self)
     def make(self,backend=None):
         return RobotAdapter(Config(api_key='test',poll_interval=.001),backend or ObjectBackend())
 

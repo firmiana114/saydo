@@ -20,7 +20,7 @@ class GlobalObservationTests(unittest.IsolatedAsyncioTestCase):
         frame={'camera_role':'fixed_global','image_base64':'AA==','mime_type':'image/jpeg','captured_at':123}
         with patch('tools.task_runner.robot_adapter.observe_global',return_value=frame):
             result=await adapter.execute('observe_global',{},'r',asyncio.Event(),lambda _:None)
-        self.assertEqual(result,frame);backend.request.assert_not_called()
+        self.assertEqual(result['image_base64'],frame['image_base64']);self.assertEqual(result['camera_label'],'固定全局机位');backend.request.assert_not_called()
         history=[];cleaned=Runner.append_result(history,'global-1','observe_global',result)
         self.assertNotIn('image_base64',cleaned)
         self.assertEqual(history[-1]['content'][-1]['type'],'input_image')

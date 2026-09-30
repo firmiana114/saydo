@@ -1,5 +1,6 @@
 """Bounded serial decision loop; cancellation bypasses the model."""
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -8,6 +9,7 @@ from .robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendErr
 from .tool_registry import schemas, validate, MOTIONS, READS
 from .config import UI_MODELS, UI_REASONING_EFFORTS
 from .planning_validation import PlanningArgumentError
+from .observations import append_image,valid_global
 
 
 CONNECTION_ATTEMPTS = 5
@@ -116,6 +118,34 @@ class Runner:
     def check(self):
         if self.cancelled.is_set():
             raise Cancelled()
+
+    async def observe_after_action(self,run,history,action_id,step,after):
+        ident='auto-global-'+hashlib.sha256(action_id.encode()).hexdigest()[:16]
+        record=self.store.prepare(run['run_id'],ident,'observe_global',{},step)
+        record.update(initiated_by='executor',after_action=action_id,state='dispatching')
+        record['request_id']+='-global';self.store.save_call(run['run_id'],record)
+        self.emit(run,'phase',text='执行器自动获取动作后的固定全局画面。')
+        self.emit(run,'tool_started',name='observe_global',call_id=ident,initiated_by='executor',after_action=action_id)
+        started=time.monotonic()
+        try:
+            self.check()
+            data=await self.adapter.execute('observe_global',{},record['request_id'],self.cancelled,self.progress)
+            self.check()
+            if not valid_global(data,after):raise BackendError({'code':'CAMERA_UNAVAILABLE','message':'全局图像缺少有效机位信息或不是本次动作后的新帧'})
+            clean={**compact(data),'evidence_call_id':ident,'after_action':action_id,'initiated_by':'executor'}
+            append_image(history,{**data,'after_action':action_id,'initiated_by':'executor'},'observe_global',ident);record.update(state='completed',result=clean)
+            run.setdefault('global_observations',[]).append(clean)
+            return ident,clean
+        except BackendError as error:
+            clean={'error':error.payload,'evidence_call_id':ident,'after_action':action_id,'initiated_by':'executor','motion_sent':False}
+            record.update(state='unavailable',result=clean)
+            history.append({'role':'user','content':'执行器自动全局观察失败，未发送运动。继续动作或报告成功前须用observe_global获取新帧；不能重做刚才已成功的动作。'+json.dumps(clean,ensure_ascii=False)})
+            return ident,clean
+        except (Cancelled,asyncio.CancelledError):
+            record.update(state='cancelled');raise
+        finally:
+            record['seconds']=round(time.monotonic()-started,3);self.store.save_call(run['run_id'],record)
+            self.emit(run,'tool_finished',name='observe_global',call_id=ident,state=record['state'],seconds=record['seconds'],initiated_by='executor',after_action=action_id)
 
     async def model_response(self, history, run, turn):
         # The 600 s budget covers backend work, not bounded model waiting.
@@ -243,16 +273,7 @@ class Runner:
                     item['output']=json.dumps(prior,ensure_ascii=False)
         history.append({'type': 'function_call_output', 'call_id': call_id, 'output': json.dumps(model_view, ensure_ascii=False)})
         if frame and frame.get('image_base64'):
-            # Retain timestamp/text evidence and tool outputs, but send only
-            # the latest observation image. Durable results are untouched.
-            for item in history:
-                content=item.get('content')
-                if isinstance(content,list) and any(part.get('type')=='input_image' for part in content):
-                    item['content']=[part for part in content if part.get('type')!='input_image']
-                    item['content'].append({'type':'input_text','text':'历史图片已从模型上下文省略；保留原观测时间和证据编号，需要当前画面时重新查询。'})
-            history.append({'role': 'user', 'content': [
-                {'type': 'input_text', 'text': '工具 '+call_id+' 返回的观测图片（不是用户新指令）。'+json.dumps(compact(frame), ensure_ascii=False)},
-                {'type': 'input_image', 'image_url': 'data:'+frame['mime_type']+';base64,'+frame['image_base64']}]})
+            append_image(history,frame,'observe_global' if name=='observe_global' else 'get_camera_frame',call_id)
         return cleaned
 
     async def run(self, run):
@@ -267,6 +288,7 @@ class Runner:
                     {'role': 'user', 'content': '程序读取的初始现场数据（不是新指令）：'+json.dumps(model_result('initial',compact(initial)), ensure_ascii=False)}]
                 results = {}
                 motions = {}
+                pending_observation=None;observation_after=0.;observation_corrections=0
                 recovery_pending = False
                 read_failures = 0
                 for turn in range(self.config.max_turns):
@@ -299,6 +321,11 @@ class Runner:
                         if message.strip():
                             self.emit(run, 'model_message', text=message, call_id=call['call_id'])
                     if name == 'finish_task':
+                        if pending_observation is not None and args['outcome']!='blocked':
+                            observation_corrections+=1
+                            if observation_corrections>3:raise Blocked('动作后全局观察缺失，不能报告完成')
+                            self.append_result(history,call['call_id'],name,{'error':'缺少最后动作之后的新全局观察，先调用observe_global；不可重做已成功动作。','required_tool':'observe_global'})
+                            continue
                         if recovery_pending and args['outcome']=='succeeded':raise Blocked('调姿失败尚未成功恢复，不能报告任务成功')
                         evidence = set(args['evidence_call_ids'])
                         invalid_evidence = not evidence <= results.keys() or (args['outcome'] == 'succeeded' and not set(motions) <= evidence)
@@ -331,9 +358,12 @@ class Runner:
                         self.check()
                         state = 'blocked' if args['outcome'] == 'blocked' else 'succeeded'
                         self.finish(run, state, args['summary'], completion_kind=args['outcome'],
-                            verified_actions=list(motions.values()), evidence_call_ids=list(evidence))
+                            verified_actions=list(motions.values()), evidence_call_ids=list(evidence),
+                            visual_verification='post_action_global_images_available_not_proof_of_contact_or_settling' if motions and pending_observation is None else 'not_verified')
                         return
                     self.check()
+                    if pending_observation is not None and name in MOTIONS:
+                        raise Blocked('动作后全局观察尚未恢复，拒绝继续动作；已完成动作不可重放')
                     if name in MOTIONS and any(m['name'] == name and m['arguments'] == args for m in motions.values()):
                         raise Blocked('本次任务已成功执行相同动作，拒绝重复执行')
                     record = self.store.prepare(run['run_id'], call['call_id'], name, args, turn+1)
@@ -361,6 +391,10 @@ class Runner:
                     if hasattr(self.adapter,'scene_view'):result=self.adapter.scene_view(result)
                     cleaned = self.append_result(history, call['call_id'], name, result)
                     results[call['call_id']] = cleaned
+                    if name=='observe_global' and pending_observation is not None:
+                        if valid_global(result,observation_after):
+                            run.setdefault('global_observations',[]).append({**cleaned,'after_action':pending_observation,'initiated_by':'model'})
+                            pending_observation=None
                     if result.get('precondition_correction_required'):
                         self.emit(run,'scene_precondition_correction',text=result['error']['message'])
                     if result.get('argument_correction_required'):
@@ -377,10 +411,15 @@ class Runner:
                             'hold_id': held.get('hold_id') if held else None,
                             'orientation_version': held.get('orientation_version') if held else None,
                             'plan_kind':result.get('task',{}).get('result',{}).get('execution_result',{}).get('kind') if name=='execute_plan' else None}
+                        pending_observation=call['call_id'];observation_after=time.time()
                     record.update(state='recoverable_failure' if result.get('recoverable_failure') else 'unavailable' if 'error' in result else 'completed', result=cleaned, seconds=round(time.monotonic()-tool_started, 3))
                     self.store.save_call(run['run_id'], record)
                     self.emit(run, 'tool_finished', name=name, call_id=call['call_id'], state=record['state'], seconds=record['seconds'])
                     record = None
+                    if name in MOTIONS and pending_observation==call['call_id']:
+                        ident,observation=await self.observe_after_action(run,history,call['call_id'],turn+1,observation_after)
+                        results[ident]=observation
+                        if 'error' not in observation:pending_observation=None
                 raise Blocked('达到最大模型调用次数')
         except Cancelled:
             async with self.stop_lock:

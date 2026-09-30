@@ -18,12 +18,12 @@ REORIENT_ARGS = {'object_id': STRING, 'hold_id': STRING, 'orientation_version': 
     'max_rotation_step_deg':{'type':'number','minimum':1,'maximum':15}}
 VISION = {'select_object': 'select_object', 'start_tracking': 'start_tracking', 'choose_tracking_target': 'choose_target'}
 DEFINITIONS = {
-    'get_task_context': ('批量只读查询：一次取得多个物品的几何及夹法，并可包含当前机器人状态、最新图片、场景快照。独立查询优先合并，避免逐项调用。各读数非原子同步；运动前仍由后端核验。', {
+    'get_task_context': ('批量只读查询：一次取得多个物品的几何及夹法，并可包含当前机器人状态、眼在手图片、场景快照。include_frame只返回眼在手画面，不是固定全局机位；全局观察使用observe_global。各读数非原子同步；运动前仍由后端核验。', {
         'object_ids':{'type':'array','items':STRING,'maxItems':8,'uniqueItems':True},
         'include_profiles':{'type':'boolean'},'include_robot':{'type':'boolean'},
         'include_frame':{'type':'boolean'},'scene_id':{'type':['string','null'],'minLength':1,'maxLength':200}}),
     'get_status': ('查询跟踪状态、物品、候选选择、夹持记录及放置配置版本。', {}),
-    'get_camera_frame': ('获取一秒内的真实相机图片与时间戳；框选坐标为 640×360 像素。', {}),
+    'get_camera_frame': ('获取一秒内的眼在手相机图片与时间戳；相机随机械臂移动，不是固定全局机位。框选坐标为640×360像素。独立全局观察用observe_global。', {}),
     'observe_global': ('通过独立固定相机观察全局，按需拍摄最新RGB图片，返回相机身份、时间和分辨率。用于理解场景、观察可见任务进展；未标定到基座，不能生成运动坐标、毫米距离、眼在手框选或确认精确入孔/接触/无碰撞。不替代capture_scene_snapshot，不切换跟踪相机；失败不返回旧图或另一相机图片。', {}),
     'get_robot_state': ('只读查询真实关节、TCP、错误和夹爪反馈。位置米，关节度，RPY弧度。', {}),
     'list_objects': ('列出已登记模型；模型编号不是场景实例编号。', {}),

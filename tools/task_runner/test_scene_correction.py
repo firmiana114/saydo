@@ -1,3 +1,4 @@
+from .test_runner import mock_global_camera
 import asyncio
 import copy
 import json
@@ -13,6 +14,7 @@ from .test_scene_tools import TARGETS
 
 
 class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):mock_global_camera(self)
     def test_scene_annotations_are_idempotent_and_do_not_mutate_backend(self):
         adapter=RobotAdapter(Config(api_key='test'),Backend())
         scene={'scene_id':'old','valid_for_execution':True,'instances':[]}

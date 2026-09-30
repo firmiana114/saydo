@@ -1,3 +1,4 @@
+from .test_runner import mock_global_camera
 import asyncio
 import copy
 import json
@@ -37,6 +38,7 @@ class ReorientationBackend(Backend):
         return super().request(path,value)
 
 class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):mock_global_camera(self)
     def setUp(self):
         self.backend=ReorientationBackend()
         self.config=Config(api_key='test',mode='execute',poll_interval=.001)

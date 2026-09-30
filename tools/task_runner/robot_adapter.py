@@ -6,6 +6,7 @@ import time
 from urllib.parse import quote
 from tools.robot_agent.client import RobotBackend, BackendError
 from tools.robot_agent.global_camera import observe_global, CameraUnavailable
+from tools.robot_agent.observation import label_frame
 from .tool_registry import READS, ACTIONS, MOTIONS, VISION
 from .motion_retry import MotionRetry,RetryLimit
 from .planning_validation import READONLY_PLANNING,validate_planning_arguments,goal_error_detail
@@ -120,7 +121,7 @@ class RobotAdapter:
                                     'camera_role':'fixed_global','motion_sent':False}) from error
             if cancelled.is_set():
                 raise Cancelled()
-            return result
+            return label_frame(result,'observe_global')
         if name == 'get_task_context':
             queries=[]
             for object_id in args['object_ids']:
@@ -137,7 +138,8 @@ class RobotAdapter:
                 path += '?object_id='+quote(args['object_id'], safe='')
             if name=='get_scene_snapshot':path+='?scene_id='+quote(args['scene_id'],safe='')
             if name=='get_task_diagnostics':path+='?task_id='+quote(args['task_id'],safe='')
-            return self.scene_view(await self.request(path, cancelled=cancelled))
+            result=self.scene_view(await self.request(path, cancelled=cancelled))
+            return label_frame(result,name) if name=='get_camera_frame' else result
         if name in VISION:
             await self.request('/api/agent/vision', {'operation': VISION[name], 'arguments': args}, cancelled)
             deadline = time.monotonic()+self.config.vision_timeout

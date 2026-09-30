@@ -1,3 +1,4 @@
+from .test_runner import mock_global_camera
 import asyncio
 import copy
 import tempfile
@@ -31,6 +32,7 @@ class RecoveringBackend(ObjectBackend):
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):mock_global_camera(self)
     async def test_failed_execution_returns_to_model_and_next_plan_uses_new_version(self):
         backend=RecoveringBackend();adapter=RobotAdapter(Config(api_key='x',poll_interval=.001),backend)
         second=copy.deepcopy(ARGS);second['orientation_version']=1;second['goal']['max_rotation_step_deg']=5

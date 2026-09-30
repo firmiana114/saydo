@@ -146,3 +146,6 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 以上为MSI部署示例。运行环境需含 pyrealsense2、OpenCV、NumPy；两台相机序列号必须不同，型号和序列号均匹配才采集。目前支持D405与D435i的彩色流；旧配置缺少camera_name时按D435i兼容，切换相机须显式更新型号和序列号。固定机位不存在或型号不符时拒绝采集。其他机器独立提供自己的配置与环境，不能仅将机器人HTTP地址指向MSI就远程访问此本机相机。配置文件每次调用重新读取；无需把实际配置提交Git。
 
 SayDo第5页同样提供 `observe_global`，在read_only/preview/execute模式均可用，作为原生图片送入模型，普通任务结果只记录元数据。更新后重启空闲任务执行器生效；已有MCP会话需重新建立连接刷新工具目录。采集失败返回 CAMERA_UNAVAILABLE，无图片，不替换为旧图或眼在手图。
+
+
+机位来源标记：眼在手图片明确返回camera_role=eye_in_hand、camera_label、camera_serial和source_tool；observe_global为fixed_global。MCP指令要求实际动作后调用observe_global，独立MCP会话仍由其模型遵守此规则。SayDo第5页另由执行器强制自动采图并检查缺失证据，见任务执行器README；两种调用来源在任务记录中明确区分。
