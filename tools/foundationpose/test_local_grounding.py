@@ -12,7 +12,7 @@ from scene_perception import automatic_candidates
 class LocalDetectionTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
-        self.settings={'backend':'grounding_dino','prompt':'a transparent glass test tube.','box_threshold':.4,'text_threshold':.2}
+        self.settings={'backend':'grounding_dino','prompt':'a transparent glass test tube.','box_threshold':.4,'text_threshold':.2,'max_box_area_fraction':.15}
 
     def test_model_local_settings_and_catalog_without_changing_coco_label(self):
         model=self.root/'tube';model.mkdir();(model/'model.obj').write_text('mesh fixture')
@@ -38,6 +38,7 @@ class LocalDetectionTests(unittest.TestCase):
         self.assertEqual(found[-1]['box'][0],0)
         self.assertTrue(all(r['source']=='local_grounding_dino' for r in found))
         self.assertEqual(candidates_from_predictions([],[],.4,640,360),[])
+        self.assertEqual(candidates_from_predictions([[0,0,640,360],[94,144,303,333]],[.9,.8],.4,640,360,.15),[])
 
     def test_weights_missing_or_wrong_revision_never_import_model_code(self):
         d=self.root/'work/foundationpose_setup/grounding-dino-tiny';d.mkdir(parents=True)

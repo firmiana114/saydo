@@ -17,7 +17,7 @@ def read_local_detection(directory):
     if not path.exists():return None
     if path.is_symlink() or path.stat().st_size>16384:raise ValueError('本地检测配置文件无效')
     raw=path.read_bytes();value=json.loads(raw)
-    if not isinstance(value,dict) or set(value)!={'backend','prompt','box_threshold','text_threshold'}:
+    if not isinstance(value,dict) or set(value)!={'backend','prompt','box_threshold','text_threshold','max_box_area_fraction'}:
         raise ValueError('本地检测配置字段无效')
     if value['backend']!='grounding_dino':raise ValueError('不支持的本地检测器')
     if not isinstance(value['prompt'],str) or not 1<=len(value['prompt'].strip())<=300:
@@ -25,16 +25,20 @@ def read_local_detection(directory):
     for key in ('box_threshold','text_threshold'):
         if type(value[key]) not in (int,float) or not np.isfinite(value[key]) or not .1<=value[key]<=.9:
             raise ValueError('本地检测阈值须为0.1至0.9')
+    fraction=value['max_box_area_fraction']
+    if type(fraction) not in (int,float) or not np.isfinite(fraction) or not .005<=fraction<=.5:
+        raise ValueError('本地检测框面积占比上限须为0.005至0.5')
     return {**value,'revision':hashlib.sha256(raw).hexdigest()}
 
 
-def candidates_from_predictions(boxes,scores,threshold,width,height):
+def candidates_from_predictions(boxes,scores,threshold,width,height,max_area_fraction=1.):
     rows=[]
     for box,score in zip(boxes,scores):
         a=np.asarray(box,dtype=float)
         if a.shape!=(4,) or not np.isfinite(a).all() or not np.isfinite(score) or score<threshold:continue
         a[[0,2]]=np.clip(a[[0,2]],0,width);a[[1,3]]=np.clip(a[[1,3]],0,height)
         if min(a[2]-a[0],a[3]-a[1])<8:continue
+        if (a[2]-a[0])*(a[3]-a[1])>max_area_fraction*width*height:continue
         raw=[int(np.floor(a[0])),int(np.floor(a[1])),int(np.ceil(a[2])),int(np.ceil(a[3]))]
         rows.append({'raw_box':raw,'box':[max(0,raw[0]-4),max(0,raw[1]-4),min(width,raw[2]+4),min(height,raw[3]+4)],
                      'score':float(score),'area':float((a[2]-a[0])*(a[3]-a[1])),'source':'local_grounding_dino'})
@@ -76,6 +80,7 @@ class LocalGroundingDetector:
         import cv2
         import torch
         if cancelled():raise ValueError('本地识别已取消')
+        if float(np.std(cv2.cvtColor(frame['bgr'],cv2.COLOR_BGR2GRAY)))<2:return []
         self.ensure_loaded();started=time.monotonic()
         rgb=cv2.cvtColor(frame['bgr'],cv2.COLOR_BGR2RGB);height,width=rgb.shape[:2]
         with torch.device('cpu'),torch.inference_mode():
@@ -86,4 +91,4 @@ class LocalGroundingDetector:
             boxes=found['boxes'].detach().cpu().numpy();scores=found['scores'].detach().cpu().numpy()
         if cancelled():raise ValueError('本地识别已取消')
         if time.monotonic()-started>10:raise ValueError('本地识别超过10秒，未采用迟到结果')
-        return candidates_from_predictions(boxes,scores,settings['box_threshold'],width,height)
+        return candidates_from_predictions(boxes,scores,settings['box_threshold'],width,height,settings['max_box_area_fraction'])
