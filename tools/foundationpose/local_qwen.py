@@ -91,9 +91,11 @@ class LocalQwenDetector:
 
     def detect(self,frame,settings,cancelled):
         import cv2
+        import torch
         with self.lock:
             if cancelled():raise ValueError('Qwen检测已取消')
             self.ensure_loaded();started=time.monotonic();h,w=frame['bgr'].shape[:2]
+            if torch.cuda.is_initialized():torch.cuda.empty_cache()
             if (w,h)!=(640,360):raise ValueError('Qwen检测要求640×360画面')
             ok,encoded=cv2.imencode('.jpg',frame['bgr'],[cv2.IMWRITE_JPEG_QUALITY,95])
             if not ok:raise ValueError('图像编码失败')
@@ -116,9 +118,12 @@ class LocalQwenDetector:
         process=self.process;self.ready=None
         if process is not None:
             if process.poll() is None:
-                process.terminate()
+                try:process.terminate()
+                except ProcessLookupError:pass
                 try:process.wait(timeout=5)
                 except subprocess.TimeoutExpired:process.kill();process.wait(timeout=3)
             for pipe in (process.stdin,process.stdout):
-                if pipe is not None:pipe.close()
+                if pipe is not None:
+                    try:pipe.close()
+                    except OSError:pass
             self.process=None

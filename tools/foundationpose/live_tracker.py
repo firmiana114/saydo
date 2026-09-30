@@ -450,11 +450,11 @@ class Tracker:
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
-            detector = None if self.llm_detector else ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
+            detector = None if self.llm_detector or self.detector_backend=='qwen' else ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
             local_settings = self.object_info.get(self.local_detector.settings_key) if not self.llm_detector else None
             if local_settings or self.detector_backend=='qwen':self.local_detector.ensure_loaded()
             detector_class = self.object_info['detector_class']
-            detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
+            detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] and detector is not None else None
             logging.getLogger().setLevel(logging.WARNING)
             with self.lock:
                 if self.stop.is_set():
@@ -488,7 +488,7 @@ class Tracker:
                                 local_settings = info.get(self.local_detector.settings_key) if not self.llm_detector else None
                                 if local_settings or self.detector_backend=='qwen':self.local_detector.ensure_loaded()
                                 detector_class = info['detector_class']
-                                detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
+                                detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] and detector is not None else None
                                 self.state.update(state='ready', model_ready=True, model_sha256=hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest(), model=info['mesh'], object_id=info['id'],
                                     pose_mode=info.get('pose_mode', '6d'), pose_mode_revision=info.get('pose_mode_revision'),
                                     object_name=info['name'], pending_object_name=None, detector_class=detector_class,
@@ -577,10 +577,12 @@ class Tracker:
                                     elif local_settings:
                                         candidates = self.local_detector.detect(frame, local_settings,
                                             lambda: self.stop.is_set() or generation != self.generation)
-                                    else:
+                                    elif detector is not None:
                                         prediction = predict_detection(detector, rgb)
                                         candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
                                             prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), detector_label)
+                                    else:
+                                        raise ValueError('当前物品没有Qwen检测配置，请手动框选')
                                     timings['detection_s'] = time.perf_counter() - stage_started
                                     self.event('detection_completed', generation=generation, candidates=candidates,
                                                seconds=timings['detection_s'])
@@ -591,6 +593,7 @@ class Tracker:
                                             continue
                                         self.state['bottle_candidates'] = candidates
                                         self.state['detection_seconds'] = timings['detection_s']
+                                        self.state['local_detector_runtime'] = getattr(self.local_detector,'ready',None)
                                         self.state['detection_method'] = f'{MODEL}/{EFFORT} -> SAM -> FoundationPose' if self.llm_detector else (self.local_detector.name+' -> SAM -> FoundationPose' if local_settings else f'Torchvision SSDLite COCO {detector_class} -> SAM -> FoundationPose')
                                         if len(candidates) > 1:
                                             self.state.update(state='choose_candidate', error=None)
