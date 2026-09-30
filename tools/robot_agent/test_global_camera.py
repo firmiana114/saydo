@@ -1,5 +1,6 @@
 import base64
 import json
+import io
 from pathlib import Path
 import subprocess
 import tempfile
@@ -54,7 +55,7 @@ class GlobalCameraTests(unittest.TestCase):
         rs=Mock();device=Mock()
         device.get_info.side_effect=lambda key: '218622270784' if key==rs.camera_info.serial_number else 'RealSense D435I'
         rs.context.return_value.query_devices.return_value=[device]
-        with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}),patch.object(camera,'ROOT',Path(self.tmp.name)):
+        with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}),patch.object(camera,'ROOT',Path(self.tmp.name)),patch.object(camera,'monitor_frame',return_value=None):
             with self.assertRaisesRegex(ValueError,'不会改用'):camera.capture('218622270784','RealSense D405')
         rs.pipeline.assert_not_called()
 
@@ -92,6 +93,36 @@ class GlobalCameraTests(unittest.TestCase):
         with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}),patch.object(camera,'ROOT',Path(self.tmp.name)):
             with self.assertRaisesRegex(ValueError,'不会改用'):camera.capture('344422070678')
         rs.pipeline.assert_not_called()
+
+
+class SharedMonitorTests(unittest.TestCase):
+    def frame(self, **changes):
+        return {**image_result(),'camera_serial':'218622270784','camera_name':'RealSense D405',**changes}
+
+    def test_shared_frame_is_used_without_opening_hardware(self):
+        result=self.frame();opener=Mock();opener.open.return_value=io.BytesIO(json.dumps(result).encode())
+        with patch.object(camera.urllib.request,'build_opener',return_value=opener):
+            self.assertEqual(camera.capture('218622270784','RealSense D405'),result)
+        opener.open.assert_called_once_with('http://127.0.0.1:8088/api/cameras/d405/frame',timeout=3)
+
+    def test_shared_wrong_identity_stale_and_invalid_image_rejected(self):
+        for changes in ({'camera_serial':'other'},{'camera_role':'eye_in_hand'},
+                        {'captured_at':time.time()-3},{'image_base64':'bad'},{'mime_type':'image/png'}):
+            opener=Mock();opener.open.return_value=io.BytesIO(json.dumps(self.frame(**changes)).encode())
+            with self.subTest(changes=changes),patch.object(camera.urllib.request,'build_opener',return_value=opener):
+                with self.assertRaises(ValueError):camera.monitor_frame('218622270784','RealSense D405')
+
+    def test_idle_or_absent_monitor_allows_original_capture(self):
+        for error in [camera.urllib.error.URLError('offline'),
+                      camera.urllib.error.HTTPError('local',409,'idle',{},io.BytesIO(b''))]:
+            opener=Mock();opener.open.side_effect=error
+            with patch.object(camera.urllib.request,'build_opener',return_value=opener):
+                self.assertIsNone(camera.monitor_frame('218622270784','RealSense D405'))
+
+    def test_other_model_does_not_consult_d405_preview(self):
+        with patch.object(camera.urllib.request,'build_opener') as build:
+            self.assertIsNone(camera.monitor_frame('344422070678','RealSense D435I'))
+        build.assert_not_called()
 
 
 if __name__ == '__main__':unittest.main()

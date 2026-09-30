@@ -7,6 +7,8 @@ import re
 import subprocess
 import time
 import uuid
+import urllib.error
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT/'config/cameras/global.json'
@@ -16,6 +18,38 @@ NOTE = ('未进行相机到基座标定；仅用于全局外观观察。不能�
 
 class CameraUnavailable(RuntimeError):
     pass
+
+
+def monitor_frame(serial, camera_name):
+    """Reuse an active D405 preview, waiting for a newly captured frame; never start it."""
+    if camera_name != 'RealSense D405':
+        return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open('http://127.0.0.1:8088/api/cameras/d405/frame', timeout=3) as response:
+            raw = response.read(4*1024*1024+1)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404,409,503):
+            return None
+        raise ValueError('相机监控拒绝共享画面') from exc
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    if len(raw) > 4*1024*1024:
+        raise ValueError('共享相机响应超出大小上限')
+    data = json.loads(raw)
+    if (data.get('camera_serial') != serial or data.get('camera_name') != camera_name
+            or data.get('camera_role') != 'fixed_global'):
+        raise ValueError('共享相机身份不匹配；不会改用其他设备')
+    if not 0 <= time.time()-data['captured_at'] <= 1:
+        raise ValueError('共享相机帧已过期')
+    if data.get('mime_type') != 'image/jpeg' or not base64.b64decode(data['image_base64'],validate=True).startswith(b'\xff\xd8'):
+        raise ValueError('共享相机图像无效')
+    return data
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 def load_config(path):
@@ -66,6 +100,9 @@ def observe_global(config_path=CONFIG):
 
 
 def capture(serial, camera_name='RealSense D435I'):
+    shared = monitor_frame(serial, camera_name)
+    if shared is not None:
+        return shared
     # Import the SDK only in the short-lived worker, not in MCP/runner environments.
     import fcntl
     import cv2
