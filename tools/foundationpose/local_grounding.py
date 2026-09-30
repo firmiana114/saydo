@@ -55,6 +55,8 @@ def candidates_from_predictions(boxes,scores,threshold,width,height,max_area_fra
 
 
 class LocalGroundingDetector:
+    settings_key='local_detection'
+    name='Grounding DINO Tiny'
     def __init__(self,root=ROOT):
         self.root=Path(root);self.processor=None;self.model=None
 

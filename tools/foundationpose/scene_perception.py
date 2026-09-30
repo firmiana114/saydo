@@ -11,8 +11,9 @@ from scene_features import object_features
 def automatic_candidates(frame,info,detector,local_detector,check):
     check()
     if detector is None:
-        if local_detector is None or not info.get('local_detection'):raise ValueError('目标没有本地自动检测配置，请提供目标框')
-        return local_detector.detect(frame,info['local_detection'],lambda:cancelled(check))
+        key=getattr(local_detector,'settings_key','local_detection')
+        if local_detector is None or not info.get(key):raise ValueError('目标没有本地自动检测配置，请提供目标框')
+        return local_detector.detect(frame,info[key],lambda:cancelled(check))
     while detector.inflight.locked():check();time.sleep(.05)
     check()
     return detector.detect(frame,info.get('effective_detection_prompt',info['name']),

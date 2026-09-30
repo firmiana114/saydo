@@ -46,7 +46,7 @@ class LocalDetectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'版本'):LocalGroundingDetector(self.root).ensure_loaded()
 
     def test_scene_automatic_detection_uses_model_local_settings_without_llm(self):
-        detector=Mock();detector.detect.return_value=[{'box':[1,2,30,40]}]
+        detector=Mock();detector.settings_key='local_detection';detector.detect.return_value=[{'box':[1,2,30,40]}]
         frame={'sequence':10};info={'name':'tube','local_detection':self.settings}
         result=automatic_candidates(frame,info,None,detector,lambda:None)
         self.assertEqual(result,[{'box':[1,2,30,40]}])

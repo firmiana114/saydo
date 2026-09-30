@@ -1,3 +1,9 @@
+## 2026-09-30 Qwen3-VL-4B NF4常驻验证与接入
+
+- 用户确认验证通过后接入8089，启动时加载预热并用于本地检测。新增独立常驻工作进程，复用实验hf_env与固定版本4B权重，不将Transformers 5.17导入FoundationPose现有进程。启动校验权重、加载、预热后才报告ready，后续每次请求复用同一模型；模型生成不调用机器人或网络。
+- 默认验证CPU视觉编码器+GPU语言部分NF4，视觉编码器不量化。配置位于config/vision/qwen_local.json，物品描述/框面积约束分别位于各模型qwen_detection.json，原Grounding DINO配置保留。CLI新增--detector qwen；关闭8089时清理子进程，Linux父进程死亡时子进程随之终止。
+- 本机16项解析/设置/现有检测专项通过。常驻延迟、联合显存、完整SAM/FoundationPose链路与上线结果待补充，未授权本轮机械臂动作。
+
 ## 2026-09-30 试管架本地检测及一次SayDo实机任务
 
 - 用户要求试管架支持本地自动检测并用SayDo执行器再跑一次相同任务。已在当前画面测试Grounding DINO描述a metal test tube rack.，得到唯一候选，热推理约0.337秒、分数约0.79；配置保存于试管架模型目录local_detection.json，阈值0.4/0.2、最大框面积占比0.5，实际配置不入Git。

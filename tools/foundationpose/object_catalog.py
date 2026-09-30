@@ -8,6 +8,7 @@ import time
 
 from pose_symmetry import checked_mode
 from local_grounding import read_local_detection
+from local_qwen import read_qwen_settings
 
 
 def tracking_revision(raw):
@@ -46,6 +47,7 @@ def scan_objects(root):
                 raise ValueError('tracking.json 必须为 JSON 对象')
             row['name'] = str(config.get('name', directory.name))
             row['local_detection'] = read_local_detection(directory)
+            row['qwen_detection'] = read_qwen_settings(directory)
             detection_path = directory/'detection.json'
             if detection_path.is_symlink():
                 raise ValueError('detection.json 不能是符号链接')
