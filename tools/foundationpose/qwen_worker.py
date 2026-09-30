@@ -71,7 +71,8 @@ def serve(config):
         return result
     with contextlib.redirect_stdout(sys.stderr):warm=predict(Image.new('RGB',(640,360)), 'Find visible transparent glass laboratory test tubes.')
     emit({'event':'ready','pid':os.getpid(),'placement':config['placement'],'load_seconds':loaded,
-          'warmup_seconds':warm['seconds'],'vision_quantized':False,'model':'Qwen3-VL-4B-Instruct NF4'})
+          'warmup_seconds':warm['seconds'],'vision_quantized':False,'device_map':getattr(model,'hf_device_map',device_map),
+          'model':'Qwen3-VL-4B-Instruct NF4'})
     for line in sys.stdin:
         if len(line)>3*1024*1024:raise ValueError('Request too large')
         request=json.loads(line)

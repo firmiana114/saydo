@@ -7,6 +7,22 @@ from batched_refiner import BatchedRefiner,batch_score_features
 
 
 class BatchingTests(unittest.TestCase):
+    def test_depth_transform_batches_and_merges_all_fields(self):
+        try:import torch
+        except ImportError:self.skipTest('torch required')
+        class Batch:
+            def __init__(self,pose=None,rgb=None):self.poseA=pose;self.rgbAs=rgb;self.unused=None
+            def select_by_indices(self,ids):return Batch(self.poseA[ids],self.rgbAs[ids])
+        sizes=[]
+        def transform(batch,**kwargs):
+            sizes.append(len(batch.poseA));batch.rgbAs=batch.rgbAs*2;return batch
+        scorer=SimpleNamespace(model=SimpleNamespace(extract_feat=lambda a,b:a+b),dataset=SimpleNamespace(transform_batch=transform))
+        batch_score_features(scorer,32)
+        poses=torch.arange(77).reshape(-1,1);rgb=poses.float()+1
+        result=scorer.dataset.transform_batch(Batch(poses,rgb),H_ori=360,W_ori=640,bound=1)
+        self.assertEqual(sizes,[32,32,13]);self.assertTrue(torch.equal(result.poseA,poses))
+        self.assertTrue(torch.equal(result.rgbAs,rgb*2));self.assertIsNone(result.unused)
+
     def test_refiner_keeps_every_candidate_in_order(self):
         backend=Mock();backend.predict.side_effect=lambda **kw:(kw['ob_in_cams']+1,None)
         torch=SimpleNamespace(cat=lambda xs,dim:np.concatenate(xs,axis=dim),cuda=SimpleNamespace(empty_cache=lambda:None))

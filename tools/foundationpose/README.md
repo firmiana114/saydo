@@ -513,3 +513,21 @@ work/foundationpose_env/bin/python -m pip install --no-deps \
 首次部署需从上述固定revision下载 `model.safetensors`、处理器/模型配置JSON及分词器JSON/vocab.txt至权重目录，并创建source.json；运行阶段不会下载权重。可用huggingface_hub.snapshot_download，明确revision并仅下载上述文件，不需要pytorch_model.bin。完整权重约658MiB；现有基础环境还需requests、PyYAML、filelock、tqdm、fsspec、NumPy。更换模型或修改物品本地检测配置后，重新选择物品或空闲重启服务加载。
 
 此能力是局部场景验证过的自动找框，不是透明物体检测准确率或机械臂操作验收；新的背景、遮挡、反光、端面视角仍可能漏检或误检。检测耗时显示在原页面，local_detector_name区分Grounding DINO与SSDLite。
+
+## 常驻Qwen3-VL-4B NF4检测
+
+`--detector qwen` 使用独立常驻进程，不在FoundationPose进程中导入另一版本Transformers。启动时校验权重、加载模型并完成一次预热，全部成功后才设置model_ready；启动耗时与逐次检测耗时分开记录。工作进程随8089关闭而退出，Linux父进程异常退出时也会终止；普通请求不卸载模型。取消/超时会结束异常请求进程，后续请求可重新加载，加载失败则明确报错。
+
+MSI运行配置在 `config/vision/qwen_local.json`（本机维护，不提交）：
+
+```json
+{"python":"/home/pc/saydo/work/vlm_benchmark_20260930/hf_env/bin/python","model_dir":"/home/pc/saydo/work/vlm_benchmark_20260930/models/Qwen3-VL-4B-Instruct","placement":"cpu_vision"}
+```
+
+当前验证使用视觉模块CPU放置/卸载、GPU语言主体NF4，视觉模块不量化，固定128输出token、单请求、关闭思考，不联网加载。依赖实验环境：torch 2.5.1+cu124、transformers 5.17.0、bitsandbytes 0.50.2、accelerate 1.15.0。**上述hf_env和模型目录现是运行依赖，不能作为临时实验文件清理。** 模型revision为ebb281ec70b05090aa6165b016eac8ec08e71b17，分片哈希由qwen_worker.py固定校验；原Grounding DINO配置和权重保留，可用--detector ssdlite回退。
+
+各物品使用独立 `qwen_detection.json`，含prompt和max_box_area_fraction。试管与试管架已分别配置英文检测描述；未配置物品须手动框选。输出采用0–1000归一化框，严格校验JSON/有限数值/边界，确定性规整扁平框并去掉完全重复框，再转换为640×360像素并外扩4像素。没有概率分数时不伪造置信度。
+
+8GB共享显存下，仅常驻Qwen叠加原定位流程曾触发OOM。Qwen模式增加受控显存处理：SAM使用FP16自动混合精度激活；FoundationPose精修、评分图像特征和评分前深度反投影按32个候选分批；保留全部候选和完整跨候选评分，不修改上游快照、标定或质量阈值。两进程在阶段间释放闲置CUDA缓存，权重继续常驻。其他检测模式保留原计算流程。
+
+实时状态含local_detector_runtime（工作进程PID、设备映射、加载/预热时间）。当前实景验证不等于任意背景、任意额外GPU负载下的无OOM保证；额外启动其他GPU模型会改变余量。仅验证观察、分割和位姿链路，未做机械臂抓放验收。
