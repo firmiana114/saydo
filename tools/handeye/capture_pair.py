@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parent)]
 from capture import Robot
-from geometry import board_pose, pose_matrix, stationarity
+from geometry import board_pose, object_points, pose_matrix, stationarity
 from tools.foundationpose.camera_checks import camera_binding
 from tools.robot_agent.client import NoRedirect
 
@@ -127,8 +127,8 @@ def decode_frame(frame, key, serial):
     if (matrix.shape != (3,3) or not np.isfinite(matrix).all() or matrix[0,0] <= 0 or matrix[1,1] <= 0
             or not np.allclose(matrix[2],[0,0,1]) or coeffs.shape != (5,) or not np.isfinite(coeffs).all()):
         raise ValueError(key+'实际图像内参或畸变参数缺失')
-    if np.any(np.abs(coeffs) > 1e-12):
-        raise ValueError(key+'非零畸变需要模型专属处理，不能直接当作OpenCV针孔参数')
+    if np.any(np.abs(coeffs) > 1e-12) and camera.get('distortion_model') not in ('distortion.inverse_brown_conrady','distortion.brown_conrady'):
+        raise ValueError(key+'非零畸变模型尚未支持，不能直接当作OpenCV针孔参数')
     kinds = {'image/jpeg':('.jpg',b'\xff\xd8'),'image/png':('.png',b'\x89PNG\r\n\x1a\n')}
     kind = frame.get('mime_type')
     if kind not in kinds:raise ValueError(key+'图像编码不受支持')
@@ -145,13 +145,48 @@ def decode_frame(frame, key, serial):
     return raw, suffix, image
 
 
+def sdk_intrinsics(camera):
+    import pyrealsense2 as rs
+    intr = rs.intrinsics();intr.width,intr.height = camera['image_size']
+    matrix = camera['K']
+    intr.fx,intr.fy,intr.ppx,intr.ppy = matrix[0][0],matrix[1][1],matrix[0][2],matrix[1][2]
+    intr.model = getattr(rs.distortion,camera['distortion_model'].removeprefix('distortion.'))
+    intr.coeffs = camera['distortion_coefficients']
+    return intr
+
+
+def corrected_corners(corners, camera):
+    """Use the device's inverse/standard Brown model, never reinterpret its coefficients."""
+    if not np.any(np.abs(camera['distortion_coefficients']) > 1e-12):
+        return corners.copy()
+    import pyrealsense2 as rs
+    intr = sdk_intrinsics(camera)
+    rays = np.asarray([rs.rs2_deproject_pixel_to_point(intr,[float(x),float(y)],1.) for x,y in corners])
+    if not np.isfinite(rays).all() or np.any(rays[:,2] <= 0):raise ValueError('畸变校正产生无效光线')
+    matrix = np.asarray(camera['K'])
+    return rays[:,:2]/rays[:,2:3]*[matrix[0,0],matrix[1,1]]+[matrix[0,2],matrix[1,2]]
+
+
 def analyze_board(image, camera, board, reverse=False):
     pattern = tuple(board['inner_corners'])
     found, corners = cv2.findChessboardCornersSB(cv2.cvtColor(image,cv2.COLOR_BGR2GRAY),pattern,cv2.CALIB_CB_NORMALIZE_IMAGE)
     if not found:raise ValueError('未找到全部棋盘角点：'+str(pattern))
     raw = corners.reshape(-1,2)
     ordered = raw[::-1].copy() if reverse else raw.copy()
-    candidates = board_pose(ordered,np.asarray(camera['K']),np.zeros(5),*pattern,board['square_size_m'])
+    corrected = corrected_corners(ordered,camera)
+    candidates = board_pose(corrected,np.asarray(camera['K']),np.zeros(5),*pattern,board['square_size_m'])
+    distorted = bool(np.any(np.abs(camera['distortion_coefficients']) > 1e-12))
+    if distorted:
+        import pyrealsense2 as rs
+        intr = sdk_intrinsics(camera);points = object_points(*pattern,board['square_size_m'])
+        for candidate in candidates:
+            pose = np.asarray(candidate['camera_T_board'])
+            camera_points = points@pose[:3,:3].T+pose[:3,3]
+            projected = np.asarray([rs.rs2_project_point_to_pixel(intr,[float(x) for x in point]) for point in camera_points])
+            if not np.isfinite(projected).all():raise ValueError('畸变模型重投影产生无效像素')
+            candidate['undistorted_reprojection_rms_px'] = candidate['reprojection_rms_px']
+            candidate['reprojection_rms_px'] = float(np.sqrt(np.mean(np.sum((projected-ordered)**2,axis=1))))
+        candidates.sort(key=lambda value:value['reprojection_rms_px'])
     if candidates[0]['reprojection_rms_px'] > LIMITS['max_reprojection_rms_px']:
         raise ValueError('棋盘重投影误差超过1像素')
     annotated = image.copy()
@@ -160,7 +195,9 @@ def analyze_board(image, camera, board, reverse=False):
         point = tuple(np.rint(ordered[index]).astype(int))
         cv2.circle(annotated,point,5,(0,0,255),2)
         cv2.putText(annotated,label,(point[0]+7,point[1]-7),cv2.FONT_HERSHEY_SIMPLEX,.5,(0,0,255),2)
-    return {'corners_px':ordered.tolist(),'detected_corners_px':raw.tolist(),
+    return {'corners_px':ordered.tolist(),'detected_corners_px':raw.tolist(),'corners_undistorted_px':corrected.tolist(),
+            'distortion_handling':'realsense_sdk_deproject_and_project' if distorted else 'zero_coefficients_pinhole',
+            'reprojection_domain':'original_color_pixels',
             'corner_order_reversed':reverse,'board_pose_candidates':candidates,
             'reprojection_rms_px':candidates[0]['reprojection_rms_px']}, annotated
 

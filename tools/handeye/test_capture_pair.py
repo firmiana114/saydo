@@ -68,6 +68,23 @@ class GeometryTests(unittest.TestCase):
         self.assertLess(normal['reprojection_rms_px'],1e-4)
         np.testing.assert_allclose(reversed_result['corners_px'],normal['corners_px'][::-1])
 
+    def test_inverse_brown_conrady_recovers_known_pose_in_original_pixels(self):
+        import pyrealsense2 as rs
+        camera=frame('d405')['camera']
+        camera.update(distortion_model='distortion.inverse_brown_conrady',
+                      distortion_coefficients=[-.054883264,.059305467,-.000824484,.000494306,-.019633943])
+        intr=capture.sdk_intrinsics(camera)
+        rotation=cv2.Rodrigues(np.array([.2,-.1,.1]))[0];translation=np.array([-.105,-.15,1.])
+        points=object_points()@rotation.T+translation
+        pixels=np.asarray([rs.rs2_project_point_to_pixel(intr,point.tolist()) for point in points],np.float32).reshape(-1,1,2)
+        with patch.object(capture.cv2,'findChessboardCornersSB',return_value=(True,pixels)):
+            result,_=capture.analyze_board(np.zeros((720,1280,3),np.uint8),camera,{'inner_corners':[8,11],'square_size_m':.03})
+        pose=np.asarray(result['board_pose_candidates'][0]['camera_T_board'])
+        np.testing.assert_allclose(pose[:3,3],translation,atol=1e-5)
+        np.testing.assert_allclose(pose[:3,:3],rotation,atol=1e-5)
+        self.assertLess(result['reprojection_rms_px'],.001)
+        self.assertEqual(result['distortion_handling'],'realsense_sdk_deproject_and_project')
+
     def test_missing_corners_and_wrong_transport_url_rejected(self):
         with patch.object(capture.cv2,'findChessboardCornersSB',return_value=(False,None)),self.assertRaises(ValueError):
             capture.analyze_board(np.zeros((720,1280,3),np.uint8),frame('d405')['camera'],{'inner_corners':[8,11],'square_size_m':.03})
