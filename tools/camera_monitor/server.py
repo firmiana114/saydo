@@ -220,6 +220,10 @@ class Camera:
                 with self.cv:
                     if now-last >= 1:
                         self.fps, count, last = count/(now-last), 0, now
+                # Discard a frame delayed by encoding/scheduling; keep waiting for
+                # fresh device frames instead of permanently ending this preview.
+                if not 0 <= time.time()-captured_at <= 1:
+                    continue
                 self.publish(encoded.tobytes(), captured_at, color.get_frame_number(),
                              {'sensor_timestamp_ms':color.get_timestamp(),
                               'sensor_timestamp_domain':str(color.get_frame_timestamp_domain()),'camera':camera},

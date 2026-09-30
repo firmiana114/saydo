@@ -91,6 +91,28 @@ class TestCamera(unittest.TestCase):
         with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':Mock(),'numpy':Mock()}):camera.capture(1,threading.Event())
         self.assertEqual(camera.state,'error');rs.pipeline.assert_not_called()
 
+    def test_slow_encoded_device_frame_is_discarded_then_preview_continues(self):
+        camera=monitor.Camera(1280,720,15,'d435i','435123456789')
+        rs=Mock();device=Mock();color=Mock();clock=[100.]
+        device.get_info.side_effect=lambda key:'435123456789' if key==rs.camera_info.serial_number else 'RealSense D435I'
+        rs.context.return_value.query_devices.return_value=[device]
+        rs.pipeline.return_value.start.return_value.get_device.return_value=device
+        rs.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value=color
+        color.get_frame_number.return_value=2;color.get_width.return_value=1280;color.get_height.return_value=720
+        intr=color.profile.as_video_stream_profile.return_value.intrinsics
+        intr.coeffs=[0.]*5;intr.width=1280;intr.height=720;intr.fx=intr.fy=900.;intr.ppx=640.;intr.ppy=360.
+        cv=Mock();encoded=Mock();encoded.tobytes.return_value=JPEG;attempts=[0]
+        def encode(*args):
+            attempts[0]+=1
+            if attempts[0]==1:clock[0]+=2
+            return True,encoded
+        cv.imencode.side_effect=encode;stop=threading.Event()
+        def publish(*args):
+            self.assertEqual(attempts[0],2);stop.set()
+        with patch.dict('sys.modules',{'pyrealsense2':rs,'cv2':cv,'numpy':Mock()}),patch.object(monitor,'camera_users',return_value=[]),patch.object(monitor.time,'time',side_effect=lambda:clock[0]),patch.object(camera,'publish',side_effect=publish) as output:
+            camera.capture(1,stop)
+        output.assert_called_once();self.assertIsNone(camera.error)
+
 
 class FixtureCamera(monitor.Camera):
     def capture(self,epoch,stop):
