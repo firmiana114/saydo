@@ -25,3 +25,14 @@ def batch_score_features(scorer,batch_size=32):
         return torch.cat([original(A[i:i+batch_size],B[i:i+batch_size]) for i in range(0,len(A),batch_size)],dim=0)
     scorer.model.extract_feat=extract
     return scorer
+
+
+class AutocastSam:
+    """Keep SAM weights intact while bounding encoder/decoder activation memory."""
+    def __init__(self,sam):self.sam=sam
+    def set_image(self,*args,**kwargs):
+        import torch
+        with torch.autocast('cuda',dtype=torch.float16):return self.sam.set_image(*args,**kwargs)
+    def predict(self,*args,**kwargs):
+        import torch
+        with torch.autocast('cuda',dtype=torch.float16):return self.sam.predict(*args,**kwargs)

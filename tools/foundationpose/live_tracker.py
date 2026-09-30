@@ -436,7 +436,7 @@ class Tracker:
             from estimater import FoundationPose
             from learning.training.predict_score import ScorePredictor
             from learning.training.predict_pose_refine import PoseRefinePredictor
-            from batched_refiner import BatchedRefiner,batch_score_features
+            from batched_refiner import BatchedRefiner,batch_score_features,AutocastSam
             from segment_anything import SamPredictor, sam_model_registry
             from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
             from Utils import draw_posed_3d_box, draw_xyz_axis, project_3d_to_2d, nvdiffrast_render
@@ -452,6 +452,7 @@ class Tracker:
             estimator = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
                 scorer=scorer, refiner=refiner, debug_dir=str(self.output), debug=0, glctx=context)
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
+            if self.detector_backend=='qwen':sam=AutocastSam(sam)
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
             detector = None if self.llm_detector or self.detector_backend=='qwen' else ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
@@ -526,7 +527,7 @@ class Tracker:
                                 if scene_job['cancel'].is_set() or self.stop.is_set():raise ValueError('场景采集已取消')
                             scene_job['result']=localize_scene(scene_job['frame'],scene_job['targets'],self.models_root,
                                 estimator,sam,context,self.llm_detector,scene_check,scene_job['progress'],self.local_detector)
-                        except Exception as error:scene_job['error']=str(error)
+                        except Exception as error:scene_job['error']=str(error);traceback.print_exc()
                         finally:scene_job['done'].set()
                         # Do not resume an old live pose after spending time on scene inference.
                         previous=None;last_sequence=-1
