@@ -25,6 +25,19 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
     def make(self,backend=None):
         return RobotAdapter(Config(api_key='test',poll_interval=.001),backend or ObjectBackend())
 
+    async def test_external_release_without_position_is_correctable_and_not_submitted(self):
+        adapter=self.make();args=copy.deepcopy(ARGS)
+        args['goal'].update(reference_object_id=None,reference_feature_id='A06.entry',target_position_m=None)
+        result=await adapter.execute('plan_release',args,'missing-position',asyncio.Event(),lambda _:None)
+        self.assertTrue(result['argument_correction_required']);self.assertFalse(result['backend_submitted'])
+        self.assertEqual(result['error']['field'],'goal.target_position_m')
+        self.assertFalse(any(path=='/api/agent/tasks' for path,_ in adapter.backend.requests))
+        args['goal']['target_position_m']=[0,0,.002]
+        checked_goal(args['goal'],release=True)
+        args['goal']['target_position_m']=None
+        checked_goal(args['goal'],release=False)  # Orientation-only held motion remains valid.
+        checked_goal(None,release=True)  # Explicit current-position release remains separate.
+
     async def test_real_failed_scene_arguments_correct_then_release_without_regrasp(self):
         adapter=self.make();fixed=copy.deepcopy(ARGS);fixed['goal']['reference_object_id']=None
         llm=FakeLLM(call('plan_release',ARGS,'bad'),call('plan_release',fixed,'fixed'),call('execute_plan',{'plan_id':'b'*32},'release'),end('succeeded',['release']))

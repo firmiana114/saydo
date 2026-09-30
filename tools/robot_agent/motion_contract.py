@@ -13,7 +13,7 @@ GOAL_PROPERTIES = {
     'reference_feature_id':{'type':['string','null'],'description':'仅scene_object可填写命名特征ID；null表示实例原点。其他坐标系必须为null。'},
     'reference_object_id':{'type':['string','null'],'description':'仅tracked_object使用模型ID。scene_object必须为null，改用scene_id和reference_instance_id；base/camera/tcp/held_object也必须为null。'},
     'reference_point_object_m':VECTOR,
-    'target_position_m':{**VECTOR,'type':['array','null']},
+    'target_position_m':{**VECTOR,'type':['array','null'],'description':'物品参考点在所选参考系的位置（米）；null表示保持位置，不表示移动到参考系原点。plan_release使用scene_object/tracked_object时必须明确填写位置。'},
     'target_rpy_deg':{**RPY,'type':['array','null']},
     'path_mode':{'type':'string','enum':['joint','linear']},
     'position_mode':{'type':'string','enum':['fixed','adaptive']},
@@ -75,6 +75,10 @@ def checked_goal(value, release=False):
         if row['position_m'] is not None:row['position_m']=vector(row['position_m'],'waypoint position_m')
         if row['rpy_deg'] is not None:row['rpy_deg']=vector(row['rpy_deg'],'waypoint rpy_deg',180.)
     has_position=result['target_position_m'] is not None or any(r['position_m'] is not None for r in rows)
+    if release and result['reference_frame'] in ('scene_object','tracked_object') and result['target_position_m'] is None:
+        raise GoalArgumentError('goal.target_position_m',
+            '引用外部物品或孔位进行释放时必须明确target_position_m；选择参考坐标系不会自动移动到该位置。请结合物品参考点和目标几何填写位置，不能默认为原地释放。',
+            'explicit position [x,y,z] in the selected reference frame')
     if result['position_mode']=='adaptive' and (has_position or release):raise ValueError('自适应位置仅用于未指定位置的持物姿态调整；释放必须使用确定位置')
     if not release and not rows and result['target_position_m'] is None and result['target_rpy_deg'] is None:
         raise ValueError('至少指定物品目标位置、朝向或中间路点')

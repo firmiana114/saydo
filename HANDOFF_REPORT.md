@@ -1,3 +1,9 @@
+## 2026-09-30 试管架本地检测及一次SayDo实机任务
+
+- 用户要求试管架支持本地自动检测并用SayDo执行器再跑一次相同任务。已在当前画面测试Grounding DINO描述a metal test tube rack.，得到唯一候选，热推理约0.337秒、分数约0.79；配置保存于试管架模型目录local_detection.json，阈值0.4/0.2、最大框面积占比0.5，实际配置不入Git。
+- 实机重试前补上已知原地释放参数漏洞的拦截：plan_release引用scene_object/tracked_object必须明确target_position_m，null返回GoalArgumentError，执行器作为可纠正参数错误交回模型。未改成默认孔位原点，未取消净空/定位质量检查；单纯持物调姿与显式goal=null原地释放保持原语义。
+- 验证、部署和新任务结果待补充；仅本节指定的一次任务获实机执行授权，不自动重试失败任务。
+
 ## 2026-09-30 动作后全局观察与机位来源
 
 - SayDo每次已核验真实动作后由执行器自动调用observe_global，下一轮原生图像附明确机位、时间、after_action与证据编号；记录initiated_by=executor，不冒充模型主动调用。观察失败允许模型重试，但缺少动作后有效全局图片时拒绝继续动作及成功/answered收尾。

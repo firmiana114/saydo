@@ -38,6 +38,7 @@
 - `reference_frame` 可为 `base`（基座）、`tcp`（规划起点TCP）、`camera`（当前相机光学坐标）、`held_object`（当前6D持物坐标）或 `tracked_object`（当前稳定跟踪的另一6D物品，需要 reference_object_id）。参考系在规划时冻结；不支持把5D物品不确定的横向轴用作完整参考坐标系。
 - `target_rpy_deg` 为物品相对参考系的绝对朝向，采用 `Rz(Z) @ Ry(Y) @ Rx(X)`。5D只约束物品Z轴方向，并搜索绕该轴的等价旋转。模型Z轴与物品直立方向的关系应先查模型定义。
 - `target_position_m=null` 保留位置；`target_rpy_deg=null` 保留朝向。两者都为空时须给出路点（原地释放除外）。`waypoints` 最多8项，每项必须同时包含 `position_m` 和 `rpy_deg`，其中一个可为null；fixed模式下继承上一段未指定的分量。所有路点使用同一冻结参考系。
+- 释放引用`scene_object`或`tracked_object`外部目标时，必须明确填写`target_position_m`；只选择孔位参考系不会自动移动到孔位，位置为null会被拒绝并返回可纠正错误。仅调姿的持物运动仍允许位置为null；显式原地释放`goal=null`保留原语义。
 - `position_mode=fixed` 约束物品参考点的指令路点位置；不保证关节运动过程中参考点连续不动。`adaptive` 仅允许没有显式位置目标的持物调姿，允许搜索移位，最终TCP须高于桌面10厘米；方案明确返回实际选定目标。释放须用fixed。
 - `path_mode=joint` 使用离线验证得到的关节角执行movej；`linear` 使用movel。调姿默认拆为最多15°的旋转段，可设1–15°，后端上限不可绕过；分段预留0.2°控制器量化余量。拆段不能保证任意姿态都可达。无解时可以只读重规划、更换中间路点；已经开始执行的持物动作失败后，仅在后端recovery.can_replan=true时返回模型重新规划，使用新的夹持版本；旧方案不可重放。释放任务失败不自动恢复。
 
