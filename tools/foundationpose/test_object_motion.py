@@ -23,6 +23,25 @@ def fixture():
 
 
 class ObjectGeometryTests(unittest.TestCase):
+    def test_late_valid_candidate_is_kept_after_twenty_seconds(self):
+        held,vertices,arm,config=fixture();clock=[0.];calls=[]
+        def reachable(points,timeout):
+            clock[0]+=15.;calls.append(timeout)
+            return (len(calls)==2,{'verified':len(calls)==2,'reason':'try another route'})
+        with patch('time.monotonic',side_effect=lambda:clock[0]):
+            plan=plan_object_motion(held,vertices,arm,config,{'target_position_m':[.4,-.1,.3]},np.eye(4),reachable,lambda:None)
+        self.assertEqual(clock[0],30.);self.assertTrue(plan['reachability_check']['verified'])
+        self.assertEqual(calls,[3.,3.])
+
+    def test_candidate_search_remains_cancellable(self):
+        h,v,a,c=fixture();calls=[]
+        def cancelled():
+            if calls:raise RuntimeError('cancelled')
+        def reachable(points,timeout):calls.append(1);return False,{'reason':'no route'}
+        with self.assertRaisesRegex(RuntimeError,'cancelled'):
+            plan_object_motion(h,v,a,c,{'target_position_m':[.4,-.1,.3]},np.eye(4),reachable,cancelled)
+        self.assertEqual(len(calls),1)
+
     def plan(self,goal,**kw):
         held,vertices,arm,config=fixture()
         return plan_object_motion(held,vertices,arm,config,goal,np.eye(4),Mock(return_value=(True,{'verified':True})),lambda:None,**kw)

@@ -152,3 +152,5 @@ work/task_runner_env/bin/python -m tools.task_runner.probe
 ## 固定相机观察全局
 
 `observe_global` 与 MCP 共用独立按需采集模块，配置和限制见 [固定机位全局观察](../robot_agent/README.md#固定机位全局观察)。三个运行模式均可调用，返回原生模型图片和相机身份/时间元数据；失败沿用有限观察恢复，不提交机械臂动作。`get_camera_frame` 和 `get_task_context.include_frame` 仍是眼在手图片，像素框不可跨机位使用。模型上下文仍只保留最新一张观测图片，旧图保留时间和证据说明；两个机位不是同步拍摄。
+
+只读持物规划（plan_held_object_motion、plan_release）已取消20秒后端总时限，执行器持续轮询到终态或取消，不套用120秒动作等待，并在等待期间暂停600秒整任务计时。真实动作、其他观察超时、模型单次请求时限以及5/3重试次数均保持原规则。

@@ -218,11 +218,11 @@ class RobotAdapter:
                 self.motion_inflight = False
                 raise
             result = {'terminal': False}
-        deadline = time.monotonic()+(200 if name=='capture_scene_snapshot' else self.config.action_timeout)
+        deadline = None if name in ('plan_held_object_motion','plan_release') else time.monotonic()+(200 if name=='capture_scene_snapshot' else self.config.action_timeout)
         while not result.get('terminal'):
             if cancelled.is_set():
                 raise Cancelled()
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise Blocked('动作结果未在期限内确认', uncertain=True)
             await asyncio.sleep(self.config.poll_interval)
             try:

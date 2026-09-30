@@ -133,7 +133,7 @@ class FixedPickPlaceMixin:
         if not ok:raise ValueError('抓取完整采样路径失败：'+detail['reason'])
         lift=next(w for w in grasp['waypoints'] if w['name']=='lift')
         predicted_arm=copy.deepcopy(arm);predicted_arm.update(pose=lift['controller_pose'],joint=np.rint(np.asarray(detail['joint_solutions_deg'][-1])*1000).astype(int).tolist())
-        attempts=report['slot_attempts']=[];deadline=time.monotonic()+120;full_points=[]
+        attempts=report['slot_attempts']=[];full_points=[]
         def reachable(points,timeout):
             nonlocal full_points
             self.check_cancel()
@@ -142,7 +142,6 @@ class FixedPickPlaceMixin:
             return check_waypoints(checker,tool,arm,full_points,timeout)
         for slot,goal,frame in goals:
             self.check_cancel()
-            if time.monotonic()>deadline:break
             row={'slot':slot};attempts.append(row)
             try:
                 release=plan_object_motion(held,geometry['vertices'],predicted_arm,effective,goal,frame,reachable,
@@ -166,7 +165,7 @@ class FixedPickPlaceMixin:
                 if np.max(np.abs(np.asarray(self.arm_state()['joint'])-arm['joint']))>30:raise ValueError('规划期间机械臂移动')
                 return self.object_plan_store().save(plan)
             except (ValueError,TimeoutError) as error:row['error']=str(error)
-        raise ValueError('未在固定预算内找到全程通过的孔位；未发送运动')
+        raise ValueError('有限候选搜索结束，未找到全程通过的孔位；未发送运动')
 
     def execute_fixed_pick_place(self, plan, report, request_id):
         self.fixed_binding_check(plan);config=plan['effective_config'];grasp=plan['grasp']

@@ -1,6 +1,5 @@
 """General held-object goals. Object references, not TCP origins, define targets."""
 import subprocess
-import time
 import numpy as np
 from rotation_steps import interpolate,fractions
 from grasp_geometry import transform, controller_pose, rotation_error
@@ -149,7 +148,7 @@ def build_candidate(held, vertices, arm, config, goal, frame, spin, shift, relea
 def plan_object_motion(held,vertices,arm,config,goal,frame,reachable,cancelled,release=False,retreat=None,diagnostics=None):
     goal=checked_goal(goal,release);frame=transform(frame);retreat=np.asarray(vector(retreat or [0,0,0],'retreat_vector_base_m',.3))
     if np.linalg.norm(retreat)>.3:raise ValueError('退出位移长度不得超过300毫米')
-    attempts=diagnostics if diagnostics is not None else [];deadline=time.monotonic()+20
+    attempts=diagnostics if diagnostics is not None else []
     current=controller_pose(arm['pose']);spins=range(24) if held.get('pose_mode')=='5d' and (goal['target_rpy_deg'] is not None or any(r['rpy_deg'] is not None for r in goal['waypoints'])) else range(1)
     shifts=position_offsets(current[:3,3],config['table_z_m']+.103,.025) if goal['position_mode']=='adaptive' else [np.zeros(3)]
     routes=[(0.,0.),(0.,.08),(0.,-.08),(0.,.16),(0.,-.16),(.05,0.),(.10,0.),(.05,.08),(.05,-.08),(.10,.08),(.10,-.08),(.15,0.)]
@@ -157,12 +156,11 @@ def plan_object_motion(held,vertices,arm,config,goal,frame,reachable,cancelled,r
         for spin in spins:
             for route in routes:
                 cancelled()
-                if time.monotonic()>=deadline:raise TimeoutError('持物运动规划达到20秒预算，未发送运动')
                 attempt={'spin_candidate':spin,'shift_m':shift.tolist(),'route_offset_m':list(route)};attempts.append(attempt)
                 if len(attempts)>64:del attempts[32]
                 try:
                     plan=build_candidate(held,vertices,arm,config,goal,frame,spin,shift,release,retreat,route)
-                    valid,detail=reachable(plan['validation_points'],min(3.,max(.05,deadline-time.monotonic())))
+                    valid,detail=reachable(plan['validation_points'],3.)
                     if not valid:
                         attempt['failure']=detail.get('failure')
                         attempt['beam_max_width']=max((row['candidates'] for row in detail.get('beam_widths',[])),default=0)
@@ -171,7 +169,6 @@ def plan_object_motion(held,vertices,arm,config,goal,frame,reachable,cancelled,r
                         attempt['continuity_failure']=detail.get('continuity_failure')
                         raise ValueError(detail.get('reason','逆解/正解或自身碰撞检查失败'))
                     cancelled()
-                    if time.monotonic()>deadline:raise TimeoutError('规划超时')
                     plan.update(reachability_check=detail,search_attempts=attempts)
                     plan.pop('validation_points')
                     return plan

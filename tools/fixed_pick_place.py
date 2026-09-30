@@ -23,9 +23,9 @@ def wait_task(backend,operation,args,ident,timeout=240):
         if error.payload.get('code')!='REQUEST_UNCERTAIN':raise
         # Never submit the action again. Query the original durable request ID.
         task=backend.request('/api/agent/tasks/'+quote(ident,safe=''))
-    deadline=time.monotonic()+timeout
+    deadline=None if operation=='plan_fixed_pick_place' else time.monotonic()+timeout
     while not task.get('terminal'):
-        if time.monotonic()>deadline:raise TimeoutError('任务等待超时，原任务编号：'+ident)
+        if deadline is not None and time.monotonic()>deadline:raise TimeoutError('任务等待超时，原任务编号：'+ident)
         time.sleep(.3);task=backend.request('/api/agent/tasks/'+quote(ident,safe=''))
     expected={'capture_scene_snapshot':'scene_ready','plan_fixed_pick_place':'fixed_pick_place_planned','execute_fixed_pick_place':'completed'}[operation]
     if task.get('state')!=expected:raise RuntimeError(json.dumps({'task_id':ident,'state':task.get('state'),'error':task.get('error') or task.get('result',{}).get('error'),'diagnostics_ref':task.get('result',{}).get('diagnostics_ref')},ensure_ascii=False))
@@ -54,7 +54,11 @@ def workflow(backend,args):
     print('规划完整抓取、调姿、入架及退出路线；尚未运动……',flush=True)
     request={'scene_id':scene['scene_id'],'source_instance_id':'tube','reference_instance_id':'rack',
              'free_slots':slots,'release_gap_m':args.release_gap_mm/1000,'seed':args.seed if args.seed is not None else secrets.randbits(32)}
-    result=wait_task(backend,'plan_fixed_pick_place',request,ident+'-plan')
+    try:
+        result=wait_task(backend,'plan_fixed_pick_place',request,ident+'-plan')
+    except KeyboardInterrupt:
+        save('cancel_planning.json',backend.request('/api/agent/cancel-planning',{'task_id':ident+'-plan'}))
+        raise
     save('plan.json',result);plan=result['fixed_pick_place_plan']
     print(json.dumps({'selected_slot':plan['selected_slot'],'plan_id':plan['plan_id'],
         'complete_path_prechecked':plan['complete_path_prechecked'],'files':str(directory),'validation_scope':plan['validation_scope']},ensure_ascii=False),flush=True)

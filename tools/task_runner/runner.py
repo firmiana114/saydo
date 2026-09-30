@@ -207,6 +207,18 @@ class Runner:
                 seconds=round(time.monotonic()-before, 3), outcome=outcome,
                 diagnostics=diagnostic_event.get('diagnostics'))
 
+    async def execute_tool(self,name,args,request_id):
+        # A long read-only search must not consume the physical task deadline.
+        timer=getattr(self,'run_deadline',None)
+        suspended=timer is not None and name in ('plan_held_object_motion','plan_release')
+        deadline=timer.when() if suspended else None
+        before=time.monotonic()
+        if suspended:timer.reschedule(None)
+        try:
+            return await self.adapter.execute(name,args,request_id,self.cancelled,self.progress)
+        finally:
+            if suspended and not timer.expired():timer.reschedule(deadline+time.monotonic()-before)
+
     @staticmethod
     def append_result(history, call_id, name, result):
         frame = result if name in ('get_camera_frame', 'observe_global') else result.get('candidate_frame')
@@ -336,7 +348,7 @@ class Runner:
                         result = await self.adapter.stop()
                     else:
                         try:
-                            result = await self.adapter.execute(name, args, record['request_id'], self.cancelled, self.progress)
+                            result = await self.execute_tool(name, args, record['request_id'])
                         except BackendError as error:
                             if name not in (set(READS)|{'get_task_context'}) or error.payload.get('code') not in ('POSE_NOT_READY', 'CAMERA_UNAVAILABLE'):
                                 detail=str(error.payload.get('message') or '')[:1200]

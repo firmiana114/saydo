@@ -396,6 +396,14 @@ class AgentAPI:
 
     def post(self, path, value):
         if path == '/api/agent/tasks':return self.start(value)
+        if path == '/api/agent/cancel-planning' and isinstance(value,dict) and set(value)=={'task_id'} and isinstance(value['task_id'],str):
+            with self.grasp.lock:
+                if self.active!=value['task_id']:return {'cancel_requested':False,'motion_sent':False}
+                task=self.get_task(self.active)
+                if task['operation'] not in ('plan_fixed_pick_place','plan_release','plan_held_object_motion') or self.grasp.actuated:
+                    raise AgentError('NOT_READONLY_PLANNING','此接口只能取消只读规划')
+                self.grasp.cancelled.set()
+                return {'cancel_requested':True,'motion_sent':False}
         if path == '/api/agent/stop' and value == {}:return self.stop_robot()
         if path == '/api/agent/vision' and isinstance(value, dict) and set(value) == {'operation', 'arguments'}:
             if not isinstance(value['arguments'], dict):raise AgentError('INVALID_ARGUMENTS', 'arguments 必须为对象。')

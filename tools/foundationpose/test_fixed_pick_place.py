@@ -158,3 +158,13 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(self.request('execute_fixed_pick_place',task_id='exec-001',arguments=args)['deduplicated'])
         self.assertEqual(self.request('execute_fixed_pick_place',task_id='exec-002',arguments=args)['state'],'rejected')
         self.assertEqual(self.calls,['execute'])
+
+    def test_cancel_planning_is_id_scoped_and_never_stops_hardware(self):
+        self.api.active='planning-id';self.api.get_task=Mock(return_value={'operation':'plan_fixed_pick_place'})
+        self.grasp.actuated=False;self.grasp.robot=Mock()
+        self.assertFalse(self.api.post('/api/agent/cancel-planning',{'task_id':'other'})['cancel_requested'])
+        self.assertFalse(self.grasp.cancelled.is_set())
+        self.assertTrue(self.api.post('/api/agent/cancel-planning',{'task_id':'planning-id'})['cancel_requested'])
+        self.assertTrue(self.grasp.cancelled.is_set());self.grasp.robot.stop.assert_not_called()
+        self.grasp.actuated=True
+        with self.assertRaises(AgentError):self.api.post('/api/agent/cancel-planning',{'task_id':'planning-id'})

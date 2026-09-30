@@ -7,6 +7,13 @@ from tools.robot_agent.client import BackendError
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_fixed_planner_wait_has_no_elapsed_deadline(self):
+        backend=Mock();backend.action.return_value={'terminal':False}
+        backend.request.side_effect=[{'terminal':False},{'terminal':True,'state':'fixed_pick_place_planned','result':{'ok':True}}]
+        with patch('tools.fixed_pick_place.time.monotonic',side_effect=[0,10000,20000]),patch('tools.fixed_pick_place.time.sleep'):
+            self.assertTrue(wait_task(backend,'plan_fixed_pick_place',{},'id',timeout=1)['ok'])
+        backend.action.assert_called_once()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.args=argparse.Namespace(tube='tube',rack='rack',tube_box=[0,0,10,10],rack_box=[20,20,50,50],
@@ -29,6 +36,12 @@ class WorkflowTests(unittest.TestCase):
         with patch('tools.fixed_pick_place.wait_task',side_effect=[{'scene_id':'s'},RuntimeError('no path')]) as wait:
             with self.assertRaises(RuntimeError):workflow(self.backend,self.args)
         self.assertEqual(wait.call_count,2)
+
+    def test_keyboard_interrupt_cancels_only_original_readonly_planning(self):
+        with patch('tools.fixed_pick_place.wait_task',side_effect=[{'scene_id':'s'},KeyboardInterrupt()]):
+            with self.assertRaises(KeyboardInterrupt):workflow(self.backend,self.args)
+        path,args=self.backend.request.call_args.args
+        self.assertEqual(path,'/api/agent/cancel-planning');self.assertTrue(args['task_id'].endswith('-plan'))
 
     def test_omitted_tube_box_requests_automatic_scene_detection(self):
         self.args.tube_box=None
