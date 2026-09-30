@@ -1,5 +1,6 @@
 ## 2026-09-30 Qwen3-VL-4B NF4常驻验证与接入
 
+- 后续按用户要求将CLI及Tracker缺省检测器统一改为qwen。无活动任务/夹持时重启8089，特意移除显式--detector参数验证默认行为：服务PID175852、Qwen PID175971，加载约7.86秒、预热0.908秒后自动tracking、model_ready=true、error=null。旧服务及Qwen子进程退出后才启动新进程，未发送机器人动作。显式--detector llm/ssdlite仍可覆盖默认值；远端既有未跟踪observation_pose_backups目录保留。
 - 用户确认验证通过后接入8089，启动时加载预热并用于本地检测。新增独立常驻工作进程，复用实验hf_env与固定版本4B权重，不将Transformers 5.17导入FoundationPose现有进程。启动校验权重、加载、预热后才报告ready，后续每次请求复用同一模型；模型生成不调用机器人或网络。
 - 默认验证CPU视觉编码器+GPU语言部分NF4，视觉编码器不量化。配置位于config/vision/qwen_local.json，物品描述/框面积约束分别位于各模型qwen_detection.json，原Grounding DINO配置保留。CLI新增--detector qwen；关闭8089时清理子进程，Linux父进程死亡时子进程随之终止。
 - 9张人工标注基线图各测2轮，全部复用同一工作进程；试管12/12命中、负样本6/6正确，正样本耗时中位数1.306秒、平均IoU约0.907。此为小样本开发验证，不是泛化准确率。结果work/qwen_resident_validation/result.json包含该找框结果及后续旧管线联合显存失败，不能只看样本命中就将整份报告当成通过。
