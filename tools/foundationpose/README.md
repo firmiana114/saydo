@@ -26,7 +26,7 @@
 
 ## LLM 自动识别与提示词
 
-默认自动识别使用 `gpt-6-sol / low`，独立于任务执行器的模型选择。图像和物品描述经 `.env` 中的 `SAYDO_LLM_RESPONSES_URL`、`SAYDO_LLM_API_KEY`、`SAYDO_LLM_PROXY` 请求提供方；`.env` 必须为600权限。不会向浏览器返回密钥。识别器只返回物品框，不提供运动工具。
+默认自动识别使用本地常驻 `Qwen3-VL-4B NF4`，启动时加载并预热；需要下文的本机运行环境和模型配置，缺失时明确报错，不自动回退在线服务。显式选择 `--detector llm` 时使用 `gpt-6-sol / low`，独立于任务执行器的模型选择。在线模式的图像和物品描述经 `.env` 中的 `SAYDO_LLM_RESPONSES_URL`、`SAYDO_LLM_API_KEY`、`SAYDO_LLM_PROXY` 请求提供方；`.env` 必须为600权限。不会向浏览器返回密钥。识别器只返回物品框，不提供运动工具。
 
 顶部“切换物品”弹窗采用物品列表与设置详情布局，默认选中当前物品。点击列表只查看该物品的设置；点击底部“切换到此物品”才切换跟踪模型。当前物品会标记“当前使用”，不可用模型可以查看原因但不能切换。窄屏自动上下排列，底部操作保持可见。
 
@@ -516,7 +516,7 @@ work/foundationpose_env/bin/python -m pip install --no-deps \
 
 ## 常驻Qwen3-VL-4B NF4检测
 
-`--detector qwen` 使用独立常驻进程，不在FoundationPose进程中导入另一版本Transformers。启动时校验权重、加载模型并完成一次预热，全部成功后才设置model_ready；启动耗时与逐次检测耗时分开记录。工作进程随8089关闭而退出，Linux父进程异常退出时也会终止；普通请求不卸载模型。取消/超时会结束异常请求进程，后续请求可重新加载，加载失败则明确报错。
+省略`--detector`或显式指定`--detector qwen`均使用独立常驻进程，不在FoundationPose进程中导入另一版本Transformers。启动时校验权重、加载模型并完成一次预热，全部成功后才设置model_ready；启动耗时与逐次检测耗时分开记录。工作进程随8089关闭而退出，Linux父进程异常退出时也会终止；普通请求不卸载模型。取消/超时会结束异常请求进程，后续请求可重新加载，加载失败则明确报错。
 
 MSI运行配置在 `config/vision/qwen_local.json`（本机维护，不提交）：
 

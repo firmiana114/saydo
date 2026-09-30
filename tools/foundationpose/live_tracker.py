@@ -45,7 +45,7 @@ class Tracker:
             {'id': None, 'name': args.mesh.parent.name, 'mesh': str(args.mesh), 'detector_class': inferred_class(str(args.mesh))})
         if getattr(args, 'detector_class', None):
             self.object_info['detector_class'] = args.detector_class
-        self.detector_backend = getattr(args, 'detector', 'ssdlite')
+        self.detector_backend = getattr(args, 'detector', 'qwen')
         self.llm_detector = LLMBoxDetector() if self.detector_backend == 'llm' else None
         self.local_detector = LocalQwenDetector(ROOT) if self.detector_backend=='qwen' else LocalGroundingDetector(ROOT)
         self.scene_job = None
@@ -769,7 +769,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--models-root', type=Path, default=ROOT / 'work/object_models')
-    parser.add_argument('--detector', choices=('llm', 'ssdlite', 'qwen'), default='llm', help='Bounding-box detector: remote llm, per-object local/SSDLite, or resident Qwen NF4')
+    parser.add_argument('--detector', choices=('llm', 'ssdlite', 'qwen'), default='qwen', help='Bounding-box detector: resident Qwen NF4 (default), remote llm, or per-object local/SSDLite')
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
