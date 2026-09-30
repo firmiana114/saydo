@@ -1,3 +1,11 @@
+## 2026-09-30 双相机原生单组标定采集
+
+- 新增`tools/handeye/capture_pair.py`，在MSI项目根目录运行`.venv/bin/python tools/handeye/capture_pair.py --session d405_base1_01`，一次创建一组独立候选并退出，支持`--role validation`及实际棋盘参数。组间允许机械臂/板姿态变化，组内要求停稳；两次并行获取相机新帧，用第二对检查板静止。保存四张原生1280×720 PNG、两张角点原点/+X检查图、相机内参/畸变/时间/哈希、控制器原始反馈及TCP/工具/法兰/D435i基座变换。不解算/写入D405外参，不自动重试或改写旧样本。
+- 8088新增`calibration-frame`只读入口，直接采集保存编码前彩色图并按请求编码PNG，保留实际SDK内参及时间。脚本拒绝推理分辨率/JPEG转存PNG。当前D405为非零Inverse Brown-Conrady模型：使用RealSense SDK校正角点光线、PnP后按SDK投回原图计算误差，保留原始与校正角点及所有正深度位姿候选，不把其系数直接当OpenCV普通畸变参数。普通棋盘共同物理原点仍需人工核对，可在新会话显式反转D405顺序，不能据候选通过宣称标定成功。
+- 已按用户“采集期间可以关闭8089，最好原生1280×720”的授权，在无活动任务/夹持时关闭8089，更新8088；原8089启动参数保存在MSI `work/dual_camera_calibration/services_before_native_capture.json`，采集完成后需另行恢复定位服务。当前8088 PID214977、两台均直接采集1280×720/15fps，浏览器原生预览保留。22份机器本地配置摘要不变，远端既有未跟踪observation_pose_backups目录保留，未发送机械臂/夹爪写入命令，8091/8092未重启。
+- MSI最终41项Python测试通过（采集/畸变15、监控14、全局观察12），本机监控/全局观察26项及前端交互测试通过。本机缺少OpenCV/NumPy/RealSense，采集几何测试在MSI现有`.venv`运行。已补充临时编码/调度超时帧丢弃后继续预览，样本新鲜度检查保留。
+- 首次开发采集因D405非零畸变明确拒收并留记录；实现实际模型处理后，开发验证会话`capture_pair_validation_20260930/20260930_160009_d3ee8a3a`取得candidate。两对时间差37.23/26.46ms；机器人关节跨度0.006°、TCP跨度0.0524mm；两机位主帧RMS约0.9125/0.2955px，角点最大位移0.3941/0.3034px。属于单组静态采集验收，未完成多组标定或绝对基座精度验证。原始数据在MSI `work/dual_camera_calibration/`，本机检查副本/原生预览截图在该目录的`verification/`。命令与边界见`tools/handeye/DUAL_CAMERA_CAPTURE.md`。
+
 ## 2026-09-30 8088双相机实时预览
 
 - `tools/camera_monitor/` 改为并排显示D435i眼在手与D405固定机位，支持双路/单路开始、独立状态/帧率/截图及单路/全部释放。每台独立线程、最多4个观看连接；旧`/stream`及`/snapshot.jpg`保留为D435i，`/api/pause`释放本服务两路，兼容标定及8089启动协调。
