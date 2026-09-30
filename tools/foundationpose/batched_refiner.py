@@ -24,6 +24,20 @@ def batch_score_features(scorer,batch_size=32):
         import torch
         return torch.cat([original(A[i:i+batch_size],B[i:i+batch_size]) for i in range(0,len(A),batch_size)],dim=0)
     scorer.model.extract_feat=extract
+    original_transform=scorer.dataset.transform_batch
+    def transform(batch,*args,**kwargs):
+        count=len(batch.poseA)
+        if count<=batch_size:return original_transform(batch,*args,**kwargs)
+        import torch
+        chunks=[]
+        for start in range(0,count,batch_size):
+            indices=torch.arange(start,min(start+batch_size,count),device=batch.poseA.device)
+            chunks.append(original_transform(batch.select_by_indices(indices),*args,**kwargs))
+        output=type(batch)()
+        for key,value in chunks[0].__dict__.items():
+            setattr(output,key,None if value is None else torch.cat([getattr(part,key) for part in chunks],dim=0))
+        return output
+    scorer.dataset.transform_batch=transform
     return scorer
 
 
