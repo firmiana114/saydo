@@ -3,7 +3,10 @@
 - 新增本地Grounding DINO Tiny，与SSDLite按物品配置分流；试管不伪装成COCO bottle。模型设置读取各物品local_detection.json，权重共享于work/foundationpose_setup/grounding-dino-tiny，附加依赖独立于现有环境存放在work/local_detection_deps。固定官方revision及权重哈希，运行时不联网、不执行远程代码。
 - 网页自动初始化、多候选选择及场景box=null支持本地检测。固定抓放脚本允许省略--tube-box；试管架仍须框选。原SAM/FoundationPose及位姿质量阈值不变。
 - 三张历史图像开发验证找到试管：具体描述a transparent glass test tube.的目标分数约0.66–0.81；热推理约0.32秒，首次约1.14秒。宽泛描述出现背景误报，因此试管设置具体描述、box_threshold=0.4、text_threshold=0.2，非普适准确率证明。
-- 本机14项配置/场景专项和6项脚本测试通过。远端完整回归、CUDA默认设备兼容、实时验证及上线结果待补充；本轮未发送运动。
+- 实测负样本发现Grounding DINO会把无目标背景中的架子或整张空白图误报为试管。增加低对比度拒绝与模型专属max_box_area_fraction=0.15；复测背景裁剪/空白图无候选，正样本保留，超过当前画面15%的真实目标也会被拒绝。这是当前场景约束，不声称普适检测已验收。
+- MSI完整后端296项、脚本6项通过；负样本修正后20项相关回归通过，网页物品面板测试通过。真实CUDA全局默认设置下重复检测正常，退出后仍保留FoundationPose的CUDA默认设备。官方权重哈希验证通过，未修改原PyTorch/CUDA版本。
+- 已新增模型本地local_detection.json并在无任务/夹持时重启8089为PID121068，保留--detector ssdlite；试管走本地Grounding DINO，其余COCO类继续SSDLite。启动自动识别耗时0.523秒并进入tracking；两次真实新帧重新识别耗时0.344/0.327秒，完整初始化约5.04秒，均tracking、quality.good=true、error=null，未发送机械臂/夹爪动作。
+- 证据位于work/local_detection_validation：prototype.json、guard_validation.json、live_reinitialization.json。新视角、遮挡、近距离/大占比、复杂背景及多管场景仍需扩展验证；自动找框成功不等于绝对定位精度或抓放成功。
 
 ## 2026-09-30 服务商API地址更新
 
