@@ -14,3 +14,14 @@ class BatchedRefiner:
             outputs.append(pose)
             torch.cuda.empty_cache()
         return torch.cat(outputs,dim=0),None
+
+
+def batch_score_features(scorer,batch_size=32):
+    """Batch independent image features; retain full cross-candidate attention."""
+    original=scorer.model.extract_feat
+    def extract(A,B):
+        if len(A)<=batch_size:return original(A,B)
+        import torch
+        return torch.cat([original(A[i:i+batch_size],B[i:i+batch_size]) for i in range(0,len(A),batch_size)],dim=0)
+    scorer.model.extract_feat=extract
+    return scorer

@@ -436,7 +436,7 @@ class Tracker:
             from estimater import FoundationPose
             from learning.training.predict_score import ScorePredictor
             from learning.training.predict_pose_refine import PoseRefinePredictor
-            from batched_refiner import BatchedRefiner
+            from batched_refiner import BatchedRefiner,batch_score_features
             from segment_anything import SamPredictor, sam_model_registry
             from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
             from Utils import draw_posed_3d_box, draw_xyz_axis, project_3d_to_2d, nvdiffrast_render
@@ -447,9 +447,10 @@ class Tracker:
             bbox = np.stack([-extents / 2, extents / 2])
             context = dr.RasterizeCudaContext()
             refiner=PoseRefinePredictor()
-            if self.detector_backend=='qwen':refiner=BatchedRefiner(refiner)
+            scorer=ScorePredictor()
+            if self.detector_backend=='qwen':refiner=BatchedRefiner(refiner);scorer=batch_score_features(scorer)
             estimator = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
-                scorer=ScorePredictor(), refiner=refiner, debug_dir=str(self.output), debug=0, glctx=context)
+                scorer=scorer, refiner=refiner, debug_dir=str(self.output), debug=0, glctx=context)
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
