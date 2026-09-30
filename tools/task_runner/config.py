@@ -37,7 +37,7 @@ def read_env(path):
 @dataclass
 class Config:
     api_key: str = field(repr=False)
-    responses_url: str = 'https://trendengine.site/v1/responses'
+    responses_url: str = 'https://trendengine.best/v1/responses'
     model: str = 'gpt-6-sol'
     fallback_model: str = ''
     reasoning_effort: str = 'medium'

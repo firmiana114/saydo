@@ -1,3 +1,10 @@
+## 2026-09-30 服务商API地址更新
+
+- 按用户要求，将本机/MSI的.env中SAYDO_LLM_RESPONSES_URL更新为https://trendengine.best/v1/responses，同时更新代码默认值及.env.example。MSI旧.env以600权限备份于work/provider_connectivity，逐字段验证其他配置（含密钥/代理/模型）不变。
+- MSI模型列表接口HTTP200。gpt-6-sol、gpt-6-luna、gpt-6-astra、gpt-5.5、gpt-5.6-sol的最小Responses请求均HTTP200/completed并返回OK，耗时约5至15秒。gpt-5.6-luna两次HTTP503，第二次提供方明确返回service_unavailable，原因是当前分组上游负载饱和；不再是TLS连接错误，不将该模型标记恢复。
+- 本机9项配置/协议测试通过。空闲8091重启为PID114957，接口正常，无不确定阻断；8089保持原SSDLite模式，未重启、未发机器人动作。第6页已有Codex会话的提供方配置在启动时固定，需要重新建立会话才能使用新地址。
+- 报告：work/provider_connectivity/20260930_091254_best.json和best_luna_retry.json。仅验证基础文本请求，未将此结果当作完整视觉工具链或实机任务验收。
+
 ## 2026-09-29 先完整规划的固定试管抓放脚本
 
 - 用户选择每次启动先定位试管和试管架，再规划完整路径；孔位可随机选择。新增tools/fixed_pick_place.py，默认只规划，显式--execute才运动。现有SSDLite不支持试管/试管架自动框选，因此需输入眼在手640×360的两个框，SAM/FoundationPose用新冻结帧重新定位；不调用LLM。
