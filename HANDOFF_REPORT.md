@@ -1,5 +1,7 @@
 ## 2026-09-30 服务商API地址更新
 
+- 后续按用户要求检查项目运行配置：代码默认值、.env.example及本机/MSI .env已是新域名；项目专用~/.local/share/saydo-codex/codex-home/config.toml中的base_url由旧/v1更新为https://trendengine.best/v1，解析比较确认其他字段不变，私有备份保存在work/provider_connectivity。历史日志和备份未改写。
+- 已在无活动任务/夹持记录时重启8089/8091/8092，PID为115442/115433/115425。重启前8089实际已是llm模式，沿用原命令及相机/模型参数。GET确认模型就绪、LLM识别请求约10.56秒返回并进入initializing、无错误；8091无不确定阻断，8092页面200。第6页旧终端连接结束，用户需重新点击启动/连接。未发送机械臂/夹爪动作。
 - 按用户要求，将本机/MSI的.env中SAYDO_LLM_RESPONSES_URL更新为https://trendengine.best/v1/responses，同时更新代码默认值及.env.example。MSI旧.env以600权限备份于work/provider_connectivity，逐字段验证其他配置（含密钥/代理/模型）不变。
 - MSI模型列表接口HTTP200。gpt-6-sol、gpt-6-luna、gpt-6-astra、gpt-5.5、gpt-5.6-sol的最小Responses请求均HTTP200/completed并返回OK，耗时约5至15秒。gpt-5.6-luna两次HTTP503，第二次提供方明确返回service_unavailable，原因是当前分组上游负载饱和；不再是TLS连接错误，不将该模型标记恢复。
 - 本机9项配置/协议测试通过。空闲8091重启为PID114957，接口正常，无不确定阻断；8089保持原SSDLite模式，未重启、未发机器人动作。第6页已有Codex会话的提供方配置在启动时固定，需要重新建立会话才能使用新地址。
