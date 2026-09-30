@@ -1035,7 +1035,7 @@ def main():
         except Exception as error:
             print('Grasp stop failure:', error, flush=True)
         tracker.stop.set()
-        if hasattr(tracker.local_detector,'close'):tracker.local_detector.close()
+        if hasattr(getattr(tracker,'local_detector',None),'close'):tracker.local_detector.close()
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
@@ -1043,7 +1043,7 @@ def main():
         server.serve_forever()
     finally:
         tracker.stop.set()
-        if hasattr(tracker.local_detector,'close'):tracker.local_detector.close()
+        if hasattr(getattr(tracker,'local_detector',None),'close'):tracker.local_detector.close()
         for thread in threads:
             thread.join(timeout=15)
         server.server_close()
