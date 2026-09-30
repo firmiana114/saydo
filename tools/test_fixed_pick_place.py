@@ -30,6 +30,13 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):workflow(self.backend,self.args)
         self.assertEqual(wait.call_count,2)
 
+    def test_omitted_tube_box_requests_automatic_scene_detection(self):
+        self.args.tube_box=None
+        with patch('tools.fixed_pick_place.wait_task',side_effect=[{'scene_id':'s'},{'fixed_pick_place_plan':self.plan}]) as wait:
+            workflow(self.backend,self.args)
+        self.assertIsNone(wait.call_args_list[0].args[2]['targets'][0]['box'])
+        self.assertEqual(wait.call_args_list[0].args[2]['targets'][1]['box'],self.args.rack_box)
+
     def test_ambiguous_submission_queries_same_id_without_resending(self):
         self.backend.action.side_effect=BackendError({'code':'REQUEST_UNCERTAIN'})
         self.backend.request.return_value={'terminal':True,'state':'completed','result':{'ok':True}}

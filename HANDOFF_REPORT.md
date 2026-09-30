@@ -1,3 +1,10 @@
+## 2026-09-30 透明试管本地自动检测
+
+- 新增本地Grounding DINO Tiny，与SSDLite按物品配置分流；试管不伪装成COCO bottle。模型设置读取各物品local_detection.json，权重共享于work/foundationpose_setup/grounding-dino-tiny，附加依赖独立于现有环境存放在work/local_detection_deps。固定官方revision及权重哈希，运行时不联网、不执行远程代码。
+- 网页自动初始化、多候选选择及场景box=null支持本地检测。固定抓放脚本允许省略--tube-box；试管架仍须框选。原SAM/FoundationPose及位姿质量阈值不变。
+- 三张历史图像开发验证找到试管：具体描述a transparent glass test tube.的目标分数约0.66–0.81；热推理约0.32秒，首次约1.14秒。宽泛描述出现背景误报，因此试管设置具体描述、box_threshold=0.4、text_threshold=0.2，非普适准确率证明。
+- 本机14项配置/场景专项和6项脚本测试通过。远端完整回归、CUDA默认设备兼容、实时验证及上线结果待补充；本轮未发送运动。
+
 ## 2026-09-30 服务商API地址更新
 
 - 后续按用户要求检查项目运行配置：代码默认值、.env.example及本机/MSI .env已是新域名；项目专用~/.local/share/saydo-codex/codex-home/config.toml中的base_url由旧/v1更新为https://trendengine.best/v1，解析比较确认其他字段不变，私有备份保存在work/provider_connectivity。历史日志和备份未改写。

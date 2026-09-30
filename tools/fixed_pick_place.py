@@ -78,7 +78,7 @@ def main():
     p.add_argument('--token-file',type=Path,default=Path.home()/'.local/share/saydo-mcp/robot-backend-token')
     p.add_argument('--tube',default='transparent_test_tube_150mm')
     p.add_argument('--rack',default='test_tube_rack_40_272x112x85')
-    p.add_argument('--tube-box',type=box,required=True,help='眼在手图像中的试管框；不使用LLM')
+    p.add_argument('--tube-box',type=box,help='可选试管框；省略时使用后端已配置的自动检测器，本地模式不调用LLM')
     p.add_argument('--rack-box',type=box,required=True,help='同一眼在手图像中的试管架框')
     free=p.add_mutually_exclusive_group(required=True)
     free.add_argument('--free-slots',help='明确确认空闲的模型孔位，例如A01,A02,B03')

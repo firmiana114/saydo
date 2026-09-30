@@ -24,6 +24,7 @@ import numpy as np
 from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
 from object_catalog import scan_objects, select_object, inferred_class, save_pose_mode, save_detection_prompt
 from llm_detection import LLMBoxDetector, DetectionCancelled, MODEL, EFFORT, MAX_FRAME_AGE_S
+from local_grounding import LocalGroundingDetector
 from pose_symmetry import canonical_pose, object_rotation_error, pose_fields
 from grasp_control import GraspController
 from live_events import EventLog
@@ -45,6 +46,7 @@ class Tracker:
             self.object_info['detector_class'] = args.detector_class
         self.detector_backend = getattr(args, 'detector', 'ssdlite')
         self.llm_detector = LLMBoxDetector() if self.detector_backend == 'llm' else None
+        self.local_detector = LocalGroundingDetector(ROOT)
         self.scene_job = None
         self.pending_object = None
         self.lock = threading.RLock()
@@ -67,8 +69,8 @@ class Tracker:
         self.state['output'] = str(self.output)
         self.state.update(model_sha256=hashlib.sha256(args.mesh.read_bytes()).hexdigest(), object_id=self.object_info['id'], object_name=self.object_info['name'],
                           pose_mode=self.object_info.get('pose_mode', '6d'), pose_mode_revision=self.object_info.get('pose_mode_revision'),
-                          detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.llm_detector or self.object_info['detector_class']),
-                          detector_backend=self.detector_backend, detection_model=MODEL if self.llm_detector else None,
+                          detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.llm_detector or self.object_info.get('local_detection') or self.object_info['detector_class']),
+                          detector_backend=self.detector_backend, local_detector_name='Grounding DINO Tiny' if not self.llm_detector and self.object_info.get('local_detection') else None, detection_model=MODEL if self.llm_detector else None,
                           detection_effort=EFFORT if self.llm_detector else None,
                           effective_detection_prompt=self.object_info.get('effective_detection_prompt', self.object_info['name']))
         self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
@@ -448,13 +450,15 @@ class Tracker:
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
             detector = None if self.llm_detector else ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
+            local_settings = self.object_info.get('local_detection') if not self.llm_detector else None
+            if local_settings:self.local_detector.ensure_loaded()
             detector_class = self.object_info['detector_class']
             detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
             logging.getLogger().setLevel(logging.WARNING)
             with self.lock:
                 if self.stop.is_set():
                     return
-                self.state.update(state='ready', model_ready=True, model_extents_m=mesh.extents.tolist(), auto_detection_supported=bool(self.llm_detector or detector_label is not None))
+                self.state.update(state='ready', model_ready=True, model_extents_m=mesh.extents.tolist(), auto_detection_supported=bool(self.llm_detector or local_settings or detector_label is not None))
             previous = None
             last_sequence = -1
             failures = 0
@@ -480,15 +484,18 @@ class Tracker:
                                 mesh, origin, bbox = next_mesh, next_origin, np.stack([-next_extents / 2, next_extents / 2])
                                 estimator = next_estimator
                                 self.object_info = info
+                                local_settings = info.get('local_detection') if not self.llm_detector else None
+                                if local_settings:self.local_detector.ensure_loaded()
                                 detector_class = info['detector_class']
                                 detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
                                 self.state.update(state='ready', model_ready=True, model_sha256=hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest(), model=info['mesh'], object_id=info['id'],
                                     pose_mode=info.get('pose_mode', '6d'), pose_mode_revision=info.get('pose_mode_revision'),
                                     object_name=info['name'], pending_object_name=None, detector_class=detector_class,
-                                    auto_detection_supported=bool(self.llm_detector or detector_label is not None), model_extents_m=mesh.extents.tolist(),
+                                    auto_detection_supported=bool(self.llm_detector or local_settings or detector_label is not None), model_extents_m=mesh.extents.tolist(),
                                     initialization_seconds=None, catchup_seconds=None, catchup_frames=0,
                                     tracked_frames=0, registered_frames=0, recovery_attempts=0,
-                                    auto_recover=self.args.auto_recover and bool(self.llm_detector or detector_label is not None),
+                                    auto_recover=self.args.auto_recover and bool(self.llm_detector or local_settings or detector_label is not None),
+                                    local_detector_name='Grounding DINO Tiny' if local_settings else None,
                                     effective_detection_prompt=info.get('effective_detection_prompt', info['name']))
                                 previous, last_sequence, failures = None, -1, 0
                                 auto_attempted = not self.args.auto_start
@@ -513,7 +520,7 @@ class Tracker:
                             def scene_check():
                                 if scene_job['cancel'].is_set() or self.stop.is_set():raise ValueError('场景采集已取消')
                             scene_job['result']=localize_scene(scene_job['frame'],scene_job['targets'],self.models_root,
-                                estimator,sam,context,self.llm_detector,scene_check,scene_job['progress'])
+                                estimator,sam,context,self.llm_detector,scene_check,scene_job['progress'],self.local_detector)
                         except Exception as error:scene_job['error']=str(error)
                         finally:scene_job['done'].set()
                         # Do not resume an old live pose after spending time on scene inference.
@@ -529,7 +536,7 @@ class Tracker:
                         generation = self.generation
                         frame = self.latest
                         startup_ready = self.state['state'] == 'ready'
-                    if self.args.auto_start and (self.llm_detector or detector_label is not None) and not auto_attempted and frame is not None and startup_ready:
+                    if self.args.auto_start and (self.llm_detector or local_settings or detector_label is not None) and not auto_attempted and frame is not None and startup_ready:
                         self.automatic()
                         auto_attempted = True
                         continue
@@ -566,6 +573,9 @@ class Tracker:
                                             prompt = self.object_info.get('effective_detection_prompt', self.object_info['name'])
                                         candidates = self.llm_detector.detect(frame, prompt,
                                             lambda: self.stop.is_set() or generation != self.generation)
+                                    elif local_settings:
+                                        candidates = self.local_detector.detect(frame, local_settings,
+                                            lambda: self.stop.is_set() or generation != self.generation)
                                     else:
                                         prediction = predict_detection(detector, rgb)
                                         candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
@@ -580,7 +590,7 @@ class Tracker:
                                             continue
                                         self.state['bottle_candidates'] = candidates
                                         self.state['detection_seconds'] = timings['detection_s']
-                                        self.state['detection_method'] = f'{MODEL}/{EFFORT} -> SAM -> FoundationPose' if self.llm_detector else f'Torchvision SSDLite COCO {detector_class} -> SAM -> FoundationPose'
+                                        self.state['detection_method'] = f'{MODEL}/{EFFORT} -> SAM -> FoundationPose' if self.llm_detector else ('Local Grounding DINO -> SAM -> FoundationPose' if local_settings else f'Torchvision SSDLite COCO {detector_class} -> SAM -> FoundationPose')
                                         if len(candidates) > 1:
                                             self.state.update(state='choose_candidate', error=None)
                                             continue

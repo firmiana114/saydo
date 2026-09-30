@@ -129,7 +129,7 @@ class AgentAPI:
         return {'session_id': self.session_id, 'tracking': {k: result.get(k) for k in [
             'state', 'error', 'object_id', 'object_name', 'model_ready', 'auto_detection_supported',
             'pose_mode', 'pose_mode_revision', 'pose_semantics', 'detector_backend',
-            'detection_model', 'detection_effort', 'effective_detection_prompt', 'detection_seconds',
+            'local_detector_name', 'detection_model', 'detection_effort', 'effective_detection_prompt', 'detection_seconds',
             'camera_age_s', 'pose_age_s', 'quality', 'bottle_candidates', 'selection_id']},
             'grasp': self.agent_controller_state(result['grasp']), 'active_task_id': self.active,
             'task_recording_error': self.recording_error}

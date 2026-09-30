@@ -8,7 +8,18 @@ from pose_symmetry import canonical_pose,object_rotation_error
 from scene_features import object_features
 
 
-def localize_scene(frame,targets,models_root,estimator,sam,context,detector,check,progress):
+def automatic_candidates(frame,info,detector,local_detector,check):
+    check()
+    if detector is None:
+        if local_detector is None or not info.get('local_detection'):raise ValueError('目标没有本地自动检测配置，请提供目标框')
+        return local_detector.detect(frame,info['local_detection'],lambda:cancelled(check))
+    while detector.inflight.locked():check();time.sleep(.05)
+    check()
+    return detector.detect(frame,info.get('effective_detection_prompt',info['name']),
+                           lambda:cancelled(check),frozen_scene=True)
+
+
+def localize_scene(frame,targets,models_root,estimator,sam,context,detector,check,progress,local_detector=None):
     import cv2
     import trimesh
     import torch
@@ -20,13 +31,8 @@ def localize_scene(frame,targets,models_root,estimator,sam,context,detector,chec
         check();info=select_object(models_root,target['object_id']);progress('定位场景实例：'+target['instance_id'])
         box=target['box']
         if box is None:
-            if detector is None:raise ValueError('当前没有LLM检测器，请提供目标框')
-            # A live detection cancelled by capture may still have an HTTP worker exiting.
-            while detector.inflight.locked():check();time.sleep(.05)
-            check()
-            candidates=detector.detect(frame,info.get('effective_detection_prompt',info['name']),
-                                       lambda:cancelled(check),frozen_scene=True)
-            if len(candidates)!=1:raise ValueError(f'{target["instance_id"]}有多个候选，请结合画面为各实例指定box后重新采集')
+            candidates=automatic_candidates(frame,info,detector,local_detector,check)
+            if len(candidates)!=1:raise ValueError(f'{target["instance_id"]}未得到唯一可靠候选（{len(candidates)}个），请结合画面指定box后重新采集')
             box=candidates[0]['box']
         box=checked_box(box,640,360)
         for model,previous in used:

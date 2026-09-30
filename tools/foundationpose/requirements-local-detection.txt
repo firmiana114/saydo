@@ -1,0 +1,7 @@
+# Install with --no-deps --target work/local_detection_deps in the existing
+# FoundationPose environment. Keep its torch/torchvision/numpy versions intact.
+transformers==4.49.0
+tokenizers==0.21.1
+safetensors==0.5.3
+huggingface-hub==0.29.3
+regex==2024.11.6

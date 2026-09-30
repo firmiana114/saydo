@@ -7,6 +7,7 @@ import tempfile
 import time
 
 from pose_symmetry import checked_mode
+from local_grounding import read_local_detection
 
 
 def tracking_revision(raw):
@@ -44,6 +45,7 @@ def scan_objects(root):
             if not isinstance(config, dict):
                 raise ValueError('tracking.json 必须为 JSON 对象')
             row['name'] = str(config.get('name', directory.name))
+            row['local_detection'] = read_local_detection(directory)
             detection_path = directory/'detection.json'
             if detection_path.is_symlink():
                 raise ValueError('detection.json 不能是符号链接')

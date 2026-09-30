@@ -485,3 +485,29 @@ Agent 输出过滤旧 `force_config` / `open_position_config` 全局字段，避
 - 抓取最终容差仍为 2 毫米/2°；姿态调整使用其现有配置容差。稳定窗口未形成、误差持续、取消或状态查询失败都停止后续动作，不增加重试运动，不放宽最终容差。姿态调整采用 movej_p，运动期间不再做假定直线路径偏差监测，仍检查实际状态和夹持反馈。
 - `kinematics_checks` 记录每段发令前的实际状态与正解回验；`arrival_checks[].samples` 记录有界采样、误差和耗时，`settled` 标明是否完成稳定到位。自适应搜索日志也保留具体正解失败原因。
 - 包含历史错误解的完整回归：`SAYDO_IK_CHECKER=$PWD/work/grasp/rm75_ik_check python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`。未设置此环境变量时，仅跳过调用实际离线 SDK 可执行文件的历史回归项；其余均为模拟测试。
+
+## 本地开放类别检测（透明试管）
+
+`--detector ssdlite` 保留原COCO检测器；当选中物品目录存在有效 `local_detection.json` 时，该物品改用 **Grounding DINO Tiny 本地视觉检测**，不把试管假冒为瓶子类别，不调用GPT或联网推理。无此配置的瓶子/杯子等仍走SSDLite；LLM模式保持独立，不自动切换。
+
+试管配置保存在 `work/object_models/transparent_test_tube_150mm/local_detection.json`，跟随自定义models-root，不提交Git：
+
+```json
+{"backend":"grounding_dino","prompt":"a transparent glass test tube.","box_threshold":0.4,"text_threshold":0.2}
+```
+
+它使用本地文本编码器理解检测描述，不是在线LLM。权重常驻GPU，与FoundationPose/SAM在同一推理线程串行运行；捕获和显示不等待检测。多实例返回候选供用户选择，未找到目标时不伪造框；之后仍须通过SAM分割、FoundationPose定位及原有质量门限。支持场景采集的box=null；固定抓放脚本可省略--tube-box，试管架仍需--rack-box。
+
+共享权重位置 `work/foundationpose_setup/grounding-dino-tiny/`，来源 [IDEA-Research官方模型仓库](https://huggingface.co/IDEA-Research/grounding-dino-tiny)，固定revision `a2bb814dd30d776dcf7e30523b00659f4f141c71`。只加载safetensors、禁止远程代码、local_files_only，缺失文件明确失败。权重SHA-256为 `1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3`，加载前验证；source.json须记录对应revision，可额外记录仓库和各文件哈希。
+
+在已准备FoundationPose环境的MSI安装附加依赖，不升级现有torch/torchvision/numpy：
+
+```sh
+work/foundationpose_env/bin/python -m pip install --no-deps \
+  --target work/local_detection_deps \
+  -r tools/foundationpose/requirements-local-detection.txt
+```
+
+首次部署需从上述固定revision下载 `model.safetensors`、处理器/模型配置JSON及分词器JSON/vocab.txt至权重目录，并创建source.json；运行阶段不会下载权重。可用huggingface_hub.snapshot_download，明确revision并仅下载上述文件，不需要pytorch_model.bin。完整权重约658MiB；现有基础环境还需requests、PyYAML、filelock、tqdm、fsspec、NumPy。更换模型或修改物品本地检测配置后，重新选择物品或空闲重启服务加载。
+
+此能力是局部场景验证过的自动找框，不是透明物体检测准确率或机械臂操作验收；新的背景、遮挡、反光、端面视角仍可能漏检或误检。检测耗时显示在原页面，local_detector_name区分Grounding DINO与SSDLite。
