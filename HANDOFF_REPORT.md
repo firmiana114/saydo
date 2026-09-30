@@ -2,7 +2,9 @@
 
 - 用户要求试管架支持本地自动检测并用SayDo执行器再跑一次相同任务。已在当前画面测试Grounding DINO描述a metal test tube rack.，得到唯一候选，热推理约0.337秒、分数约0.79；配置保存于试管架模型目录local_detection.json，阈值0.4/0.2、最大框面积占比0.5，实际配置不入Git。
 - 实机重试前补上已知原地释放参数漏洞的拦截：plan_release引用scene_object/tracked_object必须明确target_position_m，null返回GoalArgumentError，执行器作为可纠正参数错误交回模型。未改成默认孔位原点，未取消净空/定位质量检查；单纯持物调姿与显式goal=null原地释放保持原语义。
-- 验证、部署和新任务结果待补充；仅本节指定的一次任务获实机执行授权，不自动重试失败任务。
+- MSI相关后端21项、执行器16项通过。更新空闲8091/8089为PID162930/162936；两物品box=null的真实只读场景采集scene_ready，试管与架子quality.good=true，架子Z轴朝上（Base Z分量0.99876），未发送运动。证据work/rack_local_detection_validation/scene_validation.json。
+- 已按授权提交且仅提交一次相同任务：db8ff066b28d464b94a08fe8d3e041fc，2026-09-30 11:55:10（Asia/Singapore），GPT-6-Astra/low，79.027秒后blocked。模型读取旧验证快照后正确重采本任务场景，完成preview_grasp，然后因相机替换精度未验证、孔位配合及夹指碰撞未验证而主动结束；未调用grasp/execute_plan，无真实动作。
+- 抓取预览execution_blockers=[]、ik_fk_checked=true；can_execute=false是preview模式本身。相机绑定为same_model_same_mount，mount_basis=user_confirmed_unchanged，active_serial=405622073572、calibration_serial=135122077750，replacement_accuracy_verified=false。这不是相机身份校验硬拒绝。任务原始结果work/rack_local_detection_validation/authorized_task_result.json；没有自动发起第二次任务。
 
 ## 2026-09-30 动作后全局观察与机位来源
 

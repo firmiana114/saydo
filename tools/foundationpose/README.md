@@ -496,6 +496,8 @@ Agent 输出过滤旧 `force_config` / `open_position_config` 全局字段，避
 {"backend":"grounding_dino","prompt":"a transparent glass test tube.","box_threshold":0.4,"text_threshold":0.2,"max_box_area_fraction":0.15}
 ```
 
+MSI的试管架 `test_tube_rack_40_272x112x85` 也已配置同一检测器，描述为`a metal test tube rack.`，阈值0.4/0.2、最大框面积占比0.5，设置同样位于该模型自己的local_detection.json。SayDo场景采集可将两者的box都设为null；固定脚本当前CLI仍要求--rack-box。
+
 它使用本地文本编码器理解检测描述，不是在线LLM。权重常驻GPU，与FoundationPose/SAM在同一推理线程串行运行；捕获和显示不等待检测。低对比度空白帧拒绝检测，框面积超过物品配置上限时拒绝（试管当前15%，靠近相机占比过大时需调整摆放/配置）。多实例返回候选供用户选择，未找到目标时不伪造框；之后仍须通过SAM分割、FoundationPose定位及原有质量门限。支持场景采集的box=null；固定抓放脚本可省略--tube-box，试管架仍需--rack-box。
 
 共享权重位置 `work/foundationpose_setup/grounding-dino-tiny/`，来源 [IDEA-Research官方模型仓库](https://huggingface.co/IDEA-Research/grounding-dino-tiny)，固定revision `a2bb814dd30d776dcf7e30523b00659f4f141c71`。只加载safetensors、禁止远程代码、local_files_only，缺失文件明确失败。权重SHA-256为 `1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3`，加载前验证；source.json须记录对应revision，可额外记录仓库和各文件哈希。
