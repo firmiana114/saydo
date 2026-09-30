@@ -1,3 +1,11 @@
+## 2026-09-30 8088双相机实时预览
+
+- `tools/camera_monitor/` 改为并排显示D435i眼在手与D405固定机位，支持双路/单路开始、独立状态/帧率/截图及单路/全部释放。每台独立线程、最多4个观看连接；旧`/stream`及`/snapshot.jpg`保留为D435i，`/api/pause`释放本服务两路，兼容标定及8089启动协调。
+- 生产启动命令为`./tools/camera_monitor/run.sh --port 8088 --tracker-url http://192.168.101.65:8089`。序列号读取机器本地`config/cameras/global.json`，令牌只在服务端读取。D435i通过认证GET共享8089最新原始640×360画面，不开启第二条SDK采集；D405独立1280×720/15fps采集，与原全局观察共用设备锁。短进程`observe_global`优先取得监控中请求之后的新帧，无活动预览时沿用原独立采集，保留未经基座标定/仅观察约束，无需重启8091或已有MCP。
+- 本机及MSI各25项Python测试通过，本机前端交互测试通过；MSI未安装node，未在其终端运行JS测试。真实双流连续解码D435i 95帧、D405 34帧；采样帧率12.7/15.0fps，两次共享全局观察新帧年龄16/12ms，单独释放D405不影响D435i，释放后独立观察仍成功（年龄约987ms）。浏览器实际并排显示两机位并持续更新，通过页面开启双路预览，页面保留给用户。
+- 8088此前未运行，本次启动PID177973，沿用`work/camera_monitor/server.pid`及`server.log`。8089进程及夹持记录不变，507份既有本机配置/物品JSON/YAML/.env摘要不变，远端未跟踪`config/grasp/observation_pose_backups/`保留。未重启8089/8091/8092，未发送机械臂或夹爪命令。实机证据在MSI `work/camera_monitor/dual_validation/result.json`，浏览器截图在本机同目录`browser.jpg`。
+- 两路独立彩色预览，不是同步标定数据；D435i共享画面当前为推理分辨率，D405仍未标定到基座。本次不增加深度流、同步采样或标定求解。
+
 ## 2026-09-30 Qwen3-VL-4B NF4常驻验证与接入
 
 - 后续按用户要求将CLI及Tracker缺省检测器统一改为qwen。无活动任务/夹持时重启8089，特意移除显式--detector参数验证默认行为：服务PID175852、Qwen PID175971，加载约7.86秒、预热0.908秒后自动tracking、model_ready=true、error=null。旧服务及Qwen子进程退出后才启动新进程，未发送机器人动作。显式--detector llm/ssdlite仍可覆盖默认值；远端既有未跟踪observation_pose_backups目录保留。
