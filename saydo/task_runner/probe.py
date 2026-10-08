@@ -3,21 +3,21 @@
 import asyncio
 import base64
 import json
-from pathlib import Path
+import pathlib
 import secrets
-from saydo.task_runner.config import Config, ROOT
-from saydo.task_runner.llm_client import LLMClient, ModelUnavailable
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import llm_client
 
 
 def image_fixture():
-    jpeg = Path(__file__).with_name('fixtures').joinpath(
+    jpeg = pathlib.Path(__file__).with_name('fixtures').joinpath(
         'color_halves.jpg'
     ).read_bytes()
     return 'data:image/jpeg;base64,' + base64.b64encode(jpeg).decode()
 
 
 async def probe(config):
-    client = LLMClient(config)
+    client = llm_client.LLMClient(config)
     tool = {
         'type': 'function',
         'name': 'get_test_image',
@@ -49,7 +49,7 @@ async def probe(config):
             'Use the tool first.',
             tool_choice={'type': 'function', 'name': tool['name']},
         )
-    except ModelUnavailable:
+    except llm_client.ModelUnavailable:
         if not config.fallback_model or config.fallback_model == model:
             raise
         model = config.fallback_model
@@ -121,8 +121,10 @@ async def probe(config):
 
 
 if __name__ == '__main__':
-    result = asyncio.run(probe(Config.load(ROOT / '.env')))
-    output = ROOT / 'work/task_runner_validation'
+    result = asyncio.run(
+        probe(task_runner_config.Config.load(task_runner_config.ROOT / '.env'))
+    )
+    output = task_runner_config.ROOT / 'work/task_runner_validation'
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     (output / 'provider_probe.json').write_text(
         json.dumps(result, ensure_ascii=False, indent=2)

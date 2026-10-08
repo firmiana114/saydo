@@ -1,11 +1,11 @@
 import asyncio
 import copy
-from pathlib import Path
+import pathlib
 import threading
 import unittest
-from saydo.agent.client import BackendError
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked
+from saydo.agent import client
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
 
 
 class Backend:
@@ -31,11 +31,11 @@ class Backend:
             return copy.deepcopy(self.state)
         if path == '/api/agent/tasks':
             if self.submission_error:
-                raise BackendError({'code': 'REQUEST_UNCERTAIN'})
+                raise client.BackendError({'code': 'REQUEST_UNCERTAIN'})
             return {'terminal': False}
         if path.startswith('/api/agent/tasks/'):
             if self.query_error:
-                raise BackendError({'code': 'TASK_NOT_FOUND'})
+                raise client.BackendError({'code': 'TASK_NOT_FOUND'})
             return copy.deepcopy(self.result)
         if path == '/api/agent/stop':
             return {'stop_acknowledged': True, 'stationary_observed': True}
@@ -44,14 +44,14 @@ class Backend:
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.config = Config(
+        self.config = config.Config(
             api_key='test',
             mode='execute',
             poll_interval=.001,
             action_timeout=.05,
         )
         self.backend = Backend()
-        self.adapter = RobotAdapter(self.config, self.backend)
+        self.adapter = robot_adapter.RobotAdapter(self.config, self.backend)
         self.cancelled = asyncio.Event()
 
     async def test_vision_uses_matching_candidate_frame(self):
@@ -75,7 +75,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result['candidate_frame']['sequence'], 7)
         self.backend.state['tracking']['selection_id'] = 4
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'start_tracking',
                 {'object_id': 'cup'},
@@ -88,7 +88,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self
     ):
         self.backend.state['tracking'] = {'state': 'lost'}
-        with self.assertRaisesRegex(Blocked, '初始化失败'):
+        with self.assertRaisesRegex(robot_adapter.Blocked, '初始化失败'):
             await self.adapter.execute(
                 'start_tracking',
                 {'object_id': 'cup'},
@@ -121,7 +121,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unconfirmed_submission_never_reissued(self):
         self.backend.submission_error = self.backend.query_error = True
-        with self.assertRaises(Blocked) as caught:
+        with self.assertRaises(robot_adapter.Blocked) as caught:
             await self.adapter.execute(
                 'reset_arm',
                 {'target': 'zero'},
@@ -136,7 +136,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_held_object_rejects_repeated_grasp(self):
         self.backend.state['grasp']['held_object'] = {'object_id': 'b'}
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'grasp',
                 {'object_id': 'b'},
@@ -163,12 +163,12 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_restart_is_blocked(self):
         await self.adapter.status()
         self.backend.state['session_id'] = 'new'
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.status()
 
     async def test_rejected_backend_task_is_not_success(self):
         self.backend.result['state'] = 'rejected'
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'reset_arm',
                 {'target': 'zero'},
@@ -227,7 +227,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_busy_blocks_vision_and_motion_at_backend_gate(self):
         self.backend.state['grasp']['busy'] = True
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'reset_arm',
                 {'target': 'zero'},
@@ -238,8 +238,8 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancel_flag_prevents_dispatch(self):
         self.cancelled.set()
-        from saydo.task_runner.robot_adapter import Cancelled
-        with self.assertRaises(Cancelled):
+        from saydo.task_runner import robot_adapter
+        with self.assertRaises(robot_adapter.Cancelled):
             await self.adapter.execute(
                 'reset_arm',
                 {'target': 'zero'},

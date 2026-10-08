@@ -4,10 +4,10 @@ import copy
 import json
 import numpy as np
 from scipy.spatial.transform import Rotation
-from saydo.contracts.motion_contract import DEFAULT_GOAL
-from saydo.geometry.grasp_geometry import controller_pose, transform
-from saydo.manipulation.reorientation_geometry import model_geometry
-from saydo.manipulation.object_motion_geometry import validate_tcp
+from saydo.contracts import motion_contract
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import reorientation_geometry
+from saydo.manipulation import object_motion_geometry
 
 
 class MotionRecoveryMixin:
@@ -99,7 +99,7 @@ class MotionRecoveryMixin:
             )
             if original is None or self.motion_binding(config) != original:
                 raise ValueError('配置已变化或缺少绑定证据')
-            mesh = model_geometry(
+            mesh = reorientation_geometry.model_geometry(
                 self.tracker.models_root, current['object_id']
             )
             if (
@@ -109,9 +109,16 @@ class MotionRecoveryMixin:
                 raise ValueError('模型已变化')
             if current.get('scene_id'):
                 self.validate_scene(current['scene_id'], config)
-            tcp = controller_pose(arm['pose'])
-            validate_tcp(tcp, current, mesh['vertices'], config)
-            pose = tcp @ np.linalg.inv(transform(current['object_T_tcp']))
+            tcp = grasp_geometry.controller_pose(arm['pose'])
+            object_motion_geometry.validate_tcp(
+                tcp, current, mesh['vertices'], config
+            )
+            pose = (
+                tcp
+                @ np.linalg.inv(
+                    grasp_geometry.transform(current['object_T_tcp'])
+                )
+            )
             plan = report.get('plan') or {}
             goal = plan.get('goal', {})
             constraint = {
@@ -146,12 +153,14 @@ class MotionRecoveryMixin:
                     )
                 )
                 constraint['base_T_object_target'] = target.tolist()
-            target = transform(constraint['base_T_object_target'])
-            attachment = transform(current['object_T_tcp'])
+            target = grasp_geometry.transform(
+                constraint['base_T_object_target']
+            )
+            attachment = grasp_geometry.transform(current['object_T_tcp'])
             constraint['tcp_position_m'] = (target @ attachment)[:3, 3].tolist()
             constraint['actual_tcp_position_m'] = tcp[:3, 3].tolist()
             suggested = {
-                **copy.deepcopy(DEFAULT_GOAL),
+                **copy.deepcopy(motion_contract.DEFAULT_GOAL),
                 'position_mode': constraint['position_mode'],
                 'reference_point_object_m': constraint[
                     'reference_point_object_m'

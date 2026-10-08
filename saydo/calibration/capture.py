@@ -10,12 +10,12 @@ import socket
 import subprocess
 import time
 import uuid
-from pathlib import Path
+import pathlib
 
 import cv2
 import numpy as np
 import pyrealsense2 as rs
-from saydo.calibration.geometry import board_pose, pose_matrix, stationarity, zero_reference_frames
+from saydo.calibration import geometry
 
 from saydo import paths
 
@@ -132,7 +132,7 @@ def main():
             != 'RM75-BI'
         ):
             raise ValueError('Unexpected robot identity')
-        zero_reference_frames(
+        geometry.zero_reference_frames(
             preflight['get_current_tool_frame'],
             preflight['get_current_work_frame'],
         )
@@ -146,7 +146,7 @@ def main():
             'need separate verification'
         )
         # Refuse to compete with preview or other video capture processes.
-        nodes = list(Path('/dev').glob('video*'))
+        nodes = list(pathlib.Path('/dev').glob('video*'))
         if nodes:
             users = subprocess.run(
                 ['fuser', *map(str, nodes)],
@@ -190,7 +190,7 @@ def main():
         for _ in range(2):
             time.sleep(.2)
             observe()
-        report['stationarity'] = stationarity(
+        report['stationarity'] = geometry.stationarity(
             [v['reply']['arm_state'] for v in report['observations']]
         )
         report['timing'] = {
@@ -239,7 +239,7 @@ def main():
         if not found:
             raise ValueError('All 88 board corners were not found')
         report['corners_px'] = corners.reshape(-1, 2).tolist()
-        report['board_pose_candidates'] = board_pose(
+        report['board_pose_candidates'] = geometry.board_pose(
             corners, np.array(report['camera']['K']), np.zeros(5)
         )
         best = report['board_pose_candidates'][0]
@@ -247,7 +247,7 @@ def main():
             raise ValueError(
                 'Board reprojection error exceeds screening threshold'
             )
-        report['base_T_flange'] = pose_matrix(
+        report['base_T_flange'] = geometry.pose_matrix(
             before['reply']['arm_state']['pose']
         ).tolist()
         # A board pose is not the hand-eye transform. Preserve both planar

@@ -4,7 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+import pathlib
 import re
 import tempfile
 import time
@@ -97,7 +97,7 @@ class MotionSpeedMixin:
                             prefix='.speed-',
                             delete=False,
                         ) as f:
-                            temporary = Path(f.name)
+                            temporary = pathlib.Path(f.name)
                             os.fchmod(
                                 f.fileno(),
                                 self.config_path.stat().st_mode & 0o777,

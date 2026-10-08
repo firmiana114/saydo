@@ -3,7 +3,7 @@
 import base64
 import json
 import math
-from pathlib import Path
+import pathlib
 import sys
 import threading
 import time
@@ -13,7 +13,7 @@ import urllib.request
 from saydo import paths
 
 ROOT = paths.ROOT
-from saydo.task_runner.config import Config
+from saydo.task_runner import config as task_runner_config
 
 MODEL = 'gpt-6-sol'
 EFFORT = 'low'
@@ -119,7 +119,7 @@ def parse_detection(response, width, height):
 class LLMBoxDetector:
     def __init__(self, env_path=None, timeout=TIMEOUT_S, request=None):
         self.env_path = (
-            Path(env_path) if env_path is not None else ROOT / '.env'
+            pathlib.Path(env_path) if env_path is not None else ROOT / '.env'
         )
         self.timeout = timeout
         self.request = request or self._request
@@ -127,7 +127,7 @@ class LLMBoxDetector:
 
     def _request(self, payload):
         try:
-            config = Config.load(self.env_path)
+            config = task_runner_config.Config.load(self.env_path)
         except (OSError, ValueError):
             raise ValueError(
                 'LLM识别配置不可用，请检查服务端.env及其600权限'

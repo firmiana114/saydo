@@ -1,11 +1,11 @@
 import copy
 import json
 import unittest
-from unittest.mock import Mock
+from unittest import mock
 
 import numpy as np
 
-from saydo.objects.grasp_library import checked_overrides, effective_config, effective_parameters, held_clearance_config
+from saydo.objects import grasp_library
 from tests.objects import test_grasp_library as base
 
 
@@ -26,26 +26,33 @@ class GraspClearanceTests(unittest.TestCase):
                     'min_table_clearance_m': value,
                 }
             }
-            config = effective_config(self.config, entry)
+            config = grasp_library.effective_config(self.config, entry)
             self.assertEqual(config['min_table_clearance_m'], value)
             self.assertEqual(self.config['min_table_clearance_m'], .01)
             self.assertEqual(
-                effective_parameters(self.config, entry)[
+                grasp_library.effective_parameters(self.config, entry)[
                     'table_clearance_source'
                 ],
                 'grasp_profile',
             )
         old = {'overrides': {'open_position': 1000, 'force_target_raw': 30}}
         self.assertEqual(
-            effective_parameters(self.config, old)['min_table_clearance_m'], .01
+            grasp_library.effective_parameters(self.config, old)[
+                'min_table_clearance_m'
+            ],
+            .01,
         )
         self.assertEqual(
-            effective_parameters(self.config, old)['table_clearance_source'],
+            grasp_library.effective_parameters(self.config, old)[
+                'table_clearance_source'
+            ],
             'global_default',
         )
         for value in (-.001, True, '0.01', float('nan'), float('inf'), None):
             with self.assertRaises(ValueError):
-                checked_overrides({'min_table_clearance_m': value})
+                grasp_library.checked_overrides(
+                    {'min_table_clearance_m': value}
+                )
 
     def test_editor_save_immediately_changes_planning_without_restart(self):
         self.config['min_table_clearance_m'] = .4
@@ -55,7 +62,7 @@ class GraspClearanceTests(unittest.TestCase):
         )
         ident = saved['saved_id']
         before = self.cfg.read_bytes()
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             return_value={'joint_travel_deg': 1}
         )
         with self.assertRaisesRegex(ValueError, '距配置桌面'):
@@ -92,7 +99,7 @@ class GraspClearanceTests(unittest.TestCase):
     def test_busy_save_rejected_and_existing_hold_keeps_its_snapshot(self):
         saved = self.save(overrides={'min_table_clearance_m': .025})
         self.service.status['gripper_contact'] = {'pos': [500]}
-        self.service.arm_state = Mock(
+        self.service.arm_state = mock.Mock(
             return_value={'pose': [0, 0, 200000, 0, 0, 0]}
         )
         plan = {
@@ -118,9 +125,11 @@ class GraspClearanceTests(unittest.TestCase):
         self.service.edit_grasp_profiles(
             self.request(id=saved['saved_id'], grasp=edited)
         )
-        config = held_clearance_config(self.config, held)
+        config = grasp_library.held_clearance_config(self.config, held)
         self.assertEqual(config['min_table_clearance_m'], .025)
-        self.assertEqual(held_clearance_config(self.config, {}), self.config)
+        self.assertEqual(
+            grasp_library.held_clearance_config(self.config, {}), self.config
+        )
 
 
 if __name__ == '__main__':

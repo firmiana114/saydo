@@ -4,7 +4,7 @@ import copy
 import subprocess
 import time
 import numpy as np
-from saydo.geometry.grasp_geometry import controller_pose, pose_values, rotation_error
+from saydo.geometry import grasp_geometry
 
 POSITION_TOLERANCE_M = .002
 ORIENTATION_TOLERANCE_RAD = np.deg2rad(2)
@@ -15,7 +15,9 @@ def si_pose(values):
     values = np.asarray(values, dtype=float)
     if values.shape != (6,) or not np.isfinite(values).all():
         raise ValueError('正解位姿格式无效')
-    return controller_pose(values * np.array([1e6] * 3 + [1e3] * 3))
+    return grasp_geometry.controller_pose(
+        values * np.array([1e6] * 3 + [1e3] * 3)
+    )
 
 
 def parse_kinematics(result, arm, waypoints):
@@ -60,11 +62,13 @@ def parse_kinematics(result, arm, waypoints):
         if len(fk) != 1 or len(fk[0]) != 7:
             return fail('缺少有效的起始正解反馈')
         initial = si_pose([float(x) for x in fk[0][1:]])
-        current = controller_pose(arm['pose'])
+        current = grasp_geometry.controller_pose(arm['pose'])
         initial_distance = float(
             np.linalg.norm(initial[:3, 3] - current[:3, 3])
         )
-        initial_angle = rotation_error(initial[:3, :3], current[:3, :3])
+        initial_angle = grasp_geometry.rotation_error(
+            initial[:3, :3], current[:3, :3]
+        )
         detail['initial_fk_error'] = {
             'position_mm': initial_distance * 1000,
             'orientation_deg': float(np.rad2deg(initial_angle)),
@@ -116,9 +120,13 @@ def parse_kinematics(result, arm, waypoints):
                 return fail('正解回验索引重复或越界')
             seen.add(index)
             actual = si_pose([float(x) for x in row[2:]])
-            target = controller_pose(waypoints[index]['controller_pose'])
+            target = grasp_geometry.controller_pose(
+                waypoints[index]['controller_pose']
+            )
             distance = float(np.linalg.norm(actual[:3, 3] - target[:3, 3]))
-            angle = rotation_error(actual[:3, :3], target[:3, :3])
+            angle = grasp_geometry.rotation_error(
+                actual[:3, :3], target[:3, :3]
+            )
             name = waypoints[index].get('name', str(index))
             check = {
                 'index': index,
@@ -239,13 +247,17 @@ def check_waypoints(executable, tool, arm, waypoints, timeout=3.):
     if joints.shape != (7,) or not np.isfinite(joints).all():
         raise ValueError('起始关节角无效')
     values = [
-        *pose_values(tool['flange_T_grip_tcp']),
+        *grasp_geometry.pose_values(tool['flange_T_grip_tcp']),
         *(joints / 1000),
         len(waypoints),
         max(1, min(2800, int(timeout * 850))),
     ]
     for waypoint in waypoints:
-        values.extend(pose_values(controller_pose(waypoint['controller_pose'])))
+        values.extend(
+            grasp_geometry.pose_values(
+                grasp_geometry.controller_pose(waypoint['controller_pose'])
+            )
+        )
         values.append(10 if waypoint.get('method') == 'linear' else 360)
     result = subprocess.run(
         [str(executable), '--beam-ik-v1'],
@@ -279,7 +291,7 @@ def wait_for_pose(
     sleep=time.sleep,
 ):
     """Require three stable in-tolerance samples; never retry a gross pose error."""
-    target = controller_pose(target_raw)
+    target = grasp_geometry.controller_pose(target_raw)
     started = clock()
     deadline = started + .8
     stable = 0
@@ -290,10 +302,10 @@ def wait_for_pose(
         cancelled()
         state = read_state()
         cancelled()
-        actual = controller_pose(state['pose'])
+        actual = grasp_geometry.controller_pose(state['pose'])
         now = clock()
         distance = float(np.linalg.norm(actual[:3, 3] - target[:3, 3]))
-        angle = rotation_error(actual[:3, :3], target[:3, :3])
+        angle = grasp_geometry.rotation_error(actual[:3, :3], target[:3, :3])
         record['actual_arm_state'] = copy.deepcopy(state)
         record['samples'].append(
             {
@@ -319,7 +331,9 @@ def wait_for_pose(
             or (
                 np.linalg.norm(actual[:3, 3] - previous[:3, 3]) <= .0005
                 and (
-                    rotation_error(actual[:3, :3], previous[:3, :3])
+                    grasp_geometry.rotation_error(
+                        actual[:3, :3], previous[:3, :3]
+                    )
                     <= np.deg2rad(.5)
                 )
             )

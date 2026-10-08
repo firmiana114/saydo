@@ -1,11 +1,11 @@
 """Appearance preserves mesh indexing and never enters reorientation motion geometry."""
 
 import base64
-from io import BytesIO
-from pathlib import Path
-from tempfile import TemporaryDirectory
+import io
+import pathlib
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -13,7 +13,7 @@ import trimesh
 from trimesh.visual.material import SimpleMaterial, MultiMaterial
 from trimesh.visual.texture import TextureVisuals
 
-from saydo.manipulation.reorientation_visual import mesh_appearance, model_appearance
+from saydo.manipulation import reorientation_visual
 
 
 class AppearanceTests(unittest.TestCase):
@@ -35,11 +35,11 @@ class AppearanceTests(unittest.TestCase):
         mesh = self.mesh()
         vertices = mesh.vertices.copy()
         faces = mesh.faces.copy()
-        result = mesh_appearance(mesh)
+        result = reorientation_visual.mesh_appearance(mesh)
         self.assertEqual(result['status'], 'textured')
         self.assertEqual(result['uv'], [[0, 0], [1, 0], [0, 1]])
         image = Image.open(
-            BytesIO(
+            io.BytesIO(
                 base64.b64decode(
                     result['materials'][0]['texture'].split(',')[1]
                 )
@@ -59,19 +59,19 @@ class AppearanceTests(unittest.TestCase):
             ]
         )
         mesh.visual.face_materials = np.array([1])
-        result = mesh_appearance(mesh)
+        result = reorientation_visual.mesh_appearance(mesh)
         self.assertEqual(len(result['materials']), 2)
         self.assertEqual(result['face_materials'], [1])
         mesh.visual.face_materials = np.array([2])
         with self.assertRaisesRegex(ValueError, '索引'):
-            mesh_appearance(mesh)
+            reorientation_visual.mesh_appearance(mesh)
 
     def test_color_only_mesh(self):
         mesh = self.mesh()
         mesh.visual = trimesh.visual.ColorVisuals(
             mesh, vertex_colors=[[255, 0, 0, 255]] * 3
         )
-        result = mesh_appearance(mesh)
+        result = reorientation_visual.mesh_appearance(mesh)
         self.assertEqual(result['status'], 'colored')
         self.assertEqual(result['vertex_colors'][0], [1, 0, 0, 1])
 
@@ -79,24 +79,24 @@ class AppearanceTests(unittest.TestCase):
         mesh = self.mesh()
         mesh.visual.uv = np.array([[float('nan'), 0], [0, 0], [0, 0]])
         with self.assertRaisesRegex(ValueError, '纹理坐标'):
-            mesh_appearance(mesh)
+            reorientation_visual.mesh_appearance(mesh)
 
     def test_sidecar_update_invalidates_cache(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
             mesh = root / 'model.obj'
             mesh.write_text('placeholder')
             texture = root / 'texture.png'
             texture.write_bytes(b'a')
-            with patch(
-                'saydo.manipulation.reorientation_visual.select_object',
+            with mock.patch(
+                'saydo.objects.object_catalog.select_object',
                 return_value={'mesh': str(mesh)},
-            ), patch('trimesh.load', return_value=self.mesh()) as load:
-                model_appearance(root, 'item')
-                model_appearance(root, 'item')
+            ), mock.patch('trimesh.load', return_value=self.mesh()) as load:
+                reorientation_visual.model_appearance(root, 'item')
+                reorientation_visual.model_appearance(root, 'item')
                 self.assertEqual(load.call_count, 1)
                 texture.write_bytes(b'changed')
-                model_appearance(root, 'item')
+                reorientation_visual.model_appearance(root, 'item')
                 self.assertEqual(load.call_count, 2)
 
 

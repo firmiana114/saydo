@@ -3,27 +3,30 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import re
 import time
 import uuid
 import numpy as np
-from saydo.geometry.grasp_geometry import transform, controller_pose, rotation_error
+from saydo.geometry import grasp_geometry
 
 
 def arm_still(a, b):
-    pa, pb = controller_pose(a['pose']), controller_pose(b['pose'])
+    pa, pb = (
+        grasp_geometry.controller_pose(a['pose']),
+        grasp_geometry.controller_pose(b['pose']),
+    )
     if (
         np.max(np.abs(np.asarray(a['joint']) - b['joint'])) > 30
         or np.linalg.norm(pa[:3, 3] - pb[:3, 3]) > .0002
-        or rotation_error(pa[:3, :3], pb[:3, :3]) > .003
+        or grasp_geometry.rotation_error(pa[:3, :3], pb[:3, :3]) > .003
     ):
         raise ValueError('采集场景期间机械臂移动，快照无效')
 
 
 class SceneStore:
     def __init__(self, root):
-        self.root = Path(root) / 'work/grasp/scenes'
+        self.root = pathlib.Path(root) / 'work/grasp/scenes'
         self.session = uuid.uuid4().hex
         self.active = None
         self.records = {}
@@ -113,7 +116,9 @@ class SceneStore:
         row['state'] = state
         row['static_pose_usable'] = state == 'static'
         if pose is not None:
-            row['predicted_base_T_object'] = transform(pose).tolist()
+            row['predicted_base_T_object'] = grasp_geometry.transform(
+                pose
+            ).tolist()
         self.save(scene)
         if all(
             r['role'] != 'source' or r['state'] == 'placed_unverified'

@@ -6,9 +6,9 @@ import time
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import controller_pose, transform, minimum_table_clearance
-from saydo.manipulation.reorientation_geometry import pose_waypoint
-from saydo.geometry.pose_symmetry import object_bounds
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import reorientation_geometry
+from saydo.geometry import pose_symmetry
 
 
 DEFAULTS = {
@@ -79,11 +79,14 @@ def object_vertices(tcp, held, vertices):
         or not np.isfinite(points).all()
     ):
         raise ValueError('物品模型顶点无效')
-    obj = transform(tcp) @ np.linalg.inv(transform(held['object_T_tcp']))
+    obj = (
+        grasp_geometry.transform(tcp)
+        @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
+    )
     if held.get('pose_mode') == '5d':
         # All consumers use coordinate extrema; the exact sweep bounds avoid
         # letting an arbitrary spin of the reconstructed mesh change clearance.
-        return np.array(object_bounds(obj, points, '5d'))
+        return np.array(pose_symmetry.object_bounds(obj, points, '5d'))
     return points @ obj[:3, :3].T + obj[:3, 3]
 
 
@@ -117,22 +120,29 @@ def check_tcp_workspace(tcp, config):
         raise ValueError('尚未配置并核对机械臂工作区')
     if np.any(tcp[:3, 3] < low - 1e-8) or np.any(tcp[:3, 3] > high + 1e-8):
         raise ValueError('放置路径的工具中心超出机械臂工作区')
-    if tcp[2, 3] < config['table_z_m'] + minimum_table_clearance(config) - 1e-8:
+    if (
+        tcp[2, 3]
+        < (
+            config['table_z_m']
+            + grasp_geometry.minimum_table_clearance(config)
+            - 1e-8
+        )
+    ):
         raise ValueError('放置路径的工具中心离桌距离不足')
 
 
 def linear_waypoint(name, matrix):
-    result = pose_waypoint(name, matrix)
+    result = reorientation_geometry.pose_waypoint(name, matrix)
     result['method'] = 'linear'
     return result
 
 
 def sample_linear_path(start_raw, targets, step):
     """Sample the requested straight TCP path; this is not a full joint-path proof."""
-    start = controller_pose(start_raw)
+    start = grasp_geometry.controller_pose(start_raw)
     result = []
     for target in targets:
-        end = controller_pose(target['controller_pose'])
+        end = grasp_geometry.controller_pose(target['controller_pose'])
         if not np.allclose(start[:3, :3], end[:3, :3], atol=1e-8):
             raise ValueError('放置直线路径必须保持当前朝向')
         count = max(
@@ -228,7 +238,7 @@ def plan_placement(
             '预抓取距离 pregrasp_distance_m 必须大于 0 且不超过 0.3 米，'
             '用于松爪后沿工具 -Z 后撤'
         )
-    current = controller_pose(arm['pose'])
+    current = grasp_geometry.controller_pose(arm['pose'])
     check_tcp_workspace(current, config)
     world = object_vertices(current, held, vertices)
     if world[:, 2].min() < table - 1e-6:
@@ -276,10 +286,10 @@ def plan_placement(
         ]:
             matrix = current.copy()
             matrix[:3, 3] = xyz
-            target = pose_waypoint(name, matrix)
+            target = reorientation_geometry.pose_waypoint(name, matrix)
             target['method'] = placement_motion_method(name)
             target['controller_pose'][3:] = list(arm['pose'][3:])
-            actual = controller_pose(target['controller_pose'])
+            actual = grasp_geometry.controller_pose(target['controller_pose'])
             target['position_m'] = actual[:3, 3].tolist()
             if (
                 name in ('raise', 'transfer')
@@ -291,11 +301,14 @@ def plan_placement(
         try:
             for target in targets:
                 check_tcp_workspace(
-                    controller_pose(target['controller_pose']), config
+                    grasp_geometry.controller_pose(target['controller_pose']),
+                    config,
                 )
             release = next(w for w in targets if w['name'] == 'lower')
             released_world = object_vertices(
-                controller_pose(release['controller_pose']), held, vertices
+                grasp_geometry.controller_pose(release['controller_pose']),
+                held,
+                vertices,
             )
             check_footprint(released_world, settings)
             samples = placement_validation_points(
@@ -324,8 +337,8 @@ def plan_placement(
         if not valid:
             continue
         obj = (
-            controller_pose(release['controller_pose'])
-            @ np.linalg.inv(transform(held['object_T_tcp']))
+            grasp_geometry.controller_pose(release['controller_pose'])
+            @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
         )
         return {
             'pose_mode': held.get('pose_mode', '6d'),

@@ -7,7 +7,7 @@ import fcntl
 import json
 import logging
 import os
-from pathlib import Path
+import pathlib
 import signal
 import socket
 import subprocess
@@ -15,20 +15,20 @@ import sys
 import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+import http.server
+import urllib.parse
 
 from saydo import paths
 
 # 预览页面与页面脚本所在的目录。
-WEB = Path(__file__).resolve().with_name('web')
+WEB = pathlib.Path(__file__).resolve().with_name('web')
 PROJECT = paths.ROOT
 LOG = logging.getLogger('camera_monitor')
 
 
 def camera_users(serial):
     nodes = []
-    for item in Path('/sys/class/video4linux').glob('video*'):
+    for item in pathlib.Path('/sys/class/video4linux').glob('video*'):
         for parent in item.resolve().parents:
             vendor = parent / 'idVendor'
             device_serial = parent / 'serial'
@@ -209,10 +209,10 @@ class Camera:
             if self.tracker is not None:
                 # Only GET the raw camera frame; never pause or reconfigure
                 # 8089.
-                from saydo.agent.client import BackendError
+                from saydo.agent import client
                 try:
                     first = self.tracker.request('/api/agent/frame')
-                except BackendError as exc:
+                except client.BackendError as exc:
                     if exc.payload.get('code') != 'BACKEND_UNAVAILABLE':
                         raise RuntimeError(
                             '8089 原始画面不可用：' + str(exc)
@@ -397,7 +397,7 @@ def monitor_status(cameras):
     return {**rows['d435i'], 'state': state, 'cameras': rows}
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, fmt, *args):
@@ -422,7 +422,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        path = urlsplit(self.path).path
+        path = urllib.parse.urlsplit(self.path).path
         if path == '/':
             return self.send_body(
                 200,
@@ -580,8 +580,10 @@ def main():
     )
     parser.add_argument(
         '--token-file',
-        type=Path,
-        default=Path.home() / '.local/share/saydo-mcp/robot-backend-token',
+        type=pathlib.Path,
+        default=(
+            pathlib.Path.home() / '.local/share/saydo-mcp/robot-backend-token'
+        ),
     )
     args = parser.parse_args()
     if min(args.width, args.height, args.fps) <= 0:
@@ -603,12 +605,14 @@ def main():
         parser.error('两台相机序列号不能相同')
     tracker = None
     if args.tracker_url:
-        from saydo.agent.client import RobotBackend
-        tracker = RobotBackend(args.tracker_url, args.token_file, timeout=2)
+        from saydo.agent import client
+        tracker = client.RobotBackend(
+            args.tracker_url, args.token_file, timeout=2
+        )
     logging.basicConfig(
         level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s'
     )
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     server.cameras = {
         'd435i': Camera(

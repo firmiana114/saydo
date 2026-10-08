@@ -3,15 +3,15 @@
 import copy
 import json
 import os
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+import pathlib
+import tempfile
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import numpy as np
-from saydo.manipulation.grasp_control import GraspController
-from saydo.robot.motion_validation import parse_kinematics, check_waypoints, wait_for_pose
+from saydo.manipulation import grasp_control
+from saydo.robot import motion_validation
 from tests.manipulation import test_grasp
 
 
@@ -41,8 +41,8 @@ class MotionValidationTests(unittest.TestCase):
         self.points = [{'name': 'pregrasp', 'controller_pose': [0] * 6}]
 
     def parse(self, stdout, code=0):
-        return parse_kinematics(
-            SimpleNamespace(stdout=stdout, stderr='', returncode=code),
+        return motion_validation.parse_kinematics(
+            types.SimpleNamespace(stdout=stdout, stderr='', returncode=code),
             self.arm,
             self.points,
         )
@@ -61,13 +61,13 @@ class MotionValidationTests(unittest.TestCase):
         ok, d = self.parse(protocol() + 'SEEDS 0 31 2\n')
         self.assertTrue(ok)
         self.assertEqual(d['seed_search'][0]['valid_candidates'], 2)
-        with patch(
+        with mock.patch(
             'saydo.robot.motion_validation.subprocess.run',
-            return_value=SimpleNamespace(
+            return_value=types.SimpleNamespace(
                 stdout=protocol(), stderr='', returncode=0
             ),
         ):
-            ok, d = check_waypoints(
+            ok, d = motion_validation.check_waypoints(
                 'fixture',
                 {'flange_T_grip_tcp': np.eye(4).tolist()},
                 self.arm,
@@ -161,7 +161,7 @@ class MotionValidationTests(unittest.TestCase):
             last[0] = next(rows, last[0])
             return {'pose': last[0], 'joint': [0] * 7, 'err': [0]}
 
-        read = Mock(side_effect=read)
+        read = mock.Mock(side_effect=read)
         return clock, record, read
 
     def test_small_transient_settles_without_loosening_final_tolerance(self):
@@ -174,7 +174,7 @@ class MotionValidationTests(unittest.TestCase):
                 [0, 0, 810, 0, 0, 0],
             ]
         )
-        result = wait_for_pose(
+        result = motion_validation.wait_for_pose(
             read,
             [0] * 6,
             lambda: None,
@@ -190,7 +190,7 @@ class MotionValidationTests(unittest.TestCase):
     def test_large_error_fails_on_first_read(self):
         clock, record, read = self.wait([[160000, 0, 0, 0, 0, 0]])
         with self.assertRaisesRegex(ValueError, '立即停止'):
-            wait_for_pose(
+            motion_validation.wait_for_pose(
                 read,
                 [0] * 6,
                 lambda: None,
@@ -204,7 +204,7 @@ class MotionValidationTests(unittest.TestCase):
     def test_persistent_millimetre_error_is_not_accepted(self):
         clock, record, read = self.wait([[0, 0, 2080, 0, 0, 0]])
         with self.assertRaisesRegex(ValueError, '位置与目标不符'):
-            wait_for_pose(
+            motion_validation.wait_for_pose(
                 read,
                 [0] * 6,
                 lambda: None,
@@ -220,7 +220,7 @@ class MotionValidationTests(unittest.TestCase):
             [[(-1) ** i * 1800, 0, 0, 0, 0, 0] for i in range(25)]
         )
         with self.assertRaisesRegex(ValueError, '稳定窗口'):
-            wait_for_pose(
+            motion_validation.wait_for_pose(
                 read,
                 [0] * 6,
                 lambda: None,
@@ -233,7 +233,7 @@ class MotionValidationTests(unittest.TestCase):
         for angle, word in [(100, '朝向'), (300, '立即停止')]:
             clock, record, read = self.wait([[0, 0, 0, angle, 0, 0]])
             with self.assertRaisesRegex(ValueError, word):
-                wait_for_pose(
+                motion_validation.wait_for_pose(
                     read,
                     [0] * 6,
                     lambda: None,
@@ -252,7 +252,7 @@ class MotionValidationTests(unittest.TestCase):
                 raise ValueError('cancel')
 
         with self.assertRaisesRegex(ValueError, 'cancel'):
-            wait_for_pose(
+            motion_validation.wait_for_pose(
                 read,
                 [0] * 6,
                 cancel,
@@ -263,19 +263,19 @@ class MotionValidationTests(unittest.TestCase):
         self.assertEqual(read.call_count, 1)
 
     def test_fk_failure_at_stage_never_sends_arm_command(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
             config = test_grasp.GraspTests().config()
             config['ik_checker'] = 'checker'
             (root / 'checker').touch()
             cfg = root / 'config.json'
             cfg.write_text(json.dumps(config))
-            service = GraspController(root, None, cfg)
-            service.robot = Mock()
+            service = grasp_control.GraspController(root, None, cfg)
+            service.robot = mock.Mock()
             report = {}
             plan = {'flange_T_grip_tcp': np.eye(4).tolist()}
-            with patch(
-                'saydo.manipulation.grasp_control.check_waypoints',
+            with mock.patch(
+                'saydo.robot.motion_validation.check_waypoints',
                 return_value=(False, {'reason': '正解误差 160 毫米'}),
             ):
                 with self.assertRaisesRegex(ValueError, '正解误差'):
@@ -324,7 +324,7 @@ class MotionValidationTests(unittest.TestCase):
         ]
         for joints, pose, target, expected in cases:
             with self.subTest(target=target):
-                valid, detail = check_waypoints(
+                valid, detail = motion_validation.check_waypoints(
                     os.environ['SAYDO_IK_CHECKER'],
                     {'flange_T_grip_tcp': tool.tolist()},
                     {'joint': joints, 'pose': pose},

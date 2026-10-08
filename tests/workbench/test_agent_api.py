@@ -1,27 +1,32 @@
 """Agent operations use existing controller entrypoints; all hardware here is mocked."""
 
 import base64
+import http.server
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import cv2
 import numpy as np
 
-from saydo.workbench.agent_api import AgentAPI, AgentError
-from saydo.manipulation.grasp_control import GraspController
+from saydo.workbench import agent_api
+from saydo.manipulation import grasp_control
+
+# 测试会把 http.server.ThreadingHTTPServer 换成替身；这里先留住真正的类，
+# 供替身内部创建真实服务使用。
+REAL_HTTP_SERVER = http.server.ThreadingHTTPServer
 
 
 class AgentAPITests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        self.root = pathlib.Path(self.directory.name)
         self.config = self.root / 'trial.json'
         self.config.write_text(
             json.dumps(
@@ -42,18 +47,18 @@ class AgentAPITests(unittest.TestCase):
             'generation': 1,
             'model_sha256': 'model',
         }
-        self.tracker = SimpleNamespace(
+        self.tracker = types.SimpleNamespace(
             lock=threading.RLock(),
             state={'object_id': 'bottle', 'state': 'tracking'},
             models_root=self.root / 'models',
-            grasp_observation=Mock(return_value=observation),
+            grasp_observation=mock.Mock(return_value=observation),
             latest={
                 'bgr': np.full((24, 32, 3), 100, np.uint8),
                 'time': time.time(),
                 'sequence': 12,
             },
         )
-        self.grasp = GraspController(
+        self.grasp = grasp_control.GraspController(
             self.root, self.tracker, self.config, 'execute'
         )
         self.tracker.grasp = self.grasp
@@ -63,7 +68,7 @@ class AgentAPITests(unittest.TestCase):
         self.token = self.root / 'token'
         self.token.write_text('x' * 40)
         self.token.chmod(0o600)
-        self.api = AgentAPI(self.tracker, self.token)
+        self.api = agent_api.AgentAPI(self.tracker, self.token)
         self.calls = []
         self.grasp.run = lambda obs, preview=False: self.complete(
             'preview' if preview else 'completed', ('grasp', preview)
@@ -112,10 +117,10 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(frame['image_kind'], 'frozen_selection_frame')
         self.assertEqual(self.api.frame()['sequence'], 12)
         self.tracker.frozen['time'] -= 31
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.api.frame(selection=True)
         self.tracker.state['state'] = 'tracking'
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.api.frame(selection=True)
 
     def test_grasp_completion_duplicate_and_conflicting_retry(self):
@@ -125,7 +130,7 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(result['state'], 'completed')
         self.assertEqual(self.request()['task_id'], 'request-0001')
         self.assertEqual(self.calls, [('grasp', False)])
-        with self.assertRaises(AgentError) as context:
+        with self.assertRaises(agent_api.AgentError) as context:
             self.request(arguments={'object_id': 'cup'})
         self.assertEqual(
             context.exception.payload['code'], 'REQUEST_ID_CONFLICT'
@@ -170,7 +175,7 @@ class AgentAPITests(unittest.TestCase):
         result = self.request(arguments={'object_id': 'cup'})
         self.assertEqual(result['state'], 'rejected')
         self.assertEqual(self.calls, [])
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.api.start(
                 {
                     'operation': 'grasp',
@@ -182,7 +187,7 @@ class AgentAPITests(unittest.TestCase):
 
     def test_preview_mode_blocks_actions_but_allows_preview(self):
         self.grasp.mode = 'preview'
-        with self.assertRaises(AgentError) as context:
+        with self.assertRaises(agent_api.AgentError) as context:
             self.request()
         self.assertEqual(
             context.exception.payload['code'], 'EXECUTION_DISABLED'
@@ -196,7 +201,7 @@ class AgentAPITests(unittest.TestCase):
         self.wait()
         self.assertEqual(self.calls, [('reset', 'zero')])
         self.grasp.status['stopping'] = True
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.request('reset', 'request-0002', {'target': 'observation'})
         with self.assertRaises(ValueError):
             self.grasp.start_reset('observation')
@@ -247,14 +252,14 @@ class AgentAPITests(unittest.TestCase):
     def test_restart_marks_inflight_unknown_and_never_replays_it(self):
         # Simulate a process dying after durable insertion and before final
         # callback.
-        self.grasp.start = Mock(
+        self.grasp.start = mock.Mock(
             side_effect=lambda **kw: self.grasp.status.update(
                 state='moving', busy=True
             )
         )
         self.request()
         self.grasp.status['busy'] = False
-        replacement = AgentAPI(self.tracker, self.token)
+        replacement = agent_api.AgentAPI(self.tracker, self.token)
         record = replacement.get_task('request-0001')
         self.assertEqual(record['state'], 'interrupted')
         self.assertTrue(record['outcome_unknown'])
@@ -269,7 +274,7 @@ class AgentAPITests(unittest.TestCase):
         self.grasp.start.assert_called_once()
 
     def test_missing_task_and_bad_auth(self):
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.api.get_task('unknown')
         self.assertTrue(self.api.authorized('Bearer ' + 'x' * 40))
         for value in [None, 'Bearer wrong', 'Bearer 中文']:
@@ -288,7 +293,7 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(result['captured_at'], self.tracker.latest['time'])
         self.assertGreater(image.mean(), 90)
         self.tracker.latest['time'] = time.time() - 2
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.api.frame()
 
     def test_pose_keeps_camera_frame_and_rejects_stale_observation(self):
@@ -296,12 +301,12 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(pose['coordinate_frame'], 'color_optical_frame')
         self.assertEqual(pose['translation_unit'], 'metre')
         self.tracker.grasp_observation.side_effect = ValueError('视觉位姿过期')
-        with self.assertRaises(AgentError) as context:
+        with self.assertRaises(agent_api.AgentError) as context:
             self.api.pose()
         self.assertEqual(context.exception.payload['code'], 'POSE_NOT_READY')
 
     def robot(self, joints=None):
-        robot = Mock()
+        robot = mock.Mock()
         data = {
             'get_current_arm_state': {
                 'arm_state': {
@@ -321,8 +326,8 @@ class AgentAPITests(unittest.TestCase):
 
     def test_robot_query_units_and_no_writes(self):
         robot = self.robot()
-        with patch(
-            'saydo.workbench.agent_api.RobotClient', return_value=robot
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
         ) as factory:
             result = self.api.robot_state()
             factory.assert_called_once_with('127.0.0.1', 8080, writes=False)
@@ -334,8 +339,8 @@ class AgentAPITests(unittest.TestCase):
         self
     ):
         robot = self.robot()
-        with patch(
-            'saydo.workbench.agent_api.RobotClient', return_value=robot
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
         ) as factory:
             result = self.api.stop_robot()
             factory.assert_called_once_with('127.0.0.1', 8080, writes=True)
@@ -348,22 +353,26 @@ class AgentAPITests(unittest.TestCase):
     def test_stop_failure_latches_and_prevents_new_actions(self):
         robot = self.robot()
         robot.stop.side_effect = OSError('disconnected')
-        with patch('saydo.workbench.agent_api.RobotClient', return_value=robot):
-            with self.assertRaises(AgentError) as context:
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
+        ):
+            with self.assertRaises(agent_api.AgentError) as context:
                 self.api.stop_robot()
         self.assertEqual(context.exception.payload['code'], 'STOP_UNCONFIRMED')
         self.assertTrue(self.grasp.status['stopping'])
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.request()
         robot.stop.side_effect = None
-        with patch('saydo.workbench.agent_api.RobotClient', return_value=robot):
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
+        ):
             self.assertTrue(self.api.stop_robot()['stationary_observed'])
 
     def test_tracking_requires_matching_model_and_no_motion(self):
-        self.tracker.automatic = Mock()
-        self.tracker.freeze = Mock(return_value={'selection_id': 8})
-        self.tracker.initialize = Mock()
-        with self.assertRaises(AgentError):
+        self.tracker.automatic = mock.Mock()
+        self.tracker.freeze = mock.Mock(return_value={'selection_id': 8})
+        self.tracker.initialize = mock.Mock()
+        with self.assertRaises(agent_api.AgentError):
             self.api.vision(
                 'start_tracking', {'object_id': 'other', 'box': None}
             )
@@ -377,12 +386,12 @@ class AgentAPITests(unittest.TestCase):
 
     def test_real_http_authentication_task_dispatch_and_image_routes(self):
         import http.client
-        from http.server import ThreadingHTTPServer
+        import http.server
         from saydo.workbench import live_tracker
         t = self.tracker
         t.stop = threading.Event()
-        t.events = Mock()
-        t.event = Mock()
+        t.events = mock.Mock()
+        t.event = mock.Mock()
         t.capture = lambda: t.stop.wait()
         t.inference = lambda: t.stop.wait()
         ready = threading.Event()
@@ -390,7 +399,7 @@ class AgentAPITests(unittest.TestCase):
         errors = []
 
         def make_server(address, handler):
-            server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+            server = REAL_HTTP_SERVER(('127.0.0.1', 0), handler)
             servers.append(server)
             ready.set()
             return server
@@ -402,15 +411,17 @@ class AgentAPITests(unittest.TestCase):
                 errors.append(error)
                 ready.set()
 
-        with patch.object(live_tracker, 'ROOT', self.root), patch.object(
+        with mock.patch.object(
+            live_tracker, 'ROOT', self.root
+        ), mock.patch.object(
             live_tracker, 'Tracker', return_value=t
-        ), patch.object(
-            live_tracker, 'ThreadingHTTPServer', side_effect=make_server
-        ), patch.object(live_tracker.signal, 'signal'), patch.object(
+        ), mock.patch.object(
+            http.server, 'ThreadingHTTPServer', side_effect=make_server
+        ), mock.patch.object(live_tracker.signal, 'signal'), mock.patch.object(
             live_tracker.urllib.request,
             'urlopen',
             side_effect=OSError('no camera service'),
-        ), patch(
+        ), mock.patch(
             'sys.argv',
             ['live_tracker.py', '--agent-token-file', str(self.token)],
         ):

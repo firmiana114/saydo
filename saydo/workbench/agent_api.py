@@ -5,11 +5,11 @@ Motion stays in GraspController. Durable request IDs prevent retries from repeat
 
 import base64
 import copy
-from contextlib import closing
+import contextlib
 import hashlib
 import hmac
 import json
-from pathlib import Path
+import pathlib
 import re
 import sqlite3
 import threading
@@ -19,15 +19,15 @@ import uuid
 import cv2
 import numpy as np
 
-from saydo.robot.grasp_robot import RobotClient
-from saydo.objects.object_catalog import scan_objects
-from saydo.manipulation.reorientation_geometry import rotation_from_rpy_deg, checked_position_request
-from saydo.geometry.grasp_geometry import controller_pose, transform
-from saydo.contracts.motion_contract import checked_goal, identity, vector
-from saydo.manipulation.object_motion_control import public_object_plan
-from saydo.contracts.scene_contract import checked_targets
-from saydo.geometry.rotation_steps import checked_step
-from saydo.manipulation.fixed_pick_place import checked_request as checked_fixed_request
+from saydo.robot import grasp_robot
+from saydo.objects import object_catalog
+from saydo.manipulation import reorientation_geometry
+from saydo.geometry import grasp_geometry
+from saydo.contracts import motion_contract
+from saydo.manipulation import object_motion_control
+from saydo.contracts import scene_contract
+from saydo.geometry import rotation_steps
+from saydo.manipulation import fixed_pick_place
 
 
 class AgentError(ValueError):
@@ -45,7 +45,7 @@ def json_value(value):
 class AgentAPI:
     def __init__(self, tracker, token_path):
         self.tracker, self.grasp = tracker, tracker.grasp
-        path = Path(token_path)
+        path = pathlib.Path(token_path)
         if path.stat().st_mode & 0o077:
             raise ValueError(
                 'Agent token file must have owner-only permissions'
@@ -61,7 +61,7 @@ class AgentAPI:
         self.recording_error = None
         self.grasp.agent_recording_error = None
         self.stop_lock = threading.Lock()
-        with closing(self.connect()) as db, db:
+        with contextlib.closing(self.connect()) as db, db:
             db.execute(
                 'CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, '
                 'fingerprint TEXT NOT NULL, body TEXT NOT NULL)'
@@ -104,7 +104,7 @@ class AgentAPI:
 
     def robot(self, writes=False):
         config = self.configuration()
-        return RobotClient(
+        return grasp_robot.RobotClient(
             config['robot_ip'], config['robot_port'], writes=writes
         )
 
@@ -116,7 +116,7 @@ class AgentAPI:
                     '任务状态记录失败，请查询设备并人工核对，'
                     '不要重新发送动作。',
                 )
-            with closing(self.connect()) as db:
+            with contextlib.closing(self.connect()) as db:
                 row = db.execute(
                     'SELECT body FROM tasks WHERE id=?', (task_id,)
                 ).fetchone()
@@ -125,7 +125,7 @@ class AgentAPI:
             return json.loads(row[0])
 
     def save_task(self, task):
-        with closing(self.connect()) as db, db:
+        with contextlib.closing(self.connect()) as db, db:
             db.execute(
                 'UPDATE tasks SET body=? WHERE id=?',
                 (json.dumps(task, ensure_ascii=False), task['task_id']),
@@ -170,8 +170,10 @@ class AgentAPI:
                         )
                     }
                 )
-                result['object_motion_plan'] = public_object_plan(
-                    status.get('object_motion_plan')
+                result['object_motion_plan'] = (
+                    object_motion_control.public_object_plan(
+                        status.get('object_motion_plan')
+                    )
                 )
             if (
                 task['operation']
@@ -262,8 +264,10 @@ class AgentAPI:
             )
         }
         if 'object_motion_plan' in result:
-            result['object_motion_plan'] = public_object_plan(
-                result['object_motion_plan']
+            result['object_motion_plan'] = (
+                object_motion_control.public_object_plan(
+                    result['object_motion_plan']
+                )
             )
         return result
 
@@ -347,8 +351,8 @@ class AgentAPI:
         held_pose = None
         if held is not None and held.get('object_T_tcp') is not None:
             pose = (
-                controller_pose(arm['pose'])
-                @ np.linalg.inv(transform(held['object_T_tcp']))
+                grasp_geometry.controller_pose(arm['pose'])
+                @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
             )
             held_pose = {
                 'object_id': held['object_id'],
@@ -506,7 +510,7 @@ class AgentAPI:
             raise AgentError('INVALID_ARGUMENTS', '未知的动作或参数。')
         if operation == 'plan_fixed_pick_place':
             try:
-                checked_fixed_request(args)
+                fixed_pick_place.checked_request(args)
             except (ValueError, TypeError) as error:
                 raise AgentError('INVALID_ARGUMENTS', str(error)) from error
         if (
@@ -551,19 +555,25 @@ class AgentAPI:
                     'INVALID_ARGUMENTS', '物品、夹持编号及朝向版本无效。'
                 )
             try:
-                rotation = rotation_from_rpy_deg(
+                rotation = reorientation_geometry.rotation_from_rpy_deg(
                     args['target_rpy_deg']
                 ).tolist()
-                checked_position_request(args['position_mode'])
-                checked_step(args.get('max_rotation_step_deg', 15.))
+                reorientation_geometry.checked_position_request(
+                    args['position_mode']
+                )
+                rotation_steps.checked_step(
+                    args.get('max_rotation_step_deg', 15.)
+                )
             except ValueError as error:
                 raise AgentError('INVALID_ARGUMENTS', str(error)) from error
         if operation in ('plan_held_object_motion', 'plan_release'):
             try:
-                identity(args)
-                checked_goal(args['goal'], operation == 'plan_release')
+                motion_contract.identity(args)
+                motion_contract.checked_goal(
+                    args['goal'], operation == 'plan_release'
+                )
                 if operation == 'plan_release':
-                    vector(
+                    motion_contract.vector(
                         args['retreat_vector_base_m'],
                         'retreat_vector_base_m',
                         .3,
@@ -582,7 +592,7 @@ class AgentAPI:
             )
         if operation == 'capture_scene_snapshot':
             try:
-                checked_targets(args['targets'])
+                scene_contract.checked_targets(args['targets'])
             except ValueError as e:
                 raise AgentError('INVALID_ARGUMENTS', str(e)) from e
             if args['environment_static'] is not True:
@@ -603,7 +613,7 @@ class AgentAPI:
             json.dumps(request, sort_keys=True, allow_nan=False).encode()
         ).hexdigest()
         with self.tracker.lock, self.grasp.lock:
-            with closing(self.connect()) as db:
+            with contextlib.closing(self.connect()) as db:
                 existing = db.execute(
                     'SELECT fingerprint,body FROM tasks WHERE id=?', (task_id,)
                 ).fetchone()
@@ -652,7 +662,7 @@ class AgentAPI:
                 'created_at': time.time(),
                 'updated_at': time.time(),
             }
-            with closing(self.connect()) as db, db:
+            with contextlib.closing(self.connect()) as db, db:
                 db.execute(
                     'INSERT INTO tasks VALUES (?,?,?)',
                     (
@@ -862,7 +872,9 @@ class AgentAPI:
         if path == '/api/agent/robot':
             return self.robot_state()
         if path == '/api/agent/objects':
-            return {'objects': scan_objects(self.tracker.models_root)}
+            return {
+                'objects': object_catalog.scan_objects(self.tracker.models_root)
+            }
         if path == '/api/agent/profiles':
             return self.grasp.grasp_profiles(params.get('object_id', [''])[0])
         if path == '/api/agent/scene-snapshot':

@@ -2,12 +2,12 @@
 
 import argparse
 import json
-from pathlib import Path
+import pathlib
 import secrets
 import time
-from urllib.parse import quote
+import urllib.parse
 
-from saydo.agent.client import RobotBackend, BackendError
+from saydo.agent import client
 
 
 def box(value):
@@ -27,11 +27,13 @@ def box(value):
 def wait_task(backend, operation, args, ident, timeout=240):
     try:
         task = backend.action(operation, ident, args)
-    except BackendError as error:
+    except client.BackendError as error:
         if error.payload.get('code') != 'REQUEST_UNCERTAIN':
             raise
         # Never submit the action again. Query the original durable request ID.
-        task = backend.request('/api/agent/tasks/' + quote(ident, safe=''))
+        task = backend.request(
+            '/api/agent/tasks/' + urllib.parse.quote(ident, safe='')
+        )
     deadline = (
         None
         if operation == 'plan_fixed_pick_place'
@@ -41,7 +43,9 @@ def wait_task(backend, operation, args, ident, timeout=240):
         if deadline is not None and time.monotonic() > deadline:
             raise TimeoutError('任务等待超时，原任务编号：' + ident)
         time.sleep(.3)
-        task = backend.request('/api/agent/tasks/' + quote(ident, safe=''))
+        task = backend.request(
+            '/api/agent/tasks/' + urllib.parse.quote(ident, safe='')
+        )
     expected = {
         'capture_scene_snapshot': 'scene_ready',
         'plan_fixed_pick_place': 'fixed_pick_place_planned',
@@ -68,7 +72,7 @@ def wait_task(backend, operation, args, ident, timeout=240):
 
 def workflow(backend, args):
     ident = 'fixed-' + secrets.token_hex(10)
-    directory = Path(args.output) / ident
+    directory = pathlib.Path(args.output) / ident
     directory.mkdir(parents=True)
 
     def save(name, value):
@@ -89,7 +93,8 @@ def workflow(backend, args):
         raise ValueError('后端未启用执行')
     if args.empty_rack:
         geometry = backend.request(
-            '/api/agent/object-geometry?object_id=' + quote(args.rack, safe='')
+            '/api/agent/object-geometry?object_id='
+            + urllib.parse.quote(args.rack, safe='')
         )
         slots = sorted(
             f['id'][:-8]
@@ -205,8 +210,10 @@ def main():
     p.add_argument('--base-url', default='http://192.168.101.65:8089')
     p.add_argument(
         '--token-file',
-        type=Path,
-        default=Path.home() / '.local/share/saydo-mcp/robot-backend-token',
+        type=pathlib.Path,
+        default=(
+            pathlib.Path.home() / '.local/share/saydo-mcp/robot-backend-token'
+        ),
     )
     p.add_argument('--tube', default='transparent_test_tube_150mm')
     p.add_argument('--rack', default='test_tube_rack_40_272x112x85')
@@ -243,13 +250,17 @@ def main():
         action='store_true',
         help='完整方案通过后实际执行；默认仅规划',
     )
-    p.add_argument('--output', type=Path, default=Path('work/fixed_pick_place'))
+    p.add_argument(
+        '--output',
+        type=pathlib.Path,
+        default=pathlib.Path('work/fixed_pick_place'),
+    )
     args = p.parse_args()
     if not 0 <= args.release_gap_mm <= 5:
         p.error('释放间隙须为0至5毫米')
     try:
-        workflow(RobotBackend(args.base_url, args.token_file), args)
-    except BackendError as error:
+        workflow(client.RobotBackend(args.base_url, args.token_file), args)
+    except client.BackendError as error:
         if error.payload.get('code') != 'INVALID_ARGUMENTS':
             raise
         # The backend validates requests before starting anything, so nothing

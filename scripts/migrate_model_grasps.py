@@ -8,10 +8,10 @@ import argparse
 import fcntl
 import json
 import os
-from pathlib import Path
+import pathlib
 import tempfile
 
-from saydo.objects.grasp_library import GraspLibrary
+from saydo.objects import grasp_library
 
 
 def migration_plan(library):
@@ -71,7 +71,10 @@ def migration_plan(library):
         for object_id, value in data['objects'].items():
             include(
                 object_id,
-                Path('grasp_profile_backups') / ('legacy-' + source.name),
+                (
+                    pathlib.Path('grasp_profile_backups')
+                    / ('legacy-' + source.name)
+                ),
                 document(object_id, value),
             )
 
@@ -85,7 +88,7 @@ def migration_plan(library):
             if object_id is None:
                 skipped.append(str(source))
                 continue
-            include(object_id, Path(kind) / source.name, data)
+            include(object_id, pathlib.Path(kind) / source.name, data)
     return (
         pending,
         {
@@ -108,7 +111,7 @@ def migrate(library, apply=False):
             with tempfile.NamedTemporaryFile(
                 dir=path.parent, prefix='.migration-', delete=False
             ) as out:
-                temporary = Path(out.name)
+                temporary = pathlib.Path(out.name)
                 os.fchmod(out.fileno(), 0o644)
                 out.write(content)
                 out.flush()
@@ -125,12 +128,14 @@ def migrate(library, apply=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        '--root', type=Path, default=Path(__file__).resolve().parents[1]
+        '--root',
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parents[1],
     )
-    parser.add_argument('--models-root', type=Path)
+    parser.add_argument('--models-root', type=pathlib.Path)
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
-    library = GraspLibrary(args.root, args.models_root)
+    library = grasp_library.GraspLibrary(args.root, args.models_root)
     library.directory.mkdir(parents=True, exist_ok=True)
     with (library.directory / 'robot.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

@@ -1,20 +1,23 @@
 import asyncio
 import json
 import unittest
-from unittest.mock import Mock, patch
-from saydo.agent.global_camera import CameraUnavailable
-from saydo.agent.client import BackendError
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Cancelled
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.tool_registry import schemas, validate
+from unittest import mock
+from saydo.agent import global_camera
+from saydo.agent import client
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import runner
+from saydo.task_runner import tool_registry
 
 
 class GlobalObservationTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_modes_and_no_robot_http_requests(self):
         for mode in ('read_only', 'preview', 'execute'):
-            self.assertIn('observe_global', {s['name'] for s in schemas(mode)})
-            validate(
+            self.assertIn(
+                'observe_global',
+                {s['name'] for s in tool_registry.schemas(mode)},
+            )
+            tool_registry.validate(
                 {
                     'type': 'function_call',
                     'call_id': 'global-1',
@@ -23,16 +26,18 @@ class GlobalObservationTests(unittest.IsolatedAsyncioTestCase):
                 },
                 mode,
             )
-        backend = Mock()
-        adapter = RobotAdapter(Config(api_key='test'), backend)
+        backend = mock.Mock()
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='test'), backend
+        )
         frame = {
             'camera_role': 'movable_global',
             'image_base64': 'AA==',
             'mime_type': 'image/jpeg',
             'captured_at': 123,
         }
-        with patch(
-            'saydo.task_runner.robot_adapter.observe_global', return_value=frame
+        with mock.patch(
+            'saydo.agent.global_camera.observe_global', return_value=frame
         ):
             result = await adapter.execute(
                 'observe_global', {}, 'r', asyncio.Event(), lambda _: None
@@ -41,7 +46,7 @@ class GlobalObservationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['camera_label'], '不固定的全局相机')
         backend.request.assert_not_called()
         history = []
-        cleaned = Runner.append_result(
+        cleaned = runner.Runner.append_result(
             history, 'global-1', 'observe_global', result
         )
         self.assertNotIn('image_base64', cleaned)
@@ -51,20 +56,22 @@ class GlobalObservationTests(unittest.IsolatedAsyncioTestCase):
     async def test_failure_is_read_failure_and_cancelled_result_is_not_delivered(
         self
     ):
-        adapter = RobotAdapter(Config(api_key='test'), Mock())
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='test'), mock.Mock()
+        )
         cancelled = asyncio.Event()
-        with patch(
-            'saydo.task_runner.robot_adapter.observe_global',
-            side_effect=CameraUnavailable('missing'),
+        with mock.patch(
+            'saydo.agent.global_camera.observe_global',
+            side_effect=global_camera.CameraUnavailable('missing'),
         ):
-            with self.assertRaises(BackendError) as error:
+            with self.assertRaises(client.BackendError) as error:
                 await adapter.execute(
                     'observe_global', {}, 'r', cancelled, lambda _: None
                 )
         self.assertEqual(error.exception.payload['code'], 'CAMERA_UNAVAILABLE')
         cancelled.set()
-        with patch('saydo.task_runner.robot_adapter.observe_global') as capture:
-            with self.assertRaises(Cancelled):
+        with mock.patch('saydo.agent.global_camera.observe_global') as capture:
+            with self.assertRaises(robot_adapter.Cancelled):
                 await adapter.execute(
                     'observe_global', {}, 'r', cancelled, lambda _: None
                 )

@@ -1,24 +1,25 @@
-from tests.task_runner.test_runner import mock_global_camera
+from tests.task_runner import test_runner
 import asyncio
 import copy
 import json
 import tempfile
 import unittest
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked, model_result
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from tests.task_runner.test_adapter import Backend
-from tests.task_runner.test_runner import FakeLLM, call, end
-from tests.task_runner.test_scene_tools import TARGETS
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store
+from tests.task_runner import test_adapter
+from tests.task_runner import test_scene_tools
 
 
 class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        mock_global_camera(self)
+        test_runner.mock_global_camera(self)
 
     def test_scene_annotations_are_idempotent_and_do_not_mutate_backend(self):
-        adapter = RobotAdapter(Config(api_key='test'), Backend())
+        adapter = robot_adapter.RobotAdapter(
+            task_runner_config.Config(api_key='test'), test_adapter.Backend()
+        )
         scene = {
             'scene_id': 'old', 'valid_for_execution': True, 'instances': []
         }
@@ -41,8 +42,10 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_repeated_missing_scene_is_bounded_without_submitting_motion(
         self
     ):
-        backend = Backend()
-        adapter = RobotAdapter(Config(api_key='test'), backend)
+        backend = test_adapter.Backend()
+        adapter = robot_adapter.RobotAdapter(
+            task_runner_config.Config(api_key='test'), backend
+        )
         for i in range(3):
             result = await adapter.execute(
                 'grasp',
@@ -52,7 +55,7 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
                 lambda _: None,
             )
             self.assertTrue(result['precondition_correction_required'])
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await adapter.execute(
                 'grasp',
                 {'scene_id': 'old'},
@@ -67,9 +70,9 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_old_scene_then_capture_then_grasp_completes_without_duplicate_motion(
         self
     ):
-        backend = Backend()
-        config = Config(api_key='test', poll_interval=.001)
-        adapter = RobotAdapter(config, backend)
+        backend = test_adapter.Backend()
+        config = task_runner_config.Config(api_key='test', poll_interval=.001)
+        adapter = robot_adapter.RobotAdapter(config, backend)
         original = backend.request
         held = {
             'object_id': 'tube_model',
@@ -89,7 +92,7 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
                                 'scene_id': 'fresh',
                                 'state': 'ready',
                                 'valid_for_execution': True,
-                                'instances': TARGETS,
+                                'instances': test_scene_tools.TARGETS,
                             }
                         },
                     }
@@ -103,8 +106,8 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
             return original(path, value)
 
         backend.request = request
-        llm = FakeLLM(
-            call(
+        llm = test_runner.FakeLLM(
+            test_runner.call(
                 'grasp',
                 {
                     'object_id': 'tube_model',
@@ -113,12 +116,15 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
                 },
                 'old',
             ),
-            call(
+            test_runner.call(
                 'capture_scene_snapshot',
-                {'targets': TARGETS, 'environment_static': True},
+                {
+                    'targets': test_scene_tools.TARGETS,
+                    'environment_static': True,
+                },
                 'capture',
             ),
-            call(
+            test_runner.call(
                 'grasp',
                 {
                     'object_id': 'tube_model',
@@ -127,10 +133,12 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
                 },
                 'grasp',
             ),
-            end('succeeded', ['grasp']),
+            test_runner.end('succeeded', ['grasp']),
         )
         with tempfile.TemporaryDirectory() as folder:
-            runner = Runner(config, Store(folder), llm, lambda: adapter)
+            runner = task_runner_runner.Runner(
+                config, store.Store(folder), llm, lambda: adapter
+            )
             ident = runner.submit('抓起物品')
             await runner.worker
             result = runner.store.get(ident)
@@ -177,7 +185,9 @@ class SceneCorrectionTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         before = copy.deepcopy(result)
-        Runner.append_result(history, 'grasp', 'grasp', result)
+        task_runner_runner.Runner.append_result(
+            history, 'grasp', 'grasp', result
+        )
         prior = json.loads(history[0]['output'])['scene']['instances']
         self.assertNotIn('base_T_object', prior[0])
         self.assertEqual(prior[1]['base_T_object'], ['keep'])

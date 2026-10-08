@@ -1,18 +1,17 @@
-from tests.task_runner.test_runner import mock_global_camera
+from tests.task_runner import test_runner
 import asyncio
 import copy
 import tempfile
 import unittest
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked
-from saydo.task_runner.motion_retry import MotionRetry, RetryLimit
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from tests.task_runner.test_runner import FakeLLM, call, end
-from tests.task_runner.test_object_motion import ObjectBackend, ARGS, POSE
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import motion_retry
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store
+from tests.task_runner import test_object_motion
 
 
-class RecoveringBackend(ObjectBackend):
+class RecoveringBackend(test_object_motion.ObjectBackend):
     def __init__(self):
         super().__init__()
         self.failures = 1
@@ -66,7 +65,7 @@ class RecoveringBackend(ObjectBackend):
                             'object_id': h['object_id'],
                             'orientation_version': h['orientation_version'],
                             'goal_constraint': {
-                                'base_T_object_target': POSE,
+                                'base_T_object_target': test_object_motion.POSE,
                                 'pose_mode': '6d',
                                 'position_mode': 'fixed',
                                 'position_required': True,
@@ -80,26 +79,32 @@ class RecoveringBackend(ObjectBackend):
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        mock_global_camera(self)
+        test_runner.mock_global_camera(self)
 
     async def test_failed_execution_returns_to_model_and_next_plan_uses_new_version(
         self
     ):
         backend = RecoveringBackend()
-        adapter = RobotAdapter(Config(api_key='x', poll_interval=.001), backend)
-        second = copy.deepcopy(ARGS)
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='x', poll_interval=.001), backend
+        )
+        second = copy.deepcopy(test_object_motion.ARGS)
         second['orientation_version'] = 1
         second['goal']['max_rotation_step_deg'] = 5
-        llm = FakeLLM(
-            call('plan_held_object_motion', ARGS, 'p1'),
-            call('execute_plan', {'plan_id': 'a' * 32}, 'e1'),
-            call('get_robot_state', {}, 's'),
-            call('plan_held_object_motion', second, 'p2'),
-            call('execute_plan', {'plan_id': 'a' * 32}, 'e2'),
-            end('succeeded', ['e2']),
+        llm = test_runner.FakeLLM(
+            test_runner.call(
+                'plan_held_object_motion', test_object_motion.ARGS, 'p1'
+            ),
+            test_runner.call('execute_plan', {'plan_id': 'a' * 32}, 'e1'),
+            test_runner.call('get_robot_state', {}, 's'),
+            test_runner.call('plan_held_object_motion', second, 'p2'),
+            test_runner.call('execute_plan', {'plan_id': 'a' * 32}, 'e2'),
+            test_runner.end('succeeded', ['e2']),
         )
         with tempfile.TemporaryDirectory() as d:
-            runner = Runner(adapter.config, Store(d), llm, lambda: adapter)
+            runner = task_runner_runner.Runner(
+                adapter.config, store.Store(d), llm, lambda: adapter
+            )
             ident = runner.submit('move')
             await runner.worker
             r = runner.store.get(ident)
@@ -122,21 +127,27 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_grasp_then_physical_recovery_never_repeats_grasp(self):
         backend = RecoveringBackend()
         backend.state['grasp']['held_object'] = None
-        adapter = RobotAdapter(Config(api_key='x', poll_interval=.001), backend)
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='x', poll_interval=.001), backend
+        )
         adapter.scene_ids.add('fixture-scene')
-        second = copy.deepcopy(ARGS)
+        second = copy.deepcopy(test_object_motion.ARGS)
         second['orientation_version'] = 1
         second['goal']['max_rotation_step_deg'] = 10
-        llm = FakeLLM(
-            call('grasp', {'object_id': 'b'}, 'g'),
-            call('plan_held_object_motion', ARGS, 'p1'),
-            call('execute_plan', {'plan_id': 'a' * 32}, 'e1'),
-            call('plan_held_object_motion', second, 'p2'),
-            call('execute_plan', {'plan_id': 'a' * 32}, 'e2'),
-            end('succeeded', ['g', 'e2']),
+        llm = test_runner.FakeLLM(
+            test_runner.call('grasp', {'object_id': 'b'}, 'g'),
+            test_runner.call(
+                'plan_held_object_motion', test_object_motion.ARGS, 'p1'
+            ),
+            test_runner.call('execute_plan', {'plan_id': 'a' * 32}, 'e1'),
+            test_runner.call('plan_held_object_motion', second, 'p2'),
+            test_runner.call('execute_plan', {'plan_id': 'a' * 32}, 'e2'),
+            test_runner.end('succeeded', ['g', 'e2']),
         )
         with tempfile.TemporaryDirectory() as d:
-            runner = Runner(adapter.config, Store(d), llm, lambda: adapter)
+            runner = task_runner_runner.Runner(
+                adapter.config, store.Store(d), llm, lambda: adapter
+            )
             ident = runner.submit('grasp and orient')
             await runner.worker
             r = runner.store.get(ident)
@@ -156,15 +167,17 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_recovery_is_fatal(self):
         backend = RecoveringBackend()
         backend.valid_recovery = False
-        adapter = RobotAdapter(Config(api_key='x', poll_interval=.001), backend)
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='x', poll_interval=.001), backend
+        )
         await adapter.execute(
             'plan_held_object_motion',
-            ARGS,
+            test_object_motion.ARGS,
             'p',
             asyncio.Event(),
             lambda _: None,
         )
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await adapter.execute(
                 'execute_plan',
                 {'plan_id': 'a' * 32},
@@ -176,17 +189,19 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_five_plans_and_three_execution_attempts_are_enforced(self):
         backend = RecoveringBackend()
         backend.fail_plan = True
-        adapter = RobotAdapter(Config(api_key='x', poll_interval=.001), backend)
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='x', poll_interval=.001), backend
+        )
         for n in range(5):
             result = await adapter.execute(
                 'plan_held_object_motion',
-                ARGS,
+                test_object_motion.ARGS,
                 'p' + str(n),
                 asyncio.Event(),
                 lambda _: None,
             )
             self.assertIn('error', result)
-        with self.assertRaisesRegex(Blocked, '规划5次'):
+        with self.assertRaisesRegex(robot_adapter.Blocked, '规划5次'):
             await adapter.execute(
                 'preview_reorient',
                 {
@@ -202,9 +217,11 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             )
         backend = RecoveringBackend()
         backend.failures = 4
-        adapter = RobotAdapter(Config(api_key='x', poll_interval=.001), backend)
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='x', poll_interval=.001), backend
+        )
         for n in range(3):
-            args = {**ARGS, 'orientation_version': n}
+            args = {**test_object_motion.ARGS, 'orientation_version': n}
             await adapter.execute(
                 'plan_held_object_motion',
                 args,
@@ -220,15 +237,15 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 lambda _: None,
             )
             self.assertTrue(result['recoverable_failure'])
-        with self.assertRaisesRegex(Blocked, '执行3次'):
+        with self.assertRaisesRegex(robot_adapter.Blocked, '执行3次'):
             await adapter.execute(
                 'plan_held_object_motion',
-                {**ARGS, 'orientation_version': 3},
+                {**test_object_motion.ARGS, 'orientation_version': 3},
                 'plan4',
                 asyncio.Event(),
                 lambda _: None,
             )
-        with self.assertRaisesRegex(Blocked, '执行3次'):
+        with self.assertRaisesRegex(robot_adapter.Blocked, '执行3次'):
             await adapter.execute(
                 'execute_plan',
                 {'plan_id': 'a' * 32},
@@ -239,33 +256,33 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.executions, 3)
 
     def test_switching_tool_cannot_reset_budget_or_change_goal(self):
-        retry = MotionRetry()
+        retry = motion_retry.MotionRetry()
         held = {'hold_id': 'h'}
         for n in range(5):
             retry.before('preview_reorient', {}, held)
-        with self.assertRaises(RetryLimit):
+        with self.assertRaises(motion_retry.RetryLimit):
             retry.before('plan_held_object_motion', {}, held)
         retry.reset()
         retry.pending = {
             'position_required': True,
-            'base_T_object_target': POSE,
+            'base_T_object_target': test_object_motion.POSE,
             'pose_mode': '6d',
             'position_mode': 'fixed',
             'reference_point_object_m': [0, 0, 0],
         }
-        with self.assertRaises(RetryLimit):
+        with self.assertRaises(motion_retry.RetryLimit):
             retry.before('plan_release', {}, held)
-        with self.assertRaises(RetryLimit):
+        with self.assertRaises(motion_retry.RetryLimit):
             retry.before('execute_plan', {'plan_id': 'old'}, held)
-        with self.assertRaises(RetryLimit):
+        with self.assertRaises(motion_retry.RetryLimit):
             retry.before(
                 'reorient',
                 {'target_rpy_deg': [0, 0, 0], 'position_mode': 'fixed'},
                 held,
             )
-        changed = copy.deepcopy(POSE)
+        changed = copy.deepcopy(test_object_motion.POSE)
         changed[0][3] += .1
-        with self.assertRaisesRegex(RetryLimit, '位置'):
+        with self.assertRaisesRegex(motion_retry.RetryLimit, '位置'):
             retry.plan(
                 {
                     'base_T_object_target': changed,
@@ -277,14 +294,20 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unresolved_failure_cannot_be_reported_as_success(self):
         backend = RecoveringBackend()
-        adapter = RobotAdapter(Config(api_key='x', poll_interval=.001), backend)
-        llm = FakeLLM(
-            call('plan_held_object_motion', ARGS, 'p'),
-            call('execute_plan', {'plan_id': 'a' * 32}, 'e'),
-            end('succeeded', ['e']),
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='x', poll_interval=.001), backend
+        )
+        llm = test_runner.FakeLLM(
+            test_runner.call(
+                'plan_held_object_motion', test_object_motion.ARGS, 'p'
+            ),
+            test_runner.call('execute_plan', {'plan_id': 'a' * 32}, 'e'),
+            test_runner.end('succeeded', ['e']),
         )
         with tempfile.TemporaryDirectory() as d:
-            r = Runner(adapter.config, Store(d), llm, lambda: adapter)
+            r = task_runner_runner.Runner(
+                adapter.config, store.Store(d), llm, lambda: adapter
+            )
             ident = r.submit('move')
             await r.worker
             self.assertEqual(r.store.get(ident)['state'], 'blocked')

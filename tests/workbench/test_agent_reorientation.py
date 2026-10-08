@@ -3,12 +3,12 @@
 import copy
 import math
 import unittest
-from unittest.mock import patch
+from unittest import mock
 import numpy as np
 from scipy.spatial.transform import Rotation
 from tests.workbench import test_agent_api as base
-from saydo.workbench.agent_api import AgentError
-from saydo.manipulation.reorientation_geometry import rotation_from_rpy_deg
+from saydo.workbench import agent_api
+from saydo.manipulation import reorientation_geometry
 
 
 class AgentReorientationTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class AgentReorientationTests(unittest.TestCase):
         self.grasp.run_reorient = worker
 
     def test_recovery_metadata_and_exact_legacy_diagnostic_link(self):
-        from pathlib import Path
+        import pathlib
         import json
         directory = self.grasp.root / 'work/grasp/reorient_jobs'
         directory.mkdir(parents=True, exist_ok=True)
@@ -89,8 +89,8 @@ class AgentReorientationTests(unittest.TestCase):
         self.assertEqual(result['diagnostics']['failed_stage'], 'step-2')
 
     def test_backend_rejects_step_above_fifteen_before_start(self):
-        from saydo.workbench.agent_api import AgentError
-        with self.assertRaises(AgentError):
+        from saydo.workbench import agent_api
+        with self.assertRaises(agent_api.AgentError):
             self.request(
                 'reorient',
                 arguments={**self.arguments, 'max_rotation_step_deg': 16},
@@ -100,7 +100,7 @@ class AgentReorientationTests(unittest.TestCase):
     def test_conversion_matches_web_xyz_convention(self):
         for angles in ([0, 0, 90], [90, 0, 0], [12, -47, 150], [-180, 90, 180]):
             np.testing.assert_allclose(
-                rotation_from_rpy_deg(list(angles)),
+                reorientation_geometry.rotation_from_rpy_deg(list(angles)),
                 Rotation.from_euler('xyz', angles, degrees=True).as_matrix(),
                 atol=1e-12,
             )
@@ -115,7 +115,9 @@ class AgentReorientationTests(unittest.TestCase):
         np.testing.assert_allclose(
             task['result']['reorientation_plan']['base_T_object_target'][:3],
             np.c_[
-                rotation_from_rpy_deg(self.arguments['target_rpy_deg']),
+                reorientation_geometry.rotation_from_rpy_deg(
+                    self.arguments['target_rpy_deg']
+                ),
                 [0, 0, 0],
             ],
         )
@@ -125,7 +127,7 @@ class AgentReorientationTests(unittest.TestCase):
             self.request('reorient', arguments=self.arguments)['deduplicated']
         )
         self.assertEqual(len(self.calls), 1)
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.request(
                 'reorient',
                 arguments={**self.arguments, 'target_rpy_deg': [0, 0, 0]},
@@ -145,7 +147,7 @@ class AgentReorientationTests(unittest.TestCase):
             task['result']['held_object']['orientation_version'], 0
         )
         self.assertEqual(self.calls[0][2:], (True, 'fixed'))
-        with self.assertRaises(AgentError) as error:
+        with self.assertRaises(agent_api.AgentError) as error:
             self.request(
                 'reorient', task_id='execute-disabled', arguments=self.arguments
             )
@@ -190,7 +192,7 @@ class AgentReorientationTests(unittest.TestCase):
             + [{'position_mode': 'anywhere'}, {'model_sha256': 'override'}]
         )
         for i, override in enumerate(bad):
-            with self.assertRaises(AgentError):
+            with self.assertRaises(agent_api.AgentError):
                 self.request(
                     'reorient',
                     task_id=f'invalid-args-{i}',
@@ -205,7 +207,7 @@ class AgentReorientationTests(unittest.TestCase):
             'model_sha256': 'mesh',
             'rotation': np.eye(3).tolist(),
         }
-        with patch(
+        with mock.patch(
             'saydo.manipulation.reorientation_control.threading.Thread'
         ) as thread:
             for version in (None, True, 1):

@@ -1,13 +1,13 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
 
 import cv2
 import numpy as np
-from saydo.calibration.solve import fit, load_dataset, rigid, solve_dataset
+from saydo.calibration import solve
 
 
 def transform(rv, position):
@@ -44,7 +44,7 @@ def synthetic():
 class SolverChecks(unittest.TestCase):
     def test_known_handeye_is_recovered_in_correct_direction(self):
         expected, _, training, validation = synthetic()
-        result = solve_dataset(training, validation)
+        result = solve.solve_dataset(training, validation)
         np.testing.assert_allclose(
             result['flange_T_color_optical_camera'], expected, atol=1e-8
         )
@@ -64,7 +64,7 @@ class SolverChecks(unittest.TestCase):
 
     def test_validation_error_cannot_change_fit_or_reference(self):
         handeye, board, training, validation = synthetic()
-        original = solve_dataset(training, validation)
+        original = solve.solve_dataset(training, validation)
         shifted = copy.deepcopy(validation)
         moved_board = board.copy()
         moved_board[0, 3] += .02
@@ -74,7 +74,7 @@ class SolverChecks(unittest.TestCase):
                 @ np.linalg.inv(sample['base_T_flange'])
                 @ moved_board
             ).tolist()
-        changed = solve_dataset(training, shifted)
+        changed = solve.solve_dataset(training, shifted)
         np.testing.assert_allclose(
             changed['flange_T_color_optical_camera'],
             original['flange_T_color_optical_camera'],
@@ -105,23 +105,23 @@ class SolverChecks(unittest.TestCase):
             for i in range(5)
         ]
         with self.assertRaisesRegex(ValueError, 'Degenerate'):
-            fit(samples)
+            solve.fit(samples)
 
     def test_overlapping_split_is_rejected(self):
         _, _, training, validation = synthetic()
         validation[0]['sample_id'] = training[0]['sample_id']
         with self.assertRaisesRegex(ValueError, 'leakage'):
-            solve_dataset(training, validation)
+            solve.solve_dataset(training, validation)
 
     def test_reflection_is_not_accepted_as_rotation(self):
         value = np.eye(4)
         value[0, 0] = -1
         with self.assertRaises(ValueError):
-            rigid(value)
+            solve.rigid(value)
 
     def test_modified_source_image_is_rejected_before_fit(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = pathlib.Path(folder)
             (root / 'fit').mkdir()
             (root / 'dataset_split.json').write_text(
                 json.dumps(
@@ -145,7 +145,7 @@ class SolverChecks(unittest.TestCase):
                 )
             )
             with self.assertRaisesRegex(ValueError, 'integrity'):
-                load_dataset(root)
+                solve.load_dataset(root)
 
 
 if __name__ == '__main__':

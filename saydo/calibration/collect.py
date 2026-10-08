@@ -6,7 +6,7 @@ import fcntl
 import json
 import math
 import os
-from pathlib import Path
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -15,15 +15,15 @@ import urllib.error
 import urllib.request
 
 import numpy as np
-from saydo.calibration.capture import ROOT, Robot
-from saydo.calibration.geometry import pose_matrix, zero_reference_frames
+from saydo.calibration import capture
+from saydo.calibration import geometry
 
 
 def atomic_json(path, data):
     with tempfile.NamedTemporaryFile(
         'w', dir=path.parent, prefix='.collect-', delete=False
     ) as stream:
-        temporary = Path(stream.name)
+        temporary = pathlib.Path(stream.name)
         try:
             json.dump(
                 data, stream, indent=2, ensure_ascii=False, allow_nan=False
@@ -172,7 +172,7 @@ def run_capture(session, robot_ip):
         capture_output=True,
         text=True,
         timeout=45,
-        cwd=ROOT,
+        cwd=capture.ROOT,
     )
     lines = result.stdout.strip().splitlines()
     if not lines:
@@ -180,7 +180,7 @@ def run_capture(session, robot_ip):
             'Capture returned no result: ' + result.stderr[-1000:]
         )
     outcome = json.loads(lines[-1])
-    directory = Path(outcome['directory']).resolve()
+    directory = pathlib.Path(outcome['directory']).resolve()
     if directory.parent != session.resolve():
         raise ValueError('Unexpected capture result directory')
     sample = json.loads((directory / 'sample.json').read_text())
@@ -254,10 +254,10 @@ def collect_once(session, robot_ip='192.168.1.19', settle_seconds=2):
                 '独立验证候选集已达到计划数量，未再打开相机或新增样本。',
             )
         reference = samples[plan['training_candidate_ids'][0]]
-        robot = Robot(robot_ip)
+        robot = capture.Robot(robot_ip)
         tool = robot.query('get_current_tool_frame')['reply']
         work = robot.query('get_current_work_frame')['reply']
-        zero_reference_frames(tool, work)
+        geometry.zero_reference_frames(tool, work)
         if (
             tool != reference['preflight']['get_current_tool_frame']
             or work != reference['preflight']['get_current_work_frame']
@@ -268,7 +268,7 @@ def collect_once(session, robot_ip='192.168.1.19', settle_seconds=2):
         before = robot.query('get_current_arm_state')['reply']['arm_state']
         if 'err' not in before or any(before['err']):
             raise ValueError('Robot error present or status missing')
-        initial = comparisons(pose_matrix(before['pose']), samples)
+        initial = comparisons(geometry.pose_matrix(before['pose']), samples)
         duplicate = [x for x in initial if x['near_duplicate']]
         if duplicate:
             return finish(
@@ -359,7 +359,7 @@ def main():
         )
     ):
         parser.error('Invalid session name')
-    session = ROOT / 'work' / 'handeye' / args.session
+    session = capture.ROOT / 'work' / 'handeye' / args.session
     if not (session / 'dataset_split.json').is_file():
         parser.error('Session needs an existing frozen dataset_split.json')
     try:

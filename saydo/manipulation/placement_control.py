@@ -1,12 +1,12 @@
 """Table placement shares the grasp task/device locks and never moves in preview."""
 
 import copy
-from saydo.manipulation.motion_speed import placement_speed_settings
+from saydo.manipulation import motion_speed
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
@@ -14,12 +14,12 @@ import traceback
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import controller_pose, rotation_error, contact_result
-from saydo.objects.grasp_library import held_clearance_config
-from saydo.robot.grasp_robot import RobotClient
-from saydo.robot.motion_validation import check_waypoints, wait_for_pose
-from saydo.manipulation.reorientation_geometry import model_geometry, pose_waypoint
-from saydo.manipulation.placement_geometry import (placement_settings, plan_placement, object_vertices, check_tcp_workspace, placement_validation_points, placement_motion_method)
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
+from saydo.robot import grasp_robot
+from saydo.robot import motion_validation
+from saydo.manipulation import reorientation_geometry
+from saydo.manipulation import placement_geometry
 
 
 def settings_revision(settings):
@@ -41,8 +41,9 @@ class PlacementMixin:
                 else {}
             )
             config = json.loads(self.config_path.read_text())
-            settings = placement_settings(
-                placement_speed_settings(config, value), require_region=False
+            settings = placement_geometry.placement_settings(
+                motion_speed.placement_speed_settings(config, value),
+                require_region=False,
             )
             table = config['table_z_m']
             if type(table) not in (int, float) or not np.isfinite(table):
@@ -77,8 +78,8 @@ class PlacementMixin:
                     else None
                 )
                 config = json.loads(self.config_path.read_text())
-                old = placement_settings(
-                    placement_speed_settings(
+                old = placement_geometry.placement_settings(
+                    motion_speed.placement_speed_settings(
                         config,
                         json.loads(original) if original is not None else {},
                     ),
@@ -86,7 +87,7 @@ class PlacementMixin:
                 )
                 if value['revision'] != settings_revision(old):
                     raise ValueError('放置设置已变化，请重新载入后保存')
-                settings = placement_settings(
+                settings = placement_geometry.placement_settings(
                     {
                         **old,
                         **{
@@ -103,7 +104,7 @@ class PlacementMixin:
                         prefix='.placement-',
                         delete=False,
                     ) as output:
-                        temporary = Path(output.name)
+                        temporary = pathlib.Path(output.name)
                         os.fchmod(
                             output.fileno(),
                             (
@@ -171,7 +172,9 @@ class PlacementMixin:
             current = self.placement_configuration()
             if current['error']:
                 raise ValueError(current['error'])
-            settings = placement_settings(current['settings'])
+            settings = placement_geometry.placement_settings(
+                current['settings']
+            )
             if value.get('revision') != current['revision']:
                 raise ValueError('放置设置已变化，请重新载入后预览')
             self.cancelled.clear()
@@ -233,16 +236,16 @@ class PlacementMixin:
             fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             raw = self.config_path.read_bytes()
             config = json.loads(raw)
-            settings = placement_settings(
-                placement_speed_settings(config, settings)
+            settings = placement_geometry.placement_settings(
+                motion_speed.placement_speed_settings(config, settings)
             )
             report.update(
                 settings=settings, settings_revision=settings_revision(settings)
             )
             report['config_sha256'] = hashlib.sha256(raw).hexdigest()
             self.placement_config_unchanged(report)
-            config = held_clearance_config(config, held)
-            self.robot = RobotClient(
+            config = grasp_library.held_clearance_config(config, held)
+            self.robot = grasp_robot.RobotClient(
                 config['robot_ip'],
                 config['robot_port'],
                 writes=mode == 'execute',
@@ -251,7 +254,9 @@ class PlacementMixin:
             self.check_cancel()
             arm, tool = self.reorientation_hardware(held, config)
             report.update(initial_arm=copy.deepcopy(arm), tool=tool)
-            mesh = model_geometry(self.tracker.models_root, held['object_id'])
+            mesh = reorientation_geometry.model_geometry(
+                self.tracker.models_root, held['object_id']
+            )
             if mesh['model_sha256'] != held['model_sha256']:
                 raise ValueError('物品模型已变化，不能沿用夹持关系放置')
             if mesh.get('pose_mode', '6d') != held.get('pose_mode', '6d'):
@@ -262,13 +267,13 @@ class PlacementMixin:
             report['active_stage'] = (
                 '搜索放置位置并检查运动端点及下降/退出直线路径'
             )
-            plan = plan_placement(
+            plan = placement_geometry.plan_placement(
                 held,
                 mesh['vertices'],
                 arm,
                 config,
                 settings,
-                lambda points, timeout: check_waypoints(
+                lambda points, timeout: motion_validation.check_waypoints(
                     checker, tool, arm, points, timeout
                 ),
                 self.check_cancel,
@@ -350,35 +355,40 @@ class PlacementMixin:
                 # Anchor post-release motions to the last measured arrival pose.
                 # Recheck these corrected targets against actual joints before
                 # sending.
-                adjusted = controller_pose(previous)
+                adjusted = grasp_geometry.controller_pose(previous)
                 if target['name'] == 'withdraw':
                     adjusted[:3, 3] -= (
                         adjusted[:3, 2] * plan['withdraw_distance_m']
                     )
                 else:
                     adjusted[2, 3] += settings['retreat_height_m']
-                target = pose_waypoint(target['name'], adjusted)
+                target = reorientation_geometry.pose_waypoint(
+                    target['name'], adjusted
+                )
                 target.update(method='linear')
                 target['controller_pose'][3:] = list(previous[3:])
             joint_motion = (
-                placement_motion_method(target['name']) == 'joint_pose'
+                placement_geometry.placement_motion_method(target['name'])
+                == 'joint_pose'
             )
             report['active_stage'] = names[target['name']]
             self.update(state='placing', message=report['active_stage'] + '…')
             self.check_cancel()
             self.placement_config_unchanged(report)
-            start = controller_pose(previous)
-            end = controller_pose(target['controller_pose'])
-            check_tcp_workspace(end, config)
+            start = grasp_geometry.controller_pose(previous)
+            end = grasp_geometry.controller_pose(target['controller_pose'])
+            placement_geometry.check_tcp_workspace(end, config)
 
             def read_motion_state():
                 self.check_cancel()
                 actual = self.arm_state()
-                pose = controller_pose(actual['pose'])
-                check_tcp_workspace(pose, config)
+                pose = grasp_geometry.controller_pose(actual['pose'])
+                placement_geometry.check_tcp_workspace(pose, config)
                 if not joint_motion:
                     if (
-                        rotation_error(pose[:3, :3], start[:3, :3])
+                        grasp_geometry.rotation_error(
+                            pose[:3, :3], start[:3, :3]
+                        )
                         > np.deg2rad(settings['orientation_tolerance_deg'])
                     ):
                         raise ValueError('放置过程中实际朝向偏离规划朝向')
@@ -400,7 +410,9 @@ class PlacementMixin:
                         raise ValueError('放置反馈偏离本段直线路径超过 10 毫米')
                 if not retreating:
                     self.check_reorient_contact(held, config)
-                    world = object_vertices(pose, held, vertices)
+                    world = placement_geometry.object_vertices(
+                        pose, held, vertices
+                    )
                     bottom = float(world[:, 2].min())
                     report['minimum_observed_object_z_m'] = min(
                         report.get('minimum_observed_object_z_m', bottom),
@@ -416,14 +428,16 @@ class PlacementMixin:
             arm = read_motion_state()
             if (
                 np.linalg.norm(
-                    controller_pose(arm['pose'])[:3, 3] - start[:3, 3]
+                    grasp_geometry.controller_pose(arm['pose'])[:3, 3]
+                    - start[:3, 3]
                 )
                 > settings['position_tolerance_m']
             ):
                 raise ValueError('末端已离开放置路径的规划起点')
             if (
-                rotation_error(
-                    controller_pose(arm['pose'])[:3, :3], start[:3, :3]
+                grasp_geometry.rotation_error(
+                    grasp_geometry.controller_pose(arm['pose'])[:3, :3],
+                    start[:3, :3],
                 )
                 > np.deg2rad(settings['orientation_tolerance_deg'])
             ):
@@ -434,7 +448,7 @@ class PlacementMixin:
             sampling_start = (
                 list(arm['pose'][:3]) + list(target['controller_pose'][3:])
             )
-            points = placement_validation_points(
+            points = placement_geometry.placement_validation_points(
                 sampling_start, [target], settings['linear_sample_step_m']
             )
             self.verify_motion_targets(plan, config, report, arm, points)
@@ -464,7 +478,7 @@ class PlacementMixin:
             )
             record = {'stage': report['active_stage']}
             report.setdefault('arrival_checks', []).append(record)
-            actual = wait_for_pose(
+            actual = motion_validation.wait_for_pose(
                 read_motion_state,
                 target['controller_pose'],
                 self.check_cancel,
@@ -474,8 +488,10 @@ class PlacementMixin:
             )
             previous = list(actual['pose'])
             if target['name'] == 'lower':
-                world = object_vertices(
-                    controller_pose(actual['pose']), held, vertices
+                world = placement_geometry.object_vertices(
+                    grasp_geometry.controller_pose(actual['pose']),
+                    held,
+                    vertices,
                 )
                 bottom = float(world[:, 2].min())
                 report['release_bottom_z_m'] = bottom
@@ -541,7 +557,10 @@ class PlacementMixin:
             or type(position[0]) not in (int, float)
             or not np.isfinite(position[0])
             or not 0 <= position[0] <= 1000
-            or contact_result(state, config['gripper']) == 'fault'
+            or (
+                grasp_geometry.contact_result(state, config['gripper'])
+                == 'fault'
+            )
         ):
             raise ValueError('释放物品时夹爪反馈无效或存在故障')
         if (

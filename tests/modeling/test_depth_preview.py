@@ -1,13 +1,13 @@
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
 
 import cv2
 import numpy as np
 
-from saydo.modeling.depth_preview import depth_color
-from saydo.modeling.reexport_previews import reexport_session, sha
+from saydo.modeling import depth_preview
+from saydo.modeling import reexport_previews
 
 
 class DepthPreviewTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class DepthPreviewTests(unittest.TestCase):
         depth = np.array(
             [[0, -1, np.nan, np.inf, .1, .15, .8, 2]], dtype=np.float32
         )
-        image = depth_color(depth)
+        image = depth_preview.depth_color(depth)
         np.testing.assert_array_equal(
             image[0, :4], np.zeros((4, 3), dtype=np.uint8)
         )
@@ -43,7 +43,7 @@ class DepthPreviewTests(unittest.TestCase):
         ]:
             self.assertTrue(cv2.imwrite(str(directory / name), image))
         np.save(directory / 'depth_m.npy', raw.astype(np.float32) * .001)
-        hashes = {p.name: sha(p) for p in directory.iterdir()}
+        hashes = {p.name: reexport_previews.sha(p) for p in directory.iterdir()}
         report = {
             'status': 'candidate',
             'files_sha256': hashes,
@@ -56,35 +56,45 @@ class DepthPreviewTests(unittest.TestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as tmp:
-            session, directory, hashes = self.make_session(Path(tmp))
+            session, directory, hashes = self.make_session(pathlib.Path(tmp))
             old_report = (directory / 'sample.json').read_bytes()
-            result = reexport_session(session)
-            backup = Path(result['records'][0]['backup'])
+            result = reexport_previews.reexport_session(session)
+            backup = pathlib.Path(result['records'][0]['backup'])
             self.assertEqual((backup / 'sample.json').read_bytes(), old_report)
-            self.assertEqual(sha(backup / 'preview.jpg'), hashes['preview.jpg'])
+            self.assertEqual(
+                reexport_previews.sha(backup / 'preview.jpg'),
+                hashes['preview.jpg'],
+            )
             for name in [
                 'color.png', 'depth_raw.png', 'depth_mm.png', 'depth_m.npy'
             ]:
-                self.assertEqual(sha(directory / name), hashes[name])
+                self.assertEqual(
+                    reexport_previews.sha(directory / name), hashes[name]
+                )
             self.assertEqual(
                 cv2.imread(str(directory / 'preview.jpg')).shape, (8, 24, 3)
             )
             report = json.loads((directory / 'sample.json').read_text())
             self.assertEqual(report['retained_field'], {'a': 123})
             for name, expected in report['files_sha256'].items():
-                self.assertEqual(sha(directory / name), expected)
-            first_preview = sha(directory / 'preview.jpg')
-            reexport_session(session)
-            self.assertEqual(first_preview, sha(directory / 'preview.jpg'))
+                self.assertEqual(
+                    reexport_previews.sha(directory / name), expected
+                )
+            first_preview = reexport_previews.sha(directory / 'preview.jpg')
+            reexport_previews.reexport_session(session)
+            self.assertEqual(
+                first_preview, reexport_previews.sha(directory / 'preview.jpg')
+            )
 
     def test_corrupt_source_rejected_before_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
-            session, directory, hashes = self.make_session(Path(tmp))
+            session, directory, hashes = self.make_session(pathlib.Path(tmp))
             (directory / 'depth_m.npy').write_bytes(b'corrupt')
             with self.assertRaisesRegex(ValueError, 'hash mismatch'):
-                reexport_session(session)
+                reexport_previews.reexport_session(session)
             self.assertEqual(
-                sha(directory / 'preview.jpg'), hashes['preview.jpg']
+                reexport_previews.sha(directory / 'preview.jpg'),
+                hashes['preview.jpg'],
             )
             self.assertFalse((directory / 'depth_color.png').exists())
 

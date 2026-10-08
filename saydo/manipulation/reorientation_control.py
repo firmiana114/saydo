@@ -1,7 +1,7 @@
 """Fixed-TCP object orientation shares task locks and preserves successful holds."""
 
 import copy
-from saydo.manipulation.motion_speed import reorientation_speed_settings
+from saydo.manipulation import motion_speed
 import fcntl
 import json
 import threading
@@ -12,14 +12,14 @@ import uuid
 import numpy as np
 import yaml
 
-from saydo.geometry.grasp_geometry import controller_pose, transform, rotation_error, contact_result
-from saydo.objects.grasp_library import held_clearance_config
-from saydo.robot.grasp_robot import RobotClient
-from saydo.robot.motion_validation import wait_for_pose
-from saydo.manipulation.reorientation_visual import model_appearance
-from saydo.geometry.pose_symmetry import object_bounds
-from saydo.geometry.rotation_steps import checked_step
-from saydo.manipulation.reorientation_geometry import model_geometry, checked_rotation, reorientation_settings, plan_reorientation, endpoint_reachability, checked_position_request
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
+from saydo.robot import grasp_robot
+from saydo.robot import motion_validation
+from saydo.manipulation import reorientation_visual
+from saydo.geometry import pose_symmetry
+from saydo.geometry import rotation_steps
+from saydo.manipulation import reorientation_geometry
 
 
 class ReorientationMixin:
@@ -58,7 +58,7 @@ class ReorientationMixin:
         if not plan.get('object_id') or not plan.get('model_sha256'):
             return
         reached = self.arm_state()
-        base_tcp = controller_pose(reached['pose'])
+        base_tcp = grasp_geometry.controller_pose(reached['pose'])
         held = {
             'hold_id': uuid.uuid4().hex,
             'object_id': plan['object_id'],
@@ -68,7 +68,8 @@ class ReorientationMixin:
             'model_sha256': plan['model_sha256'],
             'base_T_object_at_grasp': plan['base_T_object'],
             'object_T_tcp': (
-                np.linalg.inv(transform(plan['base_T_object'])) @ base_tcp
+                np.linalg.inv(grasp_geometry.transform(plan['base_T_object']))
+                @ base_tcp
             ).tolist(),
             'tool_response': plan['tool_response'],
             'contact_position': self.status['gripper_contact']['pos'][0],
@@ -94,8 +95,8 @@ class ReorientationMixin:
             if arm is None:
                 arm = self.arm_state()
             current = (
-                controller_pose(arm['pose'])
-                @ np.linalg.inv(transform(held['object_T_tcp']))
+                grasp_geometry.controller_pose(arm['pose'])
+                @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
             )
             held.update(
                 current_object_rotation=current[:3, :3].tolist(),
@@ -113,9 +114,11 @@ class ReorientationMixin:
                 if held
                 else self.tracker.state.get('object_id')
             )
-        geometry = model_geometry(self.tracker.models_root, object_id)
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, object_id
+        )
         try:
-            geometry['appearance'] = model_appearance(
+            geometry['appearance'] = reorientation_visual.model_appearance(
                 self.tracker.models_root, object_id
             )
         except (ValueError, OSError, TypeError) as error:
@@ -144,7 +147,9 @@ class ReorientationMixin:
         return geometry
 
     def start_reorient(self, value, preview=False):
-        rotation = checked_rotation(value.get('rotation'))
+        rotation = reorientation_geometry.checked_rotation(
+            value.get('rotation')
+        )
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有机械臂任务正在处理')
@@ -171,10 +176,12 @@ class ReorientationMixin:
                 )
             if 'max_shift_m' in value:
                 raise ValueError('自适应位置已取消位移上限，请刷新页面后重试')
-            position_mode = checked_position_request(
+            position_mode = reorientation_geometry.checked_position_request(
                 value.get('position_mode', 'fixed')
             )
-            step = checked_step(value.get('max_rotation_step_deg', 15.))
+            step = rotation_steps.checked_step(
+                value.get('max_rotation_step_deg', 15.)
+            )
             self.cancelled.clear()
             self.actuated = False
             self.robot = None
@@ -265,7 +272,7 @@ class ReorientationMixin:
         state = self.robot.query('get_rm_plus_state_info')['state_info']
         if (
             (
-                contact_result(state, config['gripper'])
+                grasp_geometry.contact_result(state, config['gripper'])
                 not in ('force_contact', 'force_stop')
             )
             or abs(state['pos'][0] - held['contact_position']) > 20
@@ -323,7 +330,9 @@ class ReorientationMixin:
                 != (grip['vendor'], grip['device_id'], 1, 1)
             ):
                 raise ValueError('夹爪身份已变化')
-            mesh = model_geometry(self.tracker.models_root, held['object_id'])
+            mesh = reorientation_geometry.model_geometry(
+                self.tracker.models_root, held['object_id']
+            )
             if mesh['model_sha256'] != held['model_sha256']:
                 raise ValueError('物品模型已变化')
             previous = None
@@ -332,7 +341,7 @@ class ReorientationMixin:
                 state = self.check_reorient_contact(held, config)
                 record['gripper_samples'].append(copy.deepcopy(state))
                 arm = self.robot.query('get_current_arm_state')['arm_state']
-                pose = controller_pose(arm['pose'])
+                pose = grasp_geometry.controller_pose(arm['pose'])
                 joints = np.asarray(arm['joint'], dtype=float)
                 if joints.shape != (7,) or not np.isfinite(joints).all():
                     raise ValueError('关节反馈无效')
@@ -346,7 +355,9 @@ class ReorientationMixin:
                             <= .0002
                         )
                         and (
-                            rotation_error(pose[:3, :3], previous[1][:3, :3])
+                            grasp_geometry.rotation_error(
+                                pose[:3, :3], previous[1][:3, :3]
+                            )
                             <= np.deg2rad(.15)
                         )
                     )
@@ -358,7 +369,10 @@ class ReorientationMixin:
                 time.sleep(.1)
             else:
                 raise ValueError('停止后的位姿反馈未稳定')
-            current = pose @ np.linalg.inv(transform(held['object_T_tcp']))
+            current = (
+                pose
+                @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
+            )
             updated = copy.deepcopy(held)
             updated.update(
                 current_object_rotation=current[:3, :3].tolist(),
@@ -442,7 +456,7 @@ class ReorientationMixin:
             config = json.loads(self.config_path.read_text())
             with (self.root / 'work/grasp/robot.lock').open('a') as robot_lock:
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.robot = RobotClient(
+                self.robot = grasp_robot.RobotClient(
                     config['robot_ip'], config['robot_port'], writes=False
                 )
                 self.held_object = copy.deepcopy(held)
@@ -505,11 +519,11 @@ class ReorientationMixin:
             directory.mkdir(parents=True, exist_ok=True)
             robot_lock = (directory.parent / 'robot.lock').open('a')
             fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            config = held_clearance_config(
+            config = grasp_library.held_clearance_config(
                 json.loads(self.config_path.read_text()), held
             )
-            settings = reorientation_settings(
-                reorientation_speed_settings(
+            settings = reorientation_geometry.reorientation_settings(
+                motion_speed.reorientation_speed_settings(
                     config,
                     json.loads(
                         (
@@ -518,14 +532,14 @@ class ReorientationMixin:
                     ),
                 )
             )
-            settings['max_rotation_step_deg'] = checked_step(
+            settings['max_rotation_step_deg'] = rotation_steps.checked_step(
                 max_rotation_step_deg
             )
             report['settings'] = settings
             report['configuration_binding'] = self.motion_binding(config)
             if held.get('scene_id'):
                 self.validate_scene(held['scene_id'], config)
-            self.robot = RobotClient(
+            self.robot = grasp_robot.RobotClient(
                 config['robot_ip'],
                 config['robot_port'],
                 writes=mode == 'execute',
@@ -535,7 +549,9 @@ class ReorientationMixin:
             arm, tool = self.reorientation_hardware(held, config)
             report['initial_arm'] = copy.deepcopy(arm)
             report['tool'] = copy.deepcopy(tool)
-            mesh = model_geometry(self.tracker.models_root, held['object_id'])
+            mesh = reorientation_geometry.model_geometry(
+                self.tracker.models_root, held['object_id']
+            )
             if mesh['model_sha256'] != held['model_sha256']:
                 raise ValueError('物品模型已变化，不能沿用抓取关系调整姿态')
             if mesh.get('pose_mode', '6d') != held.get('pose_mode', '6d'):
@@ -544,14 +560,14 @@ class ReorientationMixin:
             if not checker.is_file():
                 raise ValueError('缺少姿态调整航点可达性检查程序')
             report['active_stage'] = '检查姿态路径及最终离桌高度'
-            plan = plan_reorientation(
+            plan = reorientation_geometry.plan_reorientation(
                 held,
                 mesh['vertices'],
                 rotation,
                 arm,
                 config,
                 settings,
-                lambda waypoints, timeout: endpoint_reachability(
+                lambda waypoints, timeout: motion_validation.check_waypoints(
                     checker, tool, arm, waypoints, timeout
                 ),
                 self.check_cancel,
@@ -668,7 +684,9 @@ class ReorientationMixin:
             or not np.isfinite(points).all()
         ):
             raise ValueError('缺少有效的物品模型，不能监测运动中桌面碰撞')
-        attachment_inv = np.linalg.inv(transform(held['object_T_tcp']))
+        attachment_inv = np.linalg.inv(
+            grasp_geometry.transform(held['object_T_tcp'])
+        )
         report['motion_validation_scope'] = (
             'segmented_verified_movej_endpoints_and_live_feedback_not_full_path'
         )
@@ -684,12 +702,12 @@ class ReorientationMixin:
                 if time.monotonic() > deadline:
                     raise TimeoutError('调姿执行超过90秒预算')
                 actual = self.arm_state()
-                pose = controller_pose(actual['pose'])
+                pose = grasp_geometry.controller_pose(actual['pose'])
                 # A controller-planned joint move may curve in Cartesian space
                 # and change orientation in transit.
                 obj = pose @ attachment_inv
                 bottom = float(
-                    object_bounds(
+                    pose_symmetry.object_bounds(
                         obj, points, held.get('pose_mode', '6d')
                     )[0][2]
                 )
@@ -704,7 +722,9 @@ class ReorientationMixin:
                 return actual
 
             def watchdog():
-                return controller_pose(read_motion_state()['pose'])
+                return grasp_geometry.controller_pose(
+                    read_motion_state()['pose']
+                )
 
             report['active_stage'] = (
                 '关节运动至选定位置'
@@ -754,7 +774,7 @@ class ReorientationMixin:
 
             check = {'stage': report['active_stage']}
             report.setdefault('arrival_checks', []).append(check)
-            actual = wait_for_pose(
+            actual = motion_validation.wait_for_pose(
                 arrival_state,
                 target['controller_pose'],
                 self.check_cancel,
@@ -764,7 +784,7 @@ class ReorientationMixin:
             )
             if np.max(np.abs(np.asarray(actual['joint']) - joint_target)) > 500:
                 raise ValueError('未到达所选关节解')
-            reached = controller_pose(actual['pose'])
+            reached = grasp_geometry.controller_pose(actual['pose'])
             report['completed_waypoints'] = (
                 report.get('completed_waypoints', 0) + 1
             )
@@ -777,7 +797,10 @@ class ReorientationMixin:
             )
         ):
             raise ValueError('实际末端最终高度未高于桌面 10 厘米，停止本次任务')
-        actual_object = reached @ np.linalg.inv(transform(held['object_T_tcp']))
+        actual_object = (
+            reached
+            @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
+        )
         updated = copy.deepcopy(held)
         updated['current_object_rotation'] = actual_object[:3, :3].tolist()
         updated['orientation_version'] = held.get('orientation_version', 0) + 1

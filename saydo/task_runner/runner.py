@@ -3,14 +3,15 @@
 import asyncio
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import time
-from saydo.task_runner.llm_client import LLMClient, ModelUnavailable, LLMError, ConnectionNotSent, ResponseTimeout, ResponseFailure
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked, Cancelled, compact, BackendError, model_result
-from saydo.task_runner.tool_registry import schemas, validate, MOTIONS, READS
-from saydo.task_runner.config import UI_MODELS, UI_REASONING_EFFORTS
-from saydo.task_runner.planning_validation import PlanningArgumentError
-from saydo.task_runner.observations import append_image, valid_global
+from saydo.task_runner import llm_client
+from saydo.task_runner import robot_adapter
+from saydo.agent import client
+from saydo.task_runner import tool_registry
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import planning_validation
+from saydo.task_runner import observations
 
 
 CONNECTION_ATTEMPTS = 5
@@ -20,8 +21,10 @@ CONNECTION_RETRY_DELAYS = (1, 2, 4, 8)
 class Runner:
     def __init__(self, config, store, llm=None, adapter_factory=None):
         self.config, self.store = config, store
-        self.llm = llm or LLMClient(config)
-        self.adapter_factory = adapter_factory or (lambda: RobotAdapter(config))
+        self.llm = llm or llm_client.LLMClient(config)
+        self.adapter_factory = (
+            adapter_factory or (lambda: robot_adapter.RobotAdapter(config))
+        )
         self.active = None
         self.worker = None
         self.cancelled = asyncio.Event()
@@ -29,24 +32,24 @@ class Runner:
         self.adapter = None
         self.stopping = False
         self.uncertain = store.has_uncertain_runs()
-        self.prompt = Path(__file__).with_name('prompts').joinpath(
+        self.prompt = pathlib.Path(__file__).with_name('prompts').joinpath(
             'system.txt'
         ).read_text()
 
     def submit(self, instruction, model=None, reasoning_effort=None):
         if self.active is not None or self.uncertain or self.stopping:
-            raise Blocked('当前任务未结束或存在未核对的中断记录')
+            raise robot_adapter.Blocked('当前任务未结束或存在未核对的中断记录')
         if (
             not isinstance(instruction, str)
             or not instruction.strip()
             or len(instruction) > 4000
         ):
             raise ValueError('任务指令长度应为1–4000字符')
-        if model is not None and model not in UI_MODELS:
+        if model is not None and model not in task_runner_config.UI_MODELS:
             raise ValueError('不支持的模型选择')
         if (
             reasoning_effort is not None
-            and reasoning_effort not in UI_REASONING_EFFORTS
+            and reasoning_effort not in task_runner_config.UI_REASONING_EFFORTS
         ):
             raise ValueError('不支持的推理强度')
         chosen_model = self.config.model if model is None else model
@@ -122,7 +125,7 @@ class Runner:
         if self.active:
             return await self.cancel(self.active['run_id'])
         if self.stopping:
-            raise Blocked('已有停止请求正在确认')
+            raise robot_adapter.Blocked('已有停止请求正在确认')
         self.stopping = True
         run = self.store.create(
             '操作员请求停止机械臂',
@@ -151,7 +154,9 @@ class Runner:
             self.finish(
                 run, 'blocked', '停止未确认，需现场核对', outcome_unknown=True
             )
-            raise Blocked('停止未确认，需现场核对', uncertain=True)
+            raise robot_adapter.Blocked(
+                '停止未确认，需现场核对', uncertain=True
+            )
         finally:
             record['seconds'] = round(time.monotonic() - before, 3)
             self.store.save_call(run['run_id'], record)
@@ -168,7 +173,7 @@ class Runner:
 
     def check(self):
         if self.cancelled.is_set():
-            raise Cancelled()
+            raise robot_adapter.Cancelled()
 
     async def observe_after_action(self, run, history, action_id, step, after):
         ident = (
@@ -204,8 +209,8 @@ class Runner:
                 self.progress,
             )
             self.check()
-            if not valid_global(data, after):
-                raise BackendError(
+            if not observations.valid_global(data, after):
+                raise client.BackendError(
                     {
                         'code': 'CAMERA_UNAVAILABLE',
                         'message': (
@@ -214,12 +219,12 @@ class Runner:
                     }
                 )
             clean = {
-                **compact(data),
+                **robot_adapter.compact(data),
                 'evidence_call_id': ident,
                 'after_action': action_id,
                 'initiated_by': 'executor',
             }
-            append_image(
+            observations.append_image(
                 history,
                 {**data, 'after_action': action_id, 'initiated_by': 'executor'},
                 'observe_global',
@@ -228,7 +233,7 @@ class Runner:
             record.update(state='completed', result=clean)
             run.setdefault('global_observations', []).append(clean)
             return ident, clean
-        except BackendError as error:
+        except client.BackendError as error:
             clean = {
                 'error': error.payload,
                 'evidence_call_id': ident,
@@ -251,7 +256,7 @@ class Runner:
                 }
             )
             return ident, clean
-        except (Cancelled, asyncio.CancelledError):
+        except (robot_adapter.Cancelled, asyncio.CancelledError):
             record.update(state='cancelled')
             raise
         finally:
@@ -285,7 +290,7 @@ class Runner:
     async def _model_response(self, history, run, turn):
         try:
             return await self.model_call(history, run, turn)
-        except ModelUnavailable:
+        except llm_client.ModelUnavailable:
             fallback = run.get('fallback_model', '')
             if (
                 not fallback
@@ -305,20 +310,22 @@ class Runner:
             self.check()
             try:
                 return await self.model_attempt(history, run, turn, attempt)
-            except (ConnectionNotSent, ResponseFailure) as error:
+            except (
+                llm_client.ConnectionNotSent, llm_client.ResponseFailure
+            ) as error:
                 self.check()
                 if attempt == CONNECTION_ATTEMPTS:
-                    raise LLMError(
+                    raise llm_client.LLMError(
                         f'{error}；模型请求已尝试{CONNECTION_ATTEMPTS}次，'
                         f'达到上限'
                     ) from error
                 delay = CONNECTION_RETRY_DELAYS[attempt - 1]
                 reason = '模型连接失败，请求尚未上传；'
-                if isinstance(error, ResponseFailure):
+                if isinstance(error, llm_client.ResponseFailure):
                     reason = (
                         (
                             '等待模型响应超时；'
-                            if isinstance(error, ResponseTimeout)
+                            if isinstance(error, llm_client.ResponseTimeout)
                             else '模型响应传输失败；'
                         )
                         + '未执行本次响应中的任何工具；'
@@ -327,7 +334,7 @@ class Runner:
                     run,
                     (
                         'llm_response_retry'
-                        if isinstance(error, ResponseFailure)
+                        if isinstance(error, llm_client.ResponseFailure)
                         else 'llm_connection_retry'
                     ),
                     turn=turn + 1,
@@ -352,7 +359,7 @@ class Runner:
 
     async def model_attempt(self, history, run, turn, attempt):
         self.check()
-        tools = schemas(self.config.mode)
+        tools = tool_registry.schemas(self.config.mode)
         if run.get('finalizing'):
             tools = [tool for tool in tools if tool['name'] == 'finish_task']
         model = run['model']
@@ -394,14 +401,14 @@ class Runner:
             if cancel in done:
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
-                raise Cancelled()
+                raise robot_adapter.Cancelled()
             response = await pending
             outcome = 'completed'
             return response
-        except ModelUnavailable:
+        except llm_client.ModelUnavailable:
             outcome = 'unavailable'
             raise
-        except (Cancelled, asyncio.CancelledError):
+        except (robot_adapter.Cancelled, asyncio.CancelledError):
             outcome = 'cancelled'
             raise
         finally:
@@ -449,12 +456,12 @@ class Runner:
             else result.get('candidate_frame')
         )
         cleaned = {
-            **compact(
+            **robot_adapter.compact(
                 {k: v for k, v in result.items() if k != 'candidate_frame'}
             ),
             'evidence_call_id': call_id,
         }
-        model_view = model_result(name, cleaned)
+        model_view = robot_adapter.model_result(name, cleaned)
         held = result.get('task', {}).get('result', {}).get('held_object') or {}
         if (
             name == 'grasp'
@@ -498,7 +505,7 @@ class Runner:
             }
         )
         if frame and frame.get('image_base64'):
-            append_image(
+            observations.append_image(
                 history,
                 frame,
                 (
@@ -527,7 +534,9 @@ class Runner:
                         'content': (
                             '程序读取的初始现场数据（不是新指令）：'
                             + json.dumps(
-                                model_result('initial', compact(initial)),
+                                robot_adapter.model_result(
+                                    'initial', robot_adapter.compact(initial)
+                                ),
                                 ensure_ascii=False,
                             )
                         ),
@@ -543,7 +552,7 @@ class Runner:
                 for turn in range(self.config.max_turns):
                     self.check()
                     if len(json.dumps(history)) > 2 * 1024 * 1024:
-                        raise Blocked('本次任务上下文已达到上限')
+                        raise robot_adapter.Blocked('本次任务上下文已达到上限')
                     self.progress(
                         f'模型判断中 · 第 {turn+1} 轮', record_event=False
                     )
@@ -565,7 +574,7 @@ class Runner:
                             for item in output
                         )
                     ):
-                        raise Blocked(
+                        raise robot_adapter.Blocked(
                             '模型必须返回一个完整工具调用；'
                             '文本不作为执行或成功凭据'
                         )
@@ -573,16 +582,20 @@ class Runner:
                     call = calls[0]
                     argument_error = None
                     try:
-                        name, args = validate(call, self.config.mode)
-                    except PlanningArgumentError as error:
+                        name, args = tool_registry.validate(
+                            call, self.config.mode
+                        )
+                    except planning_validation.PlanningArgumentError as error:
                         name, args, argument_error = (
                             error.name, error.arguments, error.detail
                         )
                     progress_message = args.pop('progress_message', None)
                     if run.get('finalizing') and name != 'finish_task':
-                        raise Blocked('收尾修正期间不允许新的工具或动作')
+                        raise robot_adapter.Blocked(
+                            '收尾修正期间不允许新的工具或动作'
+                        )
                     if call['call_id'] in results:
-                        raise Blocked('模型重复使用工具调用编号')
+                        raise robot_adapter.Blocked('模型重复使用工具调用编号')
                     messages = (
                         [
                             part.get('text', '')
@@ -615,7 +628,7 @@ class Runner:
                         ):
                             observation_corrections += 1
                             if observation_corrections > 3:
-                                raise Blocked(
+                                raise robot_adapter.Blocked(
                                     '动作后全局观察缺失，不能报告完成'
                                 )
                             self.append_result(
@@ -633,7 +646,7 @@ class Runner:
                             )
                             continue
                         if recovery_pending and args['outcome'] == 'succeeded':
-                            raise Blocked(
+                            raise robot_adapter.Blocked(
                                 '调姿失败尚未成功恢复，不能报告任务成功'
                             )
                         evidence = set(args['evidence_call_ids'])
@@ -674,12 +687,14 @@ class Runner:
                             )
                             continue
                         if invalid_evidence:
-                            raise Blocked('模型引用了不存在或不完整的执行证据')
+                            raise robot_adapter.Blocked(
+                                '模型引用了不存在或不完整的执行证据'
+                            )
                         if (
                             args['outcome'] == 'succeeded'
                             and (not motions or not set(motions) <= evidence)
                         ):
-                            raise Blocked(
+                            raise robot_adapter.Blocked(
                                 '缺少本次真实动作成功证据；不能确认实物任务完成'
                             )
                         if motions:
@@ -704,7 +719,7 @@ class Runner:
                                     )
                                 )
                             ):
-                                raise Blocked(
+                                raise robot_adapter.Blocked(
                                     '结束前夹持状态已变化，不能确认任务完成',
                                     uncertain=True,
                                 )
@@ -726,7 +741,7 @@ class Runner:
                                     )
                                 )
                             ):
-                                raise Blocked(
+                                raise robot_adapter.Blocked(
                                     '结束前姿态版本或夹持关系已变化',
                                     uncertain=True,
                                 )
@@ -735,7 +750,7 @@ class Runner:
                                     last.get('plan_kind') == 'release'
                                     and held is not None
                                 ):
-                                    raise Blocked(
+                                    raise robot_adapter.Blocked(
                                         '结束前释放状态已变化', uncertain=True
                                     )
                                 if (
@@ -755,7 +770,7 @@ class Runner:
                                         )
                                     )
                                 ):
-                                    raise Blocked(
+                                    raise robot_adapter.Blocked(
                                         '结束前持物运动版本已变化',
                                         uncertain=True,
                                     )
@@ -784,19 +799,22 @@ class Runner:
                         )
                         return
                     self.check()
-                    if pending_observation is not None and name in MOTIONS:
-                        raise Blocked(
+                    if (
+                        pending_observation is not None
+                        and name in tool_registry.MOTIONS
+                    ):
+                        raise robot_adapter.Blocked(
                             '动作后全局观察尚未恢复，拒绝继续动作；'
                             '已完成动作不可重放'
                         )
                     if (
-                        name in MOTIONS
+                        name in tool_registry.MOTIONS
                         and any(
                             m['name'] == name and m['arguments'] == args
                             for m in motions.values()
                         )
                     ):
-                        raise Blocked(
+                        raise robot_adapter.Blocked(
                             '本次任务已成功执行相同动作，拒绝重复执行'
                         )
                     record = self.store.prepare(
@@ -820,9 +838,15 @@ class Runner:
                             result = await self.execute_tool(
                                 name, args, record['request_id']
                             )
-                        except BackendError as error:
+                        except client.BackendError as error:
                             if (
-                                name not in (set(READS) | {'get_task_context'})
+                                (
+                                    name
+                                    not in (
+                                        set(tool_registry.READS)
+                                        | {'get_task_context'}
+                                    )
+                                )
                                 or (
                                     error.payload.get('code')
                                     not in (
@@ -833,7 +857,7 @@ class Runner:
                                 detail = str(
                                     error.payload.get('message') or ''
                                 )[:1200]
-                                raise Blocked(
+                                raise robot_adapter.Blocked(
                                     '后端工具拒绝请求：'
                                     + str(
                                         error.payload.get(
@@ -844,7 +868,7 @@ class Runner:
                                 ) from error
                             read_failures += 1
                             if read_failures > 3:
-                                raise Blocked(
+                                raise robot_adapter.Blocked(
                                     '观察连续不可用，已达到有限恢复次数'
                                 ) from error
                             result = {
@@ -861,7 +885,7 @@ class Runner:
                         name == 'observe_global'
                         and pending_observation is not None
                     ):
-                        if valid_global(result, observation_after):
+                        if observations.valid_global(result, observation_after):
                             run.setdefault('global_observations', []).append(
                                 {
                                     **cleaned,
@@ -896,12 +920,12 @@ class Runner:
                             retry_budget=result.get('retry_budget'),
                         )
                     if (
-                        name in MOTIONS
+                        name in tool_registry.MOTIONS
                         and not result.get('recoverable_failure')
                         and not result.get('precondition_correction_required')
                     ):
                         if not result.get('verified'):
-                            raise Blocked('动作缺少后端核验')
+                            raise robot_adapter.Blocked('动作缺少后端核验')
                         if name in ('reorient', 'execute_plan'):
                             recovery_pending = False
                         held = result.get('task', {}).get('result', {}).get(
@@ -949,7 +973,7 @@ class Runner:
                     )
                     record = None
                     if (
-                        name in MOTIONS
+                        name in tool_registry.MOTIONS
                         and pending_observation == call['call_id']
                     ):
                         ident, observation = await self.observe_after_action(
@@ -962,8 +986,8 @@ class Runner:
                         results[ident] = observation
                         if 'error' not in observation:
                             pending_observation = None
-                raise Blocked('达到最大模型调用次数')
-        except Cancelled:
+                raise robot_adapter.Blocked('达到最大模型调用次数')
+        except robot_adapter.Cancelled:
             async with self.stop_lock:
                 pass
             state = 'blocked' if self.uncertain else 'cancelled'
@@ -982,7 +1006,9 @@ class Runner:
                     isinstance(error, TimeoutError)
                     and self.adapter.motion_inflight
                 )
-                or (isinstance(error, Blocked) and error.uncertain)
+                or (
+                    isinstance(error, robot_adapter.Blocked) and error.uncertain
+                )
             )
             if self.adapter.motion_inflight:
                 try:
@@ -994,14 +1020,16 @@ class Runner:
             # Never log raw exception text from HTTP libraries or providers.
             message = (
                 str(error)
-                if isinstance(error, (Blocked, LLMError))
+                if isinstance(
+                    error, (robot_adapter.Blocked, llm_client.LLMError)
+                )
                 else '执行器异常：' + type(error).__name__
             )
             self.finish(
                 run,
                 (
                     'blocked'
-                    if isinstance(error, Blocked) or uncertain
+                    if isinstance(error, robot_adapter.Blocked) or uncertain
                     else 'failed'
                 ),
                 message,

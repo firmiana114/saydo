@@ -4,18 +4,18 @@
 import argparse
 import asyncio
 import json
-from pathlib import Path
+import pathlib
 from typing import Annotated, Literal
 from pydantic import Field, BaseModel, ConfigDict
-from urllib.parse import quote
+import urllib.parse
 
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
-from saydo.agent.client import BackendError, RobotBackend
-from saydo.agent.global_camera import observe_global as capture_global, CameraUnavailable, NOTE as GLOBAL_CAMERA_NOTE
-from saydo.contracts.observation import label_frame
-from saydo.contracts.motion_contract import GOAL_PROPERTIES
+from saydo.agent import client
+from saydo.agent import global_camera
+from saydo.contracts import observation
+from saydo.contracts import motion_contract
 
 RPYDegrees = Annotated[
     list[Annotated[float, Field(strict=True, ge=-180, le=180)]],
@@ -56,18 +56,25 @@ class MotionGoal(BaseModel):
     ] = 'base'
     reference_object_id: str | None = Field(
         default=None,
-        description=GOAL_PROPERTIES['reference_object_id']['description'],
+        description=motion_contract.GOAL_PROPERTIES[
+            'reference_object_id'
+        ]['description'],
     )
     scene_id: str | None = Field(
-        default=None, description=GOAL_PROPERTIES['scene_id']['description']
+        default=None,
+        description=motion_contract.GOAL_PROPERTIES['scene_id']['description'],
     )
     reference_instance_id: str | None = Field(
         default=None,
-        description=GOAL_PROPERTIES['reference_instance_id']['description'],
+        description=motion_contract.GOAL_PROPERTIES[
+            'reference_instance_id'
+        ]['description'],
     )
     reference_feature_id: str | None = Field(
         default=None,
-        description=GOAL_PROPERTIES['reference_feature_id']['description'],
+        description=motion_contract.GOAL_PROPERTIES[
+            'reference_feature_id'
+        ]['description'],
     )
     reference_point_object_m: XYZ = Field(default_factory=lambda: [0., 0., 0.])
     target_position_m: XYZ | None = None
@@ -118,7 +125,7 @@ def create_server(backend):
             data = await asyncio.to_thread(backend.request, path, value)
             content = []
             if image:
-                data = label_frame(
+                data = observation.label_frame(
                     data,
                     (
                         'get_tracking_candidates_frame'
@@ -138,7 +145,7 @@ def create_server(backend):
                 )
             )
             return CallToolResult(content=content, structured_content=data)
-        except BackendError as error:
+        except client.BackendError as error:
             return CallToolResult(
                 is_error=True,
                 content=[
@@ -186,8 +193,9 @@ def create_server(backend):
     async def observe_global() -> CallToolResult:
         """Observe the whole workspace with the separate configured global camera, whose mount is not fixed. Capture a new RGB image, with camera serial/role, host receipt time and resolution. No calibration to robot Base: qualitative appearance only, not robot coordinates, metric measurements, tracking boxes, contact/insertion or collision verification. Does not move hardware, switch the tracking camera, or replace scene capture. Never falls back to another camera or an old image."""
         try:
-            data = label_frame(
-                await asyncio.to_thread(capture_global), 'observe_global'
+            data = observation.label_frame(
+                await asyncio.to_thread(global_camera.observe_global),
+                'observe_global',
             )
             encoded = data.pop('image_base64')
             return CallToolResult(
@@ -201,7 +209,7 @@ def create_server(backend):
                 ],
                 structured_content=data,
             )
-        except CameraUnavailable as error:
+        except global_camera.CameraUnavailable as error:
             return CallToolResult(
                 is_error=True,
                 content=[
@@ -213,7 +221,7 @@ def create_server(backend):
                                 'message': str(error),
                                 'camera_role': 'movable_global',
                                 'motion_sent': False,
-                                'usage_note': GLOBAL_CAMERA_NOTE,
+                                'usage_note': global_camera.NOTE,
                             },
                             ensure_ascii=False,
                         ),
@@ -245,7 +253,8 @@ def create_server(backend):
     async def get_grasp_profiles(object_id: str) -> CallToolResult:
         """Read saved grasp candidates, manual/automatic selection, and each grasp's effective_parameters: bound force_target_raw/force_limit_raw (native units, not newtons), open_position (0–1000), pregrasp distance/lift (metres) and speed (percent). These are saved execution settings, not hardware readback. Missing bindings appear as parameter_error; defaults are for NEW grasps only. Does not change any parameter or selection."""
         return await call(
-            '/api/agent/profiles?object_id=' + quote(object_id, safe='')
+            '/api/agent/profiles?object_id='
+            + urllib.parse.quote(object_id, safe='')
         )
 
     @server.tool(annotations=read)
@@ -270,21 +279,24 @@ def create_server(backend):
     async def get_scene_snapshot(scene_id: str) -> CallToolResult:
         """Read fixed Base poses and instance states from a captured scene. Only valid_for_execution=true and state=static instances retain usable static poses. Held/moved/released instances cannot be reused at their original location. Feature IDs refer to the estimated model frame, not independently calibrated physical labels."""
         return await call(
-            '/api/agent/scene-snapshot?scene_id=' + quote(scene_id, safe='')
+            '/api/agent/scene-snapshot?scene_id='
+            + urllib.parse.quote(scene_id, safe='')
         )
 
     @server.tool(annotations=read)
     async def get_object_geometry(object_id: str) -> CallToolResult:
         """Read model-frame bounds, axes/reference points and pose_mode. Geometry points are not calibrated contact locations; 5D reference points must lie on model Z. Does not observe a scene instance."""
         return await call(
-            '/api/agent/object-geometry?object_id=' + quote(object_id, safe='')
+            '/api/agent/object-geometry?object_id='
+            + urllib.parse.quote(object_id, safe='')
         )
 
     @server.tool(annotations=read)
     async def get_task_diagnostics(task_id: str) -> CallToolResult:
         """Read a task's linked planning/execution diagnostics and exact failure stage. Older tasks without a journal link return their saved task result, never guessed historical data."""
         return await call(
-            '/api/agent/task-diagnostics?task_id=' + quote(task_id, safe='')
+            '/api/agent/task-diagnostics?task_id='
+            + urllib.parse.quote(task_id, safe='')
         )
 
     @server.tool(annotations=read)
@@ -499,7 +511,9 @@ def create_server(backend):
     @server.tool(annotations=read)
     async def get_task(task_id: str) -> CallToolResult:
         """Read a durable task by its request_id. terminal=false means keep observing. interrupted/outcome_unknown means inspect state and never automatically resubmit with a new ID."""
-        return await call('/api/agent/tasks/' + quote(task_id, safe=''))
+        return await call(
+            '/api/agent/tasks/' + urllib.parse.quote(task_id, safe='')
+        )
 
     @server.tool(annotations=write)
     async def stop_robot() -> CallToolResult:
@@ -512,10 +526,10 @@ def create_server(backend):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--base-url', required=True)
-    parser.add_argument('--token-file', required=True, type=Path)
+    parser.add_argument('--token-file', required=True, type=pathlib.Path)
     args = parser.parse_args()
     create_server(
-        RobotBackend(args.base_url, args.token_file)
+        client.RobotBackend(args.base_url, args.token_file)
     ).run(transport='stdio')
 
 

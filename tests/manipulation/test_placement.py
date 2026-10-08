@@ -4,19 +4,19 @@ import copy
 import fcntl
 import json
 import os
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+import types
+from unittest import mock
 
 import numpy as np
 
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import controller_pose
-from saydo.manipulation.placement_control import settings_revision
-from saydo.robot.motion_validation import check_waypoints
-from saydo.manipulation.placement_geometry import (DEFAULTS, placement_settings, plan_placement, object_vertices, sample_linear_path, check_footprint)
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import placement_control
+from saydo.robot import motion_validation
+from saydo.manipulation import placement_geometry
 
 
 def fixture():
@@ -37,7 +37,7 @@ def fixture():
         },
     }
     settings = {
-        **DEFAULTS,
+        **placement_geometry.DEFAULTS,
         'region_xy_m': {'x_min': .3, 'x_max': .6, 'y_min': -.2, 'y_max': .2},
     }
     attachment = np.eye(4)
@@ -72,20 +72,22 @@ class PlacementGeometryTests(unittest.TestCase):
         for angles in [[3142, 0, 0], [1571, 0, 300], [0, 0, 0]]:
             with self.subTest(angles=angles):
                 arm['pose'][3:] = angles
-                plan = plan_placement(
+                plan = placement_geometry.plan_placement(
                     held,
                     vertices,
                     arm,
                     config,
                     settings,
-                    Mock(return_value=(True, {})),
+                    mock.Mock(return_value=(True, {})),
                     lambda: None,
                 )
                 release = next(
                     w for w in plan['waypoints'] if w['name'] == 'lower'
                 )
-                world = object_vertices(
-                    controller_pose(release['controller_pose']), held, vertices
+                world = placement_geometry.object_vertices(
+                    grasp_geometry.controller_pose(release['controller_pose']),
+                    held,
+                    vertices,
                 )
                 self.assertAlmostEqual(
                     world[:, 2].min(), config['table_z_m'] + .003, delta=1.01e-6
@@ -93,14 +95,14 @@ class PlacementGeometryTests(unittest.TestCase):
                 np.testing.assert_allclose(
                     np.asarray(plan['base_T_object_target'])[:3, :3],
                     (
-                        controller_pose(arm['pose'])
+                        grasp_geometry.controller_pose(arm['pose'])
                         @ np.linalg.inv(held['object_T_tcp'])
                     )[:3, :3],
                 )
                 self.assertEqual(
                     release['controller_pose'][3:], arm['pose'][3:]
                 )
-                check_footprint(world, settings)
+                placement_geometry.check_footprint(world, settings)
                 self.assertFalse(plan['contact_confirmed'])
                 self.assertEqual(plan['release_position'], 1000)
                 self.assertEqual(
@@ -115,7 +117,7 @@ class PlacementGeometryTests(unittest.TestCase):
             calls.append(points)
             return len(calls) > 1, {'reason': 'first candidate blocked'}
 
-        plan = plan_placement(
+        plan = placement_geometry.plan_placement(
             held, vertices, arm, config, settings, reachable, lambda: None
         )
         self.assertEqual(plan['search_attempt_count'], 2)
@@ -148,9 +150,9 @@ class PlacementGeometryTests(unittest.TestCase):
         self.assertLessEqual(plan['footprint_max_xy_m'][0], .6 + 1e-8)
 
     def test_input_rectangle_is_not_shrunk_even_with_legacy_margin(self):
-        settings = placement_settings(
+        settings = placement_geometry.placement_settings(
             {
-                **DEFAULTS,
+                **placement_geometry.DEFAULTS,
                 'edge_margin_m': .01,
                 'region_xy_m': {
                     'x_min': .3, 'x_max': 1., 'y_min': -1., 'y_max': -.3
@@ -163,16 +165,16 @@ class PlacementGeometryTests(unittest.TestCase):
         world = np.array(
             [[.44989748, -.42517306, .1], [.56222221, -.3099425773, .1]]
         )
-        check_footprint(world, settings)
+        placement_geometry.check_footprint(world, settings)
         world[1, 1] = -.3
-        check_footprint(world, settings)
+        placement_geometry.check_footprint(world, settings)
         world[1, 1] = -.2999
         with self.assertRaisesRegex(ValueError, '超出输入'):
-            check_footprint(world, settings)
+            placement_geometry.check_footprint(world, settings)
 
     def test_small_region_missing_region_invalid_inputs_and_workspace(self):
         config, settings, held, vertices, arm = fixture()
-        checker = Mock(return_value=(True, {}))
+        checker = mock.Mock(return_value=(True, {}))
         for key, value in [
             ('release_gap_m', -1),
             ('release_gap_m', .0601),
@@ -184,15 +186,17 @@ class PlacementGeometryTests(unittest.TestCase):
             with self.subTest(
                 key=key, value=value
             ), self.assertRaises(ValueError):
-                placement_settings({**settings, key: value})
+                placement_geometry.placement_settings({**settings, key: value})
         for region in (
             {'x_min': 1, 'x_max': 0, 'y_min': 0, 'y_max': 1},
             {'x_min': True, 'x_max': 1, 'y_min': 0, 'y_max': 1},
         ):
             with self.assertRaises(ValueError):
-                placement_settings({**settings, 'region_xy_m': region})
+                placement_geometry.placement_settings(
+                    {**settings, 'region_xy_m': region}
+                )
         with self.assertRaisesRegex(ValueError, '无法完整'):
-            plan_placement(
+            placement_geometry.plan_placement(
                 held,
                 vertices,
                 arm,
@@ -207,7 +211,7 @@ class PlacementGeometryTests(unittest.TestCase):
                 lambda: None,
             )
         with self.assertRaisesRegex(ValueError, '工作区'):
-            plan_placement(
+            placement_geometry.plan_placement(
                 held,
                 vertices,
                 arm,
@@ -225,17 +229,19 @@ class PlacementGeometryTests(unittest.TestCase):
         for distance in (.03, .08):
             with self.subTest(distance=distance):
                 config['pregrasp_distance_m'] = distance
-                plan = plan_placement(
+                plan = placement_geometry.plan_placement(
                     held,
                     vertices,
                     arm,
                     config,
                     settings,
-                    Mock(return_value=(True, {})),
+                    mock.Mock(return_value=(True, {})),
                     lambda: None,
                 )
                 targets = {
-                    w['name']: controller_pose(w['controller_pose'])
+                    w['name']: grasp_geometry.controller_pose(
+                        w['controller_pose']
+                    )
                     for w in plan['waypoints']
                 }
                 delta = targets['withdraw'][:3, 3] - targets['lower'][:3, 3]
@@ -259,10 +265,10 @@ class PlacementGeometryTests(unittest.TestCase):
 
     def test_invalid_or_unreachable_withdrawal_blocks_entire_plan(self):
         config, settings, held, vertices, arm = fixture()
-        checker = Mock(return_value=(True, {}))
+        checker = mock.Mock(return_value=(True, {}))
         for distance in (None, 0, -.01, True, .31, float('nan')):
             with self.subTest(distance=distance), self.assertRaises(ValueError):
-                plan_placement(
+                placement_geometry.plan_placement(
                     held,
                     vertices,
                     arm,
@@ -276,7 +282,7 @@ class PlacementGeometryTests(unittest.TestCase):
         # height.
         arm['pose'][3:] = [0, 0, 0]
         with self.assertRaisesRegex(ValueError, '未找到'):
-            plan_placement(
+            placement_geometry.plan_placement(
                 held, vertices, arm, config, settings, checker, lambda: None
             )
         checker.assert_not_called()
@@ -287,32 +293,32 @@ class PlacementGeometryTests(unittest.TestCase):
             'x_min': .3, 'x_max': .39, 'y_min': -.04, 'y_max': .04
         }
         with self.assertRaisesRegex(ValueError, '未找到'):
-            plan_placement(
+            placement_geometry.plan_placement(
                 held,
                 vertices,
                 arm,
                 config,
                 settings,
-                Mock(return_value=(False, {'reason': 'unreachable'})),
+                mock.Mock(return_value=(False, {'reason': 'unreachable'})),
                 lambda: None,
             )
-        checker = Mock()
+        checker = mock.Mock()
         with self.assertRaisesRegex(ValueError, 'cancel'):
-            plan_placement(
+            placement_geometry.plan_placement(
                 held,
                 vertices,
                 arm,
                 config,
                 settings,
                 checker,
-                Mock(side_effect=ValueError('cancel')),
+                mock.Mock(side_effect=ValueError('cancel')),
             )
         checker.assert_not_called()
-        with patch(
+        with mock.patch(
             'saydo.manipulation.placement_geometry.time.monotonic',
             side_effect=[0, 100],
         ), self.assertRaises(TimeoutError):
-            plan_placement(
+            placement_geometry.plan_placement(
                 held, vertices, arm, config, settings, checker, lambda: None
             )
 
@@ -320,13 +326,13 @@ class PlacementGeometryTests(unittest.TestCase):
         config, settings, held, vertices, arm = fixture()
         arm['pose'][2] = 70000
         for gap in [0, .003, .02, .06]:
-            plan = plan_placement(
+            plan = placement_geometry.plan_placement(
                 held,
                 vertices,
                 arm,
                 config,
                 {**settings, 'release_gap_m': gap},
-                Mock(return_value=(True, {})),
+                mock.Mock(return_value=(True, {})),
                 lambda: None,
             )
             self.assertEqual(plan['waypoints'][0]['name'], 'raise')
@@ -348,7 +354,7 @@ class PlacementGeometryTests(unittest.TestCase):
             'err': [0],
         }
         attachment = np.eye(4)
-        attachment[:3, :3] = controller_pose(arm['pose'])[:3, :3]
+        attachment[:3, :3] = grasp_geometry.controller_pose(arm['pose'])[:3, :3]
         attachment[2, 3] = .22121
         held['object_T_tcp'] = attachment.tolist()
         vertices = [
@@ -362,13 +368,13 @@ class PlacementGeometryTests(unittest.TestCase):
         }
         tool = np.eye(4)
         tool[2, 3] = .1905
-        plan = plan_placement(
+        plan = placement_geometry.plan_placement(
             held,
             vertices,
             arm,
             config,
             settings,
-            lambda points, timeout: check_waypoints(
+            lambda points, timeout: motion_validation.check_waypoints(
                 os.environ['SAYDO_IK_CHECKER'],
                 {'flange_T_grip_tcp': tool.tolist()},
                 arm,
@@ -390,7 +396,7 @@ class PlacementControlTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         self.config, self.settings, self.held, self.vertices, self.arm = (
             fixture()
         )
@@ -406,8 +412,8 @@ class PlacementControlTests(unittest.TestCase):
             self.root / 'config/grasp/placement.json'
         ).write_text(json.dumps(self.settings))
         (self.root / 'checker').touch()
-        self.service = GraspController(
-            self.root, SimpleNamespace(models_root=self.root), self.path
+        self.service = grasp_control.GraspController(
+            self.root, types.SimpleNamespace(models_root=self.root), self.path
         )
         self.service.held_object = copy.deepcopy(self.held)
 
@@ -422,11 +428,11 @@ class PlacementControlTests(unittest.TestCase):
                     'orientation_version',
                 )
             },
-            'revision': settings_revision(self.settings),
+            'revision': placement_control.settings_revision(self.settings),
         }
 
     def robot(self, failure=None):
-        robot = Mock()
+        robot = mock.Mock()
         self.opened = False
         self.commands = []
 
@@ -477,10 +483,10 @@ class PlacementControlTests(unittest.TestCase):
         robot.move_joint_pose.side_effect = lambda *args: move('joint', *args)
         robot.move_gripper.side_effect = open_gripper
         robot.query.side_effect = query
-        self.service.arm_state = Mock(side_effect=read_arm)
-        self.service.check_reorient_contact = Mock()
-        self.service.verify_motion_targets = Mock()
-        self.service.reorientation_hardware = Mock(
+        self.service.arm_state = mock.Mock(side_effect=read_arm)
+        self.service.check_reorient_contact = mock.Mock()
+        self.service.verify_motion_targets = mock.Mock()
+        self.service.reorientation_hardware = mock.Mock(
             side_effect=lambda *_: (
                 read_arm(), {'flange_T_grip_tcp': np.eye(4).tolist()}
             )
@@ -489,14 +495,14 @@ class PlacementControlTests(unittest.TestCase):
 
     def run_job(self, robot, preview=False):
         self.service.status.update(busy=True, operation='place')
-        with patch(
-            'saydo.manipulation.placement_control.RobotClient',
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient',
             return_value=robot,
-        ) as client, patch(
-            'saydo.manipulation.placement_control.model_geometry',
+        ) as client, mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value={'vertices': self.vertices, 'model_sha256': 'mesh1'},
-        ), patch(
-            'saydo.manipulation.placement_control.check_waypoints',
+        ), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             return_value=(True, {}),
         ):
             self.service.run_placement(
@@ -588,9 +594,9 @@ class PlacementControlTests(unittest.TestCase):
         target = next(
             w for w in report['plan']['waypoints'] if w['name'] == 'lower'
         )
-        check_footprint(
-            object_vertices(
-                controller_pose(target['controller_pose']),
+        placement_geometry.check_footprint(
+            placement_geometry.object_vertices(
+                grasp_geometry.controller_pose(target['controller_pose']),
                 self.held,
                 self.vertices,
             ),
@@ -598,9 +604,11 @@ class PlacementControlTests(unittest.TestCase):
         )
         arrival = report['arrival_checks'][1]['actual_arm_state']
         with self.assertRaisesRegex(ValueError, '超出输入'):
-            check_footprint(
-                object_vertices(
-                    controller_pose(arrival['pose']), self.held, self.vertices
+            placement_geometry.check_footprint(
+                placement_geometry.object_vertices(
+                    grasp_geometry.controller_pose(arrival['pose']),
+                    self.held,
+                    self.vertices,
                 ),
                 self.settings,
             )
@@ -749,7 +757,7 @@ class PlacementControlTests(unittest.TestCase):
                 (self.root / 'work/grasp/placement_jobs').glob('*.json')
             ).read_text()
         )
-        arrival = controller_pose(
+        arrival = grasp_geometry.controller_pose(
             next(
                 row
                 for row in report['arrival_checks']
@@ -759,7 +767,9 @@ class PlacementControlTests(unittest.TestCase):
         withdrawal = next(
             w for w in report['executed_waypoints'] if w['name'] == 'withdraw'
         )
-        actual_target = controller_pose(withdrawal['controller_pose'])
+        actual_target = grasp_geometry.controller_pose(
+            withdrawal['controller_pose']
+        )
         np.testing.assert_allclose(
             actual_target[:3, 3],
             (
@@ -773,7 +783,7 @@ class PlacementControlTests(unittest.TestCase):
         )
 
     def test_no_hold_stale_identity_version_settings_and_busy_rejected(self):
-        with patch(
+        with mock.patch(
             'saydo.manipulation.placement_control.threading.Thread'
         ) as thread:
             for key in (
@@ -804,15 +814,13 @@ class PlacementControlTests(unittest.TestCase):
     def test_settings_save_is_atomic_validated_and_never_connects(self):
         original = self.path.read_bytes()
         value = {
-            'revision': settings_revision(self.settings),
+            'revision': placement_control.settings_revision(self.settings),
             'region_xy_m': {
                 'x_min': .2, 'x_max': .5, 'y_min': -.1, 'y_max': .1
             },
             'release_gap_m': .06,
         }
-        with patch(
-            'saydo.manipulation.placement_control.RobotClient'
-        ) as client:
+        with mock.patch('saydo.robot.grasp_robot.RobotClient') as client:
             result = self.service.save_placement_config(value)
             client.assert_not_called()
         self.assertFalse(result['motion_sent'])
@@ -827,8 +835,8 @@ class PlacementControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '变化'):
             self.service.save_placement_config(value)
         value['revision'] = result['revision']
-        with patch.object(
-            Path, 'replace', side_effect=OSError('disk failure')
+        with mock.patch.object(
+            pathlib.Path, 'replace', side_effect=OSError('disk failure')
         ), self.assertRaises(OSError):
             self.service.save_placement_config(value)
         self.assertEqual(before, self.service.placement_path.read_bytes())
@@ -844,17 +852,15 @@ class PlacementControlTests(unittest.TestCase):
         lock_path.parent.mkdir(parents=True)
         with lock_path.open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch(
-                'saydo.manipulation.placement_control.RobotClient'
-            ) as client:
+            with mock.patch('saydo.robot.grasp_robot.RobotClient') as client:
                 self.service.run_placement(self.held, self.settings)
                 client.assert_not_called()
         robot = self.robot()
-        with patch(
-            'saydo.manipulation.placement_control.RobotClient',
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient',
             return_value=robot,
-        ), patch(
-            'saydo.manipulation.placement_control.model_geometry',
+        ), mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value={'model_sha256': 'changed'},
         ):
             self.service.run_placement(self.held, self.settings)
@@ -870,14 +876,14 @@ class PlacementControlTests(unittest.TestCase):
             self.path.write_text(json.dumps({**self.config, 'table_z_m': 0}))
             return True, {}
 
-        with patch(
-            'saydo.manipulation.placement_control.RobotClient',
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient',
             return_value=robot,
-        ), patch(
-            'saydo.manipulation.placement_control.model_geometry',
+        ), mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value={'vertices': self.vertices, 'model_sha256': 'mesh1'},
-        ), patch(
-            'saydo.manipulation.placement_control.check_waypoints',
+        ), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             side_effect=changed,
         ):
             self.service.run_placement(self.held, self.settings)

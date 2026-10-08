@@ -2,14 +2,14 @@
 
 import hashlib
 import json
-from pathlib import Path
-from saydo.geometry.grasp_geometry import transform
-from saydo.objects.object_catalog import select_object
+import pathlib
+from saydo.geometry import grasp_geometry
+from saydo.objects import object_catalog
 
 
 def object_features(models_root, object_id):
-    select_object(models_root, object_id)
-    root = Path(models_root) / object_id
+    object_catalog.select_object(models_root, object_id)
+    root = pathlib.Path(models_root) / object_id
     features = []
     hashes = {}
     notes = []
@@ -26,7 +26,7 @@ def object_features(models_root, object_id):
             raise ValueError('特征文件必须为米制')
         notes.extend(data.get('notes', []))
         for row in data['features']:
-            pose = transform(row['object_T_feature'])
+            pose = grasp_geometry.transform(row['object_T_feature'])
             features.append(
                 {
                     'id': row['id'],

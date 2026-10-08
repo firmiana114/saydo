@@ -1,18 +1,17 @@
-from tests.task_runner.test_runner import mock_global_camera
+from tests.task_runner import test_runner
 import asyncio
 import copy
 import json
 import tempfile
 import unittest
-from pathlib import Path
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked
-from saydo.task_runner.store import Store
-from saydo.task_runner.reconcile import reconcile
-from saydo.task_runner.tool_registry import schemas, validate
-from tests.task_runner.test_adapter import Backend
-from saydo.task_runner.runner import Runner
-from tests.task_runner.test_runner import FakeLLM, call, end
+import pathlib
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import store as task_runner_store
+from saydo.task_runner import reconcile
+from saydo.task_runner import tool_registry
+from tests.task_runner import test_adapter
+from saydo.task_runner import runner as task_runner_runner
 
 I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 Z = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]
@@ -25,7 +24,7 @@ ARGS = {
 }
 
 
-class ReorientationBackend(Backend):
+class ReorientationBackend(test_adapter.Backend):
     def __init__(self):
         super().__init__()
         self.state['grasp']['held_object'] = {
@@ -76,12 +75,14 @@ class ReorientationBackend(Backend):
 
 class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        mock_global_camera(self)
+        test_runner.mock_global_camera(self)
 
     def setUp(self):
         self.backend = ReorientationBackend()
-        self.config = Config(api_key='test', mode='execute', poll_interval=.001)
-        self.adapter = RobotAdapter(self.config, self.backend)
+        self.config = config.Config(
+            api_key='test', mode='execute', poll_interval=.001
+        )
+        self.adapter = robot_adapter.RobotAdapter(self.config, self.backend)
 
     async def test_initial_read_is_unchanged(self):
         self.assertIn('status', await self.adapter.initial())
@@ -110,17 +111,23 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         status = {'grasp': {'held_object': copy.deepcopy(held)}}
-        RobotAdapter.verify_reorientation('reorient', ARGS, task, status)
+        robot_adapter.RobotAdapter.verify_reorientation(
+            'reorient', ARGS, task, status
+        )
         status['grasp']['held_object']['current_object_rotation'] = [
             [1, 0, 0], [0, 0, -1], [0, 1, 0]
         ]
-        with self.assertRaises(Blocked):
-            RobotAdapter.verify_reorientation('reorient', ARGS, task, status)
+        with self.assertRaises(robot_adapter.Blocked):
+            robot_adapter.RobotAdapter.verify_reorientation(
+                'reorient', ARGS, task, status
+            )
         status['grasp']['held_object'].update(
             current_object_rotation=I, pose_mode='6d'
         )
-        with self.assertRaises(Blocked):
-            RobotAdapter.verify_reorientation('reorient', ARGS, task, status)
+        with self.assertRaises(robot_adapter.Blocked):
+            robot_adapter.RobotAdapter.verify_reorientation(
+                'reorient', ARGS, task, status
+            )
 
     async def test_execute_waits_verifies_angle_version_and_keeps_parameters(
         self
@@ -152,7 +159,7 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_stale_version_does_not_submit(self):
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'reorient',
                 {**ARGS, 'orientation_version': 9},
@@ -166,8 +173,8 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
         for bad in ('bad_version', 'bad_rotation'):
             backend = ReorientationBackend()
             setattr(backend, bad, True)
-            with self.assertRaises(Blocked) as error:
-                await RobotAdapter(self.config, backend).execute(
+            with self.assertRaises(robot_adapter.Blocked) as error:
+                await robot_adapter.RobotAdapter(self.config, backend).execute(
                     'reorient',
                     ARGS,
                     'bad-feedback',
@@ -177,9 +184,9 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(error.exception.uncertain)
 
     async def test_runner_reorientation_then_place_uses_new_version(self):
-        llm = FakeLLM(
-            call('reorient', ARGS, 'r'),
-            call(
+        llm = test_runner.FakeLLM(
+            test_runner.call('reorient', ARGS, 'r'),
+            test_runner.call(
                 'place',
                 {
                     'hold_id': 'h',
@@ -188,11 +195,14 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
                 },
                 'p',
             ),
-            end('succeeded', ['r', 'p']),
+            test_runner.end('succeeded', ['r', 'p']),
         )
         with tempfile.TemporaryDirectory() as directory:
-            runner = Runner(
-                self.config, Store(directory), llm, lambda: self.adapter
+            runner = task_runner_runner.Runner(
+                self.config,
+                task_runner_store.Store(directory),
+                llm,
+                lambda: self.adapter,
             )
             ident = runner.submit('将物品转至目标朝向，再放下')
             await runner.worker
@@ -207,11 +217,15 @@ class ReorientationAdapterTests(unittest.IsolatedAsyncioTestCase):
 class ReorientationContractTests(unittest.TestCase):
     def test_modes_and_validation(self):
         self.assertIn(
-            'preview_reorient', {s['name'] for s in schemas('preview')}
+            'preview_reorient',
+            {s['name'] for s in tool_registry.schemas('preview')},
         )
-        self.assertNotIn('reorient', {s['name'] for s in schemas('preview')})
         self.assertNotIn(
-            'preview_reorient', {s['name'] for s in schemas('read_only')}
+            'reorient', {s['name'] for s in tool_registry.schemas('preview')}
+        )
+        self.assertNotIn(
+            'preview_reorient',
+            {s['name'] for s in tool_registry.schemas('read_only')},
         )
         for override in (
             {'target_rpy_deg': [0, 0]},
@@ -221,8 +235,10 @@ class ReorientationContractTests(unittest.TestCase):
             {'position_mode': 'free'},
         ):
             with self.assertRaises(ValueError):
-                validate(
-                    call('reorient', {**ARGS, **override})['output'][0],
+                tool_registry.validate(
+                    test_runner.call(
+                        'reorient', {**ARGS, **override}
+                    )['output'][0],
                     'execute',
                 )
 
@@ -230,13 +246,13 @@ class ReorientationContractTests(unittest.TestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as directory:
-            store = Store(directory)
+            store = task_runner_store.Store(directory)
             run = store.create('旋转', 'terra', 'execute')
             record = store.prepare(run['run_id'], 'r', 'reorient', ARGS, 1)
-            store = Store(directory)
+            store = task_runner_store.Store(directory)
             self.assertTrue(store.get(run['run_id'])['outcome_unknown'])
-            backend = Backend()
-            reconcile(store, backend, run['run_id'])
+            backend = test_adapter.Backend()
+            reconcile.reconcile(store, backend, run['run_id'])
             self.assertIn(
                 ('/api/agent/tasks/' + record['request_id'], None),
                 backend.requests,

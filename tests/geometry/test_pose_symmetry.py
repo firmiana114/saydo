@@ -1,22 +1,22 @@
 import copy
-from collections import deque
+import collections
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock
+from unittest import mock
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from saydo.objects.object_catalog import scan_objects, save_pose_mode
-from saydo.geometry.pose_symmetry import (canonical_pose, object_rotation_error, checked_axis_profile, effective_profile, grasp_variants, object_bounds, z_rotation, orientation_variants, axis_rotation)
-from saydo.workbench.live_tracker import Tracker
-from saydo.manipulation.reorientation_geometry import plan_reorientation
-from saydo.manipulation.placement_geometry import plan_placement
+from saydo.objects import object_catalog
+from saydo.geometry import pose_symmetry
+from saydo.workbench import live_tracker
+from saydo.manipulation import reorientation_geometry
+from saydo.manipulation import placement_geometry
 from tests.manipulation import test_reorientation
 from tests.manipulation import test_placement
 from tests.objects import test_grasp_library
@@ -35,19 +35,25 @@ class AxisGeometryTests(unittest.TestCase):
                 )
                 for sign in (-1, 1):
                     base = np.eye(4)
-                    base[:3, :3] = axis_rotation(sign * axis)
+                    base[:3, :3] = pose_symmetry.axis_rotation(sign * axis)
                     for angle in (0., 37., 90., 180.):
-                        profile = checked_axis_profile(
+                        profile = pose_symmetry.checked_axis_profile(
                             {
                                 'grasp_point_object_m': [0, 0, .035],
                                 'approach_angle_deg': angle,
                             }
                         )
                         original = copy.deepcopy(profile)
-                        one = grasp_variants(base, profile, current)
+                        one = pose_symmetry.grasp_variants(
+                            base, profile, current
+                        )
                         spun = base.copy()
-                        spun[:3, :3] = base[:3, :3] @ z_rotation(.71)
-                        two = grasp_variants(spun, profile, current)
+                        spun[:3, :3] = (
+                            base[:3, :3] @ pose_symmetry.z_rotation(.71)
+                        )
+                        two = pose_symmetry.grasp_variants(
+                            spun, profile, current
+                        )
                         self.assertEqual(len(one), 2)
                         self.assertEqual(profile, original)
                         for (a, details), (b, _) in zip(one, two):
@@ -79,18 +85,20 @@ class AxisGeometryTests(unittest.TestCase):
                             base[:3, :3] @ r['object_R_tcp'] for r, _ in one
                         ]
                         np.testing.assert_allclose(
-                            a, b @ z_rotation(np.pi), atol=1e-12
+                            a, b @ pose_symmetry.z_rotation(np.pi), atol=1e-12
                         )
 
     def test_outside_horizontal_threshold_keeps_saved_approach_angle(self):
         for elevation in (-90., -10.001, 10.001, 90.):
             e = np.deg2rad(elevation)
             base = np.eye(4)
-            base[:3, :3] = axis_rotation([np.cos(e), 0, np.sin(e)])
-            profile = checked_axis_profile(
+            base[:3, :3] = pose_symmetry.axis_rotation(
+                [np.cos(e), 0, np.sin(e)]
+            )
+            profile = pose_symmetry.checked_axis_profile(
                 {'grasp_point_object_m': [0, 0, 0], 'approach_angle_deg': 37.}
             )
-            variants = grasp_variants(base, profile, np.eye(3))
+            variants = pose_symmetry.grasp_variants(base, profile, np.eye(3))
             self.assertEqual(len(variants), 48)
             for resolved, _ in variants:
                 world = base[:3, :3] @ resolved['object_R_tcp']
@@ -106,19 +114,23 @@ class AxisGeometryTests(unittest.TestCase):
         pose[:3, :3] = rotation
         pose[:3, 3] = [.1, .2, .3]
         spun = pose.copy()
-        spun[:3, :3] = rotation @ z_rotation(2.1)
+        spun[:3, :3] = rotation @ pose_symmetry.z_rotation(2.1)
         np.testing.assert_allclose(
-            canonical_pose(pose, '5d'), canonical_pose(spun, '5d'), atol=1e-12
+            pose_symmetry.canonical_pose(pose, '5d'),
+            pose_symmetry.canonical_pose(spun, '5d'),
+            atol=1e-12,
         )
         self.assertAlmostEqual(
-            object_rotation_error(rotation, spun[:3, :3], '5d'), 0, places=7
+            pose_symmetry.object_rotation_error(rotation, spun[:3, :3], '5d'),
+            0,
+            places=7,
         )
         self.assertGreater(
-            object_rotation_error(rotation, spun[:3, :3], '6d'), 2
+            pose_symmetry.object_rotation_error(rotation, spun[:3, :3], '6d'), 2
         )
         flipped = rotation @ np.diag([1, -1, -1])
         self.assertAlmostEqual(
-            object_rotation_error(rotation, flipped, '5d'), np.pi
+            pose_symmetry.object_rotation_error(rotation, flipped, '5d'), np.pi
         )
 
     def test_grasp_candidates_keep_center_axis_and_angle_under_any_gauge(self):
@@ -130,16 +142,16 @@ class AxisGeometryTests(unittest.TestCase):
             'xyz', [-5, 30, 75], degrees=True
         ).as_matrix()
         for angle in (0., 37., 90., 180.):
-            profile = checked_axis_profile(
+            profile = pose_symmetry.checked_axis_profile(
                 {
                     'grasp_point_object_m': [0, 0, .035],
                     'approach_angle_deg': angle,
                 }
             )
-            one = grasp_variants(base, profile, current)
+            one = pose_symmetry.grasp_variants(base, profile, current)
             spun = base.copy()
-            spun[:3, :3] = base[:3, :3] @ z_rotation(.71)
-            two = grasp_variants(spun, profile, current)
+            spun[:3, :3] = base[:3, :3] @ pose_symmetry.z_rotation(.71)
+            two = pose_symmetry.grasp_variants(spun, profile, current)
             self.assertEqual(len(one), 48)
             for (a, _), (b, _) in zip(one, two):
                 world = base[:3, :3] @ a['object_R_tcp']
@@ -159,7 +171,7 @@ class AxisGeometryTests(unittest.TestCase):
             None,
         ):
             with self.assertRaises(ValueError):
-                checked_axis_profile(value)
+                pose_symmetry.checked_axis_profile(value)
 
     def test_nearest_free_spin_preserves_current_tcp_when_axis_already_matches(
         self
@@ -170,8 +182,10 @@ class AxisGeometryTests(unittest.TestCase):
             current[:3, :3] = Rotation.from_euler(
                 'xyz', angles, degrees=True
             ).as_matrix()
-            requested = current[:3, :3] @ z_rotation(1.4)
-            variants = orientation_variants(requested, held, current)
+            requested = current[:3, :3] @ pose_symmetry.z_rotation(1.4)
+            variants = pose_symmetry.orientation_variants(
+                requested, held, current
+            )
             np.testing.assert_allclose(variants[0], current[:3, :3], atol=1e-12)
 
     def test_rotational_sweep_bounds_cover_all_mesh_spins(self):
@@ -183,12 +197,14 @@ class AxisGeometryTests(unittest.TestCase):
             'xyz', [17, 53, 29], degrees=True
         ).as_matrix()
         pose[:3, 3] = [.3, 0, .2]
-        low, high = object_bounds(pose, points, '5d')
+        low, high = pose_symmetry.object_bounds(pose, points, '5d')
         for angle in np.linspace(0, 2 * np.pi, 360):
             spun = pose.copy()
-            spun[:3, :3] = pose[:3, :3] @ z_rotation(angle)
+            spun[:3, :3] = pose[:3, :3] @ pose_symmetry.z_rotation(angle)
             np.testing.assert_allclose(
-                object_bounds(spun, points, '5d'), [low, high], atol=1e-12
+                pose_symmetry.object_bounds(spun, points, '5d'),
+                [low, high],
+                atol=1e-12,
             )
             vertices = points @ spun[:3, :3].T + spun[:3, 3]
             self.assertTrue(
@@ -204,12 +220,12 @@ class AxisGeometryTests(unittest.TestCase):
         target = Rotation.from_euler(
             'xyz', [35, 50, 20], degrees=True
         ).as_matrix()
-        reachable = Mock(
+        reachable = mock.Mock(
             side_effect=[
                 (False, {'reason': 'blocked'}), (False, {}), (True, {})
             ]
         )
-        plan = plan_reorientation(
+        plan = reorientation_geometry.plan_reorientation(
             held,
             vertices,
             target,
@@ -228,9 +244,9 @@ class AxisGeometryTests(unittest.TestCase):
             atol=1e-12,
         )
         held['pose_mode'] = '6d'
-        reachable = Mock(return_value=(False, {}))
+        reachable = mock.Mock(return_value=(False, {}))
         with self.assertRaises(ValueError):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 held,
                 vertices,
                 target,
@@ -246,29 +262,29 @@ class AxisGeometryTests(unittest.TestCase):
     def test_placement_is_invariant_to_the_unobservable_spin(self):
         config, settings, held, vertices, arm = test_placement.fixture()
         held['pose_mode'] = '5d'
-        first = plan_placement(
+        first = placement_geometry.plan_placement(
             held,
             vertices,
             arm,
             config,
             settings,
-            Mock(return_value=(True, {})),
+            mock.Mock(return_value=(True, {})),
             lambda: None,
         )
         for angle in (.6, 1.7, 3.2):
             changed = copy.deepcopy(held)
             spin = np.eye(4)
-            spin[:3, :3] = z_rotation(angle)
+            spin[:3, :3] = pose_symmetry.z_rotation(angle)
             changed['object_T_tcp'] = (
                 spin @ np.asarray(held['object_T_tcp'])
             ).tolist()
-            other = plan_placement(
+            other = placement_geometry.plan_placement(
                 changed,
                 vertices,
                 arm,
                 config,
                 settings,
-                Mock(return_value=(True, {})),
+                mock.Mock(return_value=(True, {})),
                 lambda: None,
             )
             for key in [
@@ -284,7 +300,7 @@ class ModelModeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         for name in ('bottle', 'other'):
             folder = self.root / name
             folder.mkdir()
@@ -302,9 +318,9 @@ class ModelModeTests(unittest.TestCase):
     def test_per_model_atomic_update_preserves_other_settings_and_versions(
         self
     ):
-        before = scan_objects(self.root)
+        before = object_catalog.scan_objects(self.root)
         other = (self.root / 'other/tracking.json').read_bytes()
-        after = save_pose_mode(
+        after = object_catalog.save_pose_mode(
             self.root, 'bottle', '5d', before[0]['pose_mode_revision']
         )
         self.assertEqual(after['pose_mode'], '5d')
@@ -321,30 +337,30 @@ class ModelModeTests(unittest.TestCase):
             list((self.root / 'bottle/tracking_backups').glob('*.json'))
         )
         with self.assertRaises(ValueError):
-            save_pose_mode(
+            object_catalog.save_pose_mode(
                 self.root, 'bottle', '6d', before[0]['pose_mode_revision']
             )
         self.assertEqual(
-            save_pose_mode(
+            object_catalog.save_pose_mode(
                 self.root, 'bottle', '6d', after['pose_mode_revision']
             )['pose_mode'],
             '6d',
         )
 
     def test_cannot_change_mode_while_busy_or_holding(self):
-        tracker = Tracker.__new__(Tracker)
+        tracker = live_tracker.Tracker.__new__(live_tracker.Tracker)
         tracker.lock = threading.RLock()
         tracker.models_root = self.root
-        tracker.grasp = SimpleNamespace(
+        tracker.grasp = types.SimpleNamespace(
             lock=threading.RLock(),
             root=self.root,
             status={'busy': True},
             held_object=None,
         )
         tracker.state = {'object_id': 'bottle'}
-        tracker.event = Mock()
-        tracker.switch_object = Mock()
-        row = scan_objects(self.root)[0]
+        tracker.event = mock.Mock()
+        tracker.switch_object = mock.Mock()
+        row = object_catalog.scan_objects(self.root)[0]
         request = {
             'id': 'bottle',
             'pose_mode': '5d',
@@ -363,7 +379,7 @@ class ModelModeTests(unittest.TestCase):
 
     def test_tracking_stability_uses_axis_only_for_5d(self):
         now = time.time()
-        tracker = Tracker.__new__(Tracker)
+        tracker = live_tracker.Tracker.__new__(live_tracker.Tracker)
         tracker.lock = threading.RLock()
         tracker.generation = 1
         pose = np.eye(4)
@@ -376,10 +392,10 @@ class ModelModeTests(unittest.TestCase):
             'pose_mode': '5d',
             'object_id': 'bottle',
         }
-        tracker.pose_history = deque()
+        tracker.pose_history = collections.deque()
         for i in range(7):
             p = pose.copy()
-            p[:3, :3] = z_rotation(i * .5)
+            p[:3, :3] = pose_symmetry.z_rotation(i * .5)
             tracker.pose_history.append(
                 {
                     'pose': p.tolist(),
@@ -448,7 +464,7 @@ class FiveDLibraryTests(unittest.TestCase):
         self.save()
         args = self.candidate_args()
         args[1]['pose_mode'] = '5d'
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             side_effect=[
                 ValueError('first azimuth unreachable'), {'joint_travel_deg': 3}
             ]
@@ -472,7 +488,7 @@ class FiveDLibraryTests(unittest.TestCase):
         self.save()
         args = self.candidate_args()
         args[1]['pose_mode'] = '5d'
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             side_effect=ValueError('endpoint unavailable')
         )
         with self.assertRaisesRegex(
@@ -486,9 +502,9 @@ class FiveDLibraryTests(unittest.TestCase):
         self.save()
         args = self.candidate_args()
         args[1]['pose_mode'] = '5d'
-        args[4][:3, :3] = axis_rotation([1, 0, 0])
+        args[4][:3, :3] = pose_symmetry.axis_rotation([1, 0, 0])
         before = copy.deepcopy(self.library.object('cup'))
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             side_effect=[ValueError('unreachable'), {'joint_travel_deg': 3}]
         )
         plan, profile, _ = self.service.select_grasp_candidate(*args)
@@ -498,7 +514,7 @@ class FiveDLibraryTests(unittest.TestCase):
         self.assertIsNone(plan['azimuth_step_deg'])
         self.assertAlmostEqual(plan['approach_angle_deg'], 90.)
         self.assertEqual(plan['azimuth']['configured_approach_angle_deg'], 0.)
-        from saydo.geometry.grasp_geometry import controller_pose
+        from saydo.geometry import grasp_geometry
         for call in self.service.verify_motion_targets.call_args_list:
             candidate = call.args[0]
             np.testing.assert_allclose(
@@ -519,7 +535,9 @@ class FiveDLibraryTests(unittest.TestCase):
             )
             for point in candidate['waypoints']:
                 np.testing.assert_allclose(
-                    controller_pose(point['controller_pose'])[:3, 2],
+                    grasp_geometry.controller_pose(
+                        point['controller_pose']
+                    )[:3, 2],
                     [0, 0, -1],
                     atol=.0006,
                 )
@@ -540,11 +558,11 @@ class FiveDLibraryTests(unittest.TestCase):
         self.save(overrides={'tcp_offset_m': [0, 0, .03]})
         args = self.candidate_args()
         args[1]['pose_mode'] = '5d'
-        args[4][:3, :3] = axis_rotation([1, 0, 0])
+        args[4][:3, :3] = pose_symmetry.axis_rotation([1, 0, 0])
         args[4][2, 3] = -.010186
         args[0]['workspace_min_m'] = [-1, -1, 0]
         args[0]['table_z_m'] = -.02609
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             return_value={'joint_travel_deg': 3}
         )
         plan, _, _ = self.service.select_grasp_candidate(*args)
@@ -553,10 +571,10 @@ class FiveDLibraryTests(unittest.TestCase):
         self.assertEqual(plan['controller_tcp_frame'], 'grip_tcp')
         # Capture the real, already converted controller pose. Later object
         # reconstruction must recover the visual pose, without a second shift.
-        from saydo.geometry.grasp_geometry import controller_pose
+        from saydo.geometry import grasp_geometry
         grasp = next(w for w in plan['waypoints'] if w['name'] == 'grasp')
         arm = {**args[5], 'pose': grasp['controller_pose']}
-        self.service.arm_state = Mock(return_value=arm)
+        self.service.arm_state = mock.Mock(return_value=arm)
         self.service.status['gripper_contact'] = {'pos': [500]}
         plan.update(
             object_id='cup', model_sha256='mesh', tool_response=self.tool
@@ -565,7 +583,10 @@ class FiveDLibraryTests(unittest.TestCase):
         self.service.capture_attachment(plan, report)
         held = report['held_object']
         attachment = np.asarray(held['object_T_tcp'])
-        reconstructed = controller_pose(arm['pose']) @ np.linalg.inv(attachment)
+        reconstructed = (
+            grasp_geometry.controller_pose(arm['pose'])
+            @ np.linalg.inv(attachment)
+        )
         np.testing.assert_allclose(reconstructed, args[4], atol=1e-12)
         self.assertAlmostEqual(np.linalg.norm(attachment[:3, 3]), .03)
         self.assertEqual(held['tool_response'], self.tool)
@@ -574,7 +595,7 @@ class FiveDLibraryTests(unittest.TestCase):
         self.save()
         args = self.candidate_args()
         args[1]['pose_mode'] = '5d'
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             return_value={'joint_travel_deg': 3}
         )
         plan, _, _ = self.service.select_grasp_candidate(*args)
@@ -585,8 +606,8 @@ class FiveDLibraryTests(unittest.TestCase):
         self.save()
         args = self.candidate_args()
         args[1]['pose_mode'] = '5d'
-        args[4][:3, :3] = axis_rotation([1, 0, 0])
-        self.service.verify_motion_targets = Mock(
+        args[4][:3, :3] = pose_symmetry.axis_rotation([1, 0, 0])
+        self.service.verify_motion_targets = mock.Mock(
             side_effect=ValueError('endpoint unavailable')
         )
         with self.assertRaisesRegex(
@@ -598,8 +619,8 @@ class FiveDLibraryTests(unittest.TestCase):
     def test_horizontal_6d_keeps_saved_orientation(self):
         self.save()
         args = self.candidate_args()
-        args[4][:3, :3] = axis_rotation([1, 0, 0])
-        self.service.verify_motion_targets = Mock(
+        args[4][:3, :3] = pose_symmetry.axis_rotation([1, 0, 0])
+        self.service.verify_motion_targets = mock.Mock(
             return_value={'joint_travel_deg': 3}
         )
         plan, _, _ = self.service.select_grasp_candidate(*args)

@@ -6,13 +6,13 @@ import datetime
 import fcntl
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import shutil
 
 import cv2
 import numpy as np
 
-from saydo.modeling.depth_preview import export_previews
+from saydo.modeling import depth_preview
 
 from saydo import paths
 
@@ -55,7 +55,7 @@ def reexport_session(session):
             for name in names:
                 if (directory / name).exists():
                     shutil.copy2(directory / name, saved / name)
-            report['depth_visualization'] = export_previews(
+            report['depth_visualization'] = depth_preview.export_previews(
                 directory, bgr, depth
             )
             for name in ['depth_color.png', 'preview.jpg']:
@@ -97,7 +97,9 @@ def reexport_session(session):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=ROOT / 'work/object_scan')
+    parser.add_argument(
+        '--root', type=pathlib.Path, default=ROOT / 'work/object_scan'
+    )
     parser.add_argument(
         '--sessions',
         nargs='+',
@@ -107,7 +109,7 @@ def main():
     if (
         args.sessions
         and any(
-            Path(name).name != name or name in ('.', '..')
+            pathlib.Path(name).name != name or name in ('.', '..')
             for name in args.sessions
         )
     ):

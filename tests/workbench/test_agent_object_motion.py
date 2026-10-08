@@ -2,7 +2,7 @@ import copy
 import unittest
 import numpy as np
 from tests.workbench import test_agent_api as base
-from saydo.workbench.agent_api import AgentError
+from saydo.workbench import agent_api
 
 
 class AgentObjectMotionTests(unittest.TestCase):
@@ -94,7 +94,7 @@ class AgentObjectMotionTests(unittest.TestCase):
         plan = self.wait()['result']['object_motion_plan']
         self.assertEqual(plan['kind'], 'release')
         self.assertIsNotNone(self.grasp.held_object)
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.request(
                 'execute_plan',
                 task_id='execute-disabled',
@@ -115,7 +115,7 @@ class AgentObjectMotionTests(unittest.TestCase):
             {'goal': {'target_rpy_deg': [0, 0, 181]}},
             {'goal': {'reference_frame': 'file'}},
         ]:
-            with self.assertRaises(AgentError):
+            with self.assertRaises(agent_api.AgentError):
                 self.request(
                     'plan_held_object_motion',
                     arguments={**self.args, **override},
@@ -129,7 +129,7 @@ class AgentObjectMotionTests(unittest.TestCase):
             {'plan_id': '../../file'},
             {'plan_id': 'f' * 32, 'target_position_m': [0, 0, 0]},
         ]:
-            with self.assertRaises(AgentError):
+            with self.assertRaises(agent_api.AgentError):
                 self.request('execute_plan', arguments=args)
 
     def test_diagnostics_old_task_and_model_geometry_are_read_only(self):

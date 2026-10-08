@@ -1,16 +1,16 @@
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 import numpy as np
 from saydo.workbench import live_tracker
-from saydo.perception.llm_detection import LLMBoxDetector, DetectionCancelled, parse_detection
-from saydo.objects.object_catalog import select_object, save_detection_prompt
+from saydo.perception import llm_detection
+from saydo.objects import object_catalog
 
 
 def response(box=None, status='found'):
@@ -46,7 +46,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_payload_and_padding(self):
         payloads = []
-        detector = LLMBoxDetector(
+        detector = llm_detection.LLMBoxDetector(
             request=lambda payload: (payloads.append(payload) or response())
         )
         boxes = detector.detect(self.frame(), '无把手纸杯', lambda: False)
@@ -68,7 +68,7 @@ class DetectionTests(unittest.TestCase):
             [0, 0, float('nan'), 100],
         ]:
             with self.subTest(box=box), self.assertRaises(ValueError):
-                parse_detection(response(box), 640, 360)
+                llm_detection.parse_detection(response(box), 640, 360)
         for r in [
             [],
             {'status': 'incomplete'},
@@ -76,11 +76,11 @@ class DetectionTests(unittest.TestCase):
             response(status='uncertain'),
         ]:
             with self.subTest(response=r), self.assertRaises(ValueError):
-                parse_detection(r, 640, 360)
+                llm_detection.parse_detection(r, 640, 360)
         r = response()
         r['output'] *= 2
         with self.assertRaises(ValueError):
-            parse_detection(r, 640, 360)
+            llm_detection.parse_detection(r, 640, 360)
 
     def test_cancel_discards_late_reply_and_prevents_parallel_requests(self):
         entered = threading.Event()
@@ -93,7 +93,7 @@ class DetectionTests(unittest.TestCase):
             release.wait(2)
             return response()
 
-        detector = LLMBoxDetector(request=request)
+        detector = llm_detection.LLMBoxDetector(request=request)
 
         def detect():
             try:
@@ -107,7 +107,7 @@ class DetectionTests(unittest.TestCase):
         cancel.set()
         thread.join(1)
         self.assertFalse(thread.is_alive())
-        self.assertIsInstance(errors[0], DetectionCancelled)
+        self.assertIsInstance(errors[0], llm_detection.DetectionCancelled)
         with self.assertRaisesRegex(ValueError, '尚未退出'):
             detector.detect(self.frame(), '杯', lambda: False)
         release.set()
@@ -119,7 +119,7 @@ class DetectionTests(unittest.TestCase):
 
     def test_timeout_and_stale_frame(self):
         release = threading.Event()
-        detector = LLMBoxDetector(
+        detector = llm_detection.LLMBoxDetector(
             timeout=.01, request=lambda _: (release.wait(.2) or response())
         )
         try:
@@ -130,7 +130,7 @@ class DetectionTests(unittest.TestCase):
         frame = self.frame()
         frame['time'] -= 31
         with self.assertRaisesRegex(ValueError, '时限'):
-            LLMBoxDetector(
+            llm_detection.LLMBoxDetector(
                 request=lambda _: response()
             ).detect(frame, '杯', lambda: False)
 
@@ -139,7 +139,7 @@ class PromptTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.root = Path(temp.name)
+        self.root = pathlib.Path(temp.name)
         self.folder = self.root / 'objects/cup'
         self.folder.mkdir(parents=True)
         (self.folder / 'model.obj').write_text('# mesh')
@@ -151,13 +151,13 @@ class PromptTests(unittest.TestCase):
         self.models = self.root / 'objects'
 
     def save(self, prompt):
-        row = select_object(self.models, 'cup')
-        return save_detection_prompt(
+        row = object_catalog.select_object(self.models, 'cup')
+        return object_catalog.save_detection_prompt(
             self.models, 'cup', prompt, row['detection_prompt_revision']
         )
 
     def test_storage_revision_conflict_fallback_and_pose_independence(self):
-        original = select_object(self.models, 'cup')
+        original = object_catalog.select_object(self.models, 'cup')
         row = self.save(' 无把手的一次性纸杯 ')
         self.assertEqual(
             row['effective_detection_prompt'], '无把手的一次性纸杯'
@@ -166,7 +166,7 @@ class PromptTests(unittest.TestCase):
             row['pose_mode_revision'], original['pose_mode_revision']
         )
         with self.assertRaisesRegex(ValueError, '已变化'):
-            save_detection_prompt(
+            object_catalog.save_detection_prompt(
                 self.models,
                 'cup',
                 '马克杯',
@@ -185,10 +185,10 @@ class PromptTests(unittest.TestCase):
         (self.root / 'outside').write_text('{}')
         (self.folder / 'detection.json').symlink_to(self.root / 'outside')
         with self.assertRaises(ValueError):
-            select_object(self.models, 'cup')
+            object_catalog.select_object(self.models, 'cup')
 
     def tracker(self):
-        args = SimpleNamespace(
+        args = types.SimpleNamespace(
             mesh=self.folder / 'model.obj',
             models_root=self.models,
             serial='test',
@@ -197,7 +197,7 @@ class PromptTests(unittest.TestCase):
             detector='llm',
             grasp_config=live_tracker.ROOT / 'config/grasp/trial.json',
         )
-        with patch.object(live_tracker, 'ROOT', self.root):
+        with mock.patch.object(live_tracker, 'ROOT', self.root):
             tracker = live_tracker.Tracker(args)
         tracker.state.update(state='tracking', model_ready=True)
         return tracker
@@ -210,7 +210,7 @@ class PromptTests(unittest.TestCase):
         for state in ['tracking', 'detecting']:
             t.state['state'] = state
             generation = t.generation
-            row = select_object(self.models, 'cup')
+            row = object_catalog.select_object(self.models, 'cup')
             t.set_detection_prompt(
                 {
                     'id': 'cup',

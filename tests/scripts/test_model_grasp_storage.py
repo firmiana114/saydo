@@ -2,21 +2,21 @@
 
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
 
-from saydo.objects.grasp_library import GraspLibrary, revision
-from scripts.migrate_model_grasps import migrate
+from saydo.objects import grasp_library
+from scripts import migrate_model_grasps
 
 
 class ModelGraspStorageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         self.models = self.root / 'custom-models'
-        self.library = GraspLibrary(self.root, self.models)
+        self.library = grasp_library.GraspLibrary(self.root, self.models)
         self.library.directory.mkdir(parents=True)
         for name in ['bottle', 'cup']:
             (self.models / name).mkdir(parents=True)
@@ -49,7 +49,7 @@ class ModelGraspStorageTests(unittest.TestCase):
 
     def test_single_model_write_preserves_other_models_and_legacy(self):
         original = self.library.path.read_bytes()
-        before = revision(self.library.object('bottle'))
+        before = grasp_library.revision(self.library.object('bottle'))
         changed = copy.deepcopy(self.value)
         changed['grasps'][0]['name'] = '新名字'
         self.library.write_object('bottle', changed, before)
@@ -63,9 +63,13 @@ class ModelGraspStorageTests(unittest.TestCase):
             self.library.write_object('bottle', changed, before)
 
     def test_empty_local_file_and_success_history_are_authoritative(self):
-        self.library.write_object('bottle', self.value, revision(self.value))
+        self.library.write_object(
+            'bottle', self.value, grasp_library.revision(self.value)
+        )
         empty = {'selection_mode': 'auto', 'selected_id': None, 'grasps': []}
-        self.library.write_object('bottle', empty, revision(self.value))
+        self.library.write_object(
+            'bottle', empty, grasp_library.revision(self.value)
+        )
         self.assertEqual(self.library.object('bottle'), empty)
         self.assertTrue(self.library.has_object('bottle'))
         backups = list(
@@ -126,10 +130,10 @@ class ModelGraspStorageTests(unittest.TestCase):
         originals = {
             p: p.read_bytes() for p in self.library.directory.rglob('*.json')
         }
-        preview = migrate(self.library)
+        preview = migrate_model_grasps.migrate(self.library)
         self.assertEqual(preview['files_to_write'], 7)
         self.assertFalse(self.library.object_path('bottle').exists())
-        migrate(self.library, apply=True)
+        migrate_model_grasps.migrate(self.library, apply=True)
         for name in ['cup', 'bottle']:
             self.assertEqual(self.library.object(name), self.value)
             self.assertEqual(
@@ -147,20 +151,27 @@ class ModelGraspStorageTests(unittest.TestCase):
             (self.models / 'bottle/grasp_profile_commands/456.json').exists()
         )
         self.assertEqual({p: p.read_bytes() for p in originals}, originals)
-        self.assertEqual(migrate(self.library, apply=True)['files_to_write'], 0)
+        self.assertEqual(
+            migrate_model_grasps.migrate(
+                self.library, apply=True
+            )['files_to_write'],
+            0,
+        )
 
     def test_existing_local_edits_survive_migration_and_history_conflict_aborts(
         self
     ):
         changed = copy.deepcopy(self.value)
         changed['grasps'][0]['name'] = '本地修改'
-        self.library.write_object('bottle', changed, revision(self.value))
-        migrate(self.library, apply=True)
+        self.library.write_object(
+            'bottle', changed, grasp_library.revision(self.value)
+        )
+        migrate_model_grasps.migrate(self.library, apply=True)
         self.assertEqual(self.library.object('bottle'), changed)
         self.library.legacy.write_text(json.dumps({'cup': {'original': True}}))
         (self.models / 'cup/taught_profile_legacy.json').write_text('{}')
         with self.assertRaisesRegex(ValueError, '不同内容'):
-            migrate(self.library, apply=True)
+            migrate_model_grasps.migrate(self.library, apply=True)
 
 
 if __name__ == '__main__':

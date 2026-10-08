@@ -4,12 +4,12 @@
 import argparse
 import json
 import os
-from pathlib import Path
+import pathlib
 import secrets
 import tomllib
 
 from saydo import paths
-from saydo.agent.client import RobotBackend
+from saydo.agent import client
 
 
 BEGIN = '# BEGIN SAYDO ROBOT MCP'
@@ -19,7 +19,9 @@ END = '# END SAYDO ROBOT MCP'
 def install(agent_home, python, base_url, token_path=None):
     # Preserve a virtualenv interpreter's path; resolving its symlink loses the
     # venv.
-    agent_home, python = Path(agent_home).resolve(), Path(python).absolute()
+    agent_home, python = (
+        pathlib.Path(agent_home).resolve(), pathlib.Path(python).absolute()
+    )
     config_path = agent_home / 'config.toml'
     original = config_path.read_text() if config_path.exists() else ''
     config = tomllib.loads(original)
@@ -31,7 +33,7 @@ def install(agent_home, python, base_url, token_path=None):
     if not python.is_file():
         raise ValueError('Install the isolated MCP Python environment first')
     token_path = (
-        Path(token_path).absolute()
+        pathlib.Path(token_path).absolute()
         if token_path is not None
         else agent_home / 'credentials/robot-backend-token'
     )
@@ -42,7 +44,7 @@ def install(agent_home, python, base_url, token_path=None):
             f.write(secrets.token_urlsafe(36) + '\n')
     if token_path.stat().st_mode & 0o077:
         raise ValueError('Backend token must have owner-only permissions')
-    RobotBackend(base_url, token_path)
+    client.RobotBackend(base_url, token_path)
     # 以模块方式启动才能按完整包名导入；PYTHONPATH 指向项目根目录。
     args = [
         '-m',
@@ -103,17 +105,21 @@ approval_mode = "approve"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        '--agent-home', type=Path, default=Path.home() / '.codex'
+        '--agent-home',
+        type=pathlib.Path,
+        default=pathlib.Path.home() / '.codex',
     )
     parser.add_argument(
         '--python',
-        type=Path,
-        default=Path.home() / '.local/share/saydo-mcp/venv/bin/python',
+        type=pathlib.Path,
+        default=pathlib.Path.home() / '.local/share/saydo-mcp/venv/bin/python',
     )
     parser.add_argument(
         '--token-file',
-        type=Path,
-        default=Path.home() / '.local/share/saydo-mcp/robot-backend-token',
+        type=pathlib.Path,
+        default=(
+            pathlib.Path.home() / '.local/share/saydo-mcp/robot-backend-token'
+        ),
     )
     parser.add_argument('--base-url', default='http://127.0.0.1:8089')
     args = parser.parse_args()

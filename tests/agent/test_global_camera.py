@@ -1,12 +1,12 @@
 import base64
 import json
 import io
-from pathlib import Path
+import pathlib
 import subprocess
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 from saydo.agent import global_camera as camera
 
@@ -26,7 +26,7 @@ class GlobalCameraTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        root = Path(self.tmp.name)
+        root = pathlib.Path(self.tmp.name)
         interpreter = root / 'python'
         interpreter.touch()
         self.config = root / 'global.json'
@@ -39,10 +39,12 @@ class GlobalCameraTests(unittest.TestCase):
         self.config.write_text(json.dumps(self.settings))
 
     def test_fresh_image_identity_and_uncalibrated_contract(self):
-        with patch.object(
+        with mock.patch.object(
             camera.subprocess,
             'run',
-            return_value=Mock(returncode=0, stdout=json.dumps(image_result())),
+            return_value=mock.Mock(
+                returncode=0, stdout=json.dumps(image_result())
+            ),
         ) as run:
             result = camera.observe_global(self.config)
         args = run.call_args.args[0]
@@ -58,7 +60,7 @@ class GlobalCameraTests(unittest.TestCase):
         self.assertFalse(result['motion_sent'])
 
     def test_missing_configuration_and_same_camera_never_start_worker(self):
-        with patch.object(camera.subprocess, 'run') as run:
+        with mock.patch.object(camera.subprocess, 'run') as run:
             with self.assertRaises(camera.CameraUnavailable):
                 camera.observe_global(self.config.with_name('missing'))
             self.config.write_text(
@@ -88,10 +90,10 @@ class GlobalCameraTests(unittest.TestCase):
             'camera_serial': '218622270784',
             'camera_name': 'RealSense D405',
         }
-        with patch.object(
+        with mock.patch.object(
             camera.subprocess,
             'run',
-            return_value=Mock(returncode=0, stdout=json.dumps(frame)),
+            return_value=mock.Mock(returncode=0, stdout=json.dumps(frame)),
         ) as run:
             result = camera.observe_global(self.config)
         self.assertEqual(result['camera_name'], 'RealSense D405')
@@ -101,15 +103,16 @@ class GlobalCameraTests(unittest.TestCase):
         )
 
     def test_worker_rejects_wrong_model_before_opening(self):
-        rs = Mock()
-        device = Mock()
+        rs = mock.Mock()
+        device = mock.Mock()
         device.get_info.side_effect = lambda key: '218622270784' if key == rs.camera_info.serial_number else 'RealSense D435I'
         rs.context.return_value.query_devices.return_value = [device]
-        with patch.dict(
-            'sys.modules', {'pyrealsense2': rs, 'cv2': Mock(), 'numpy': Mock()}
-        ), patch.object(camera, 'ROOT', Path(self.tmp.name)), patch.object(
-            camera, 'monitor_frame', return_value=None
-        ):
+        with mock.patch.dict(
+            'sys.modules',
+            {'pyrealsense2': rs, 'cv2': mock.Mock(), 'numpy': mock.Mock()},
+        ), mock.patch.object(
+            camera, 'ROOT', pathlib.Path(self.tmp.name)
+        ), mock.patch.object(camera, 'monitor_frame', return_value=None):
             with self.assertRaisesRegex(ValueError, '不会改用'):
                 camera.capture('218622270784', 'RealSense D405')
         rs.pipeline.assert_not_called()
@@ -124,10 +127,10 @@ class GlobalCameraTests(unittest.TestCase):
             {'image_base64': 'not-base64'},
             {'mime_type': 'image/png'},
         ):
-            with self.subTest(changes=changes), patch.object(
+            with self.subTest(changes=changes), mock.patch.object(
                 camera.subprocess,
                 'run',
-                return_value=Mock(
+                return_value=mock.Mock(
                     returncode=0,
                     stdout=json.dumps({**image_result(), **changes}),
                 ),
@@ -136,7 +139,7 @@ class GlobalCameraTests(unittest.TestCase):
                     camera.observe_global(self.config)
 
     def test_timeout_and_device_errors_have_no_retry_or_fallback(self):
-        with patch.object(
+        with mock.patch.object(
             camera.subprocess,
             'run',
             side_effect=subprocess.TimeoutExpired('capture', 12),
@@ -144,10 +147,10 @@ class GlobalCameraTests(unittest.TestCase):
             with self.assertRaises(camera.CameraUnavailable):
                 camera.observe_global(self.config)
             run.assert_called_once()
-        with patch.object(
+        with mock.patch.object(
             camera.subprocess,
             'run',
-            return_value=Mock(returncode=1, stderr='device busy'),
+            return_value=mock.Mock(returncode=1, stderr='device busy'),
         ) as run:
             with self.assertRaisesRegex(
                 camera.CameraUnavailable, 'device busy'
@@ -156,8 +159,8 @@ class GlobalCameraTests(unittest.TestCase):
             run.assert_called_once()
 
     def test_worker_selects_only_fixed_color_stream_and_releases_on_error(self):
-        rs = Mock()
-        device = Mock()
+        rs = mock.Mock()
+        device = mock.Mock()
         device.get_info.side_effect = lambda key: '344422070678' if key == rs.camera_info.serial_number else 'RealSense D435I'
         rs.context.return_value.query_devices.return_value = [device]
         rs.pipeline.return_value.start.return_value.get_device.return_value = (
@@ -166,9 +169,10 @@ class GlobalCameraTests(unittest.TestCase):
         rs.pipeline.return_value.wait_for_frames.side_effect = RuntimeError(
             'no frame'
         )
-        with patch.dict(
-            'sys.modules', {'pyrealsense2': rs, 'cv2': Mock(), 'numpy': Mock()}
-        ), patch.object(camera, 'ROOT', Path(self.tmp.name)):
+        with mock.patch.dict(
+            'sys.modules',
+            {'pyrealsense2': rs, 'cv2': mock.Mock(), 'numpy': mock.Mock()},
+        ), mock.patch.object(camera, 'ROOT', pathlib.Path(self.tmp.name)):
             with self.assertRaisesRegex(RuntimeError, 'no frame'):
                 camera.capture('344422070678')
         rs.config.return_value.enable_device.assert_called_once_with(
@@ -180,13 +184,14 @@ class GlobalCameraTests(unittest.TestCase):
         rs.pipeline.return_value.stop.assert_called_once()
 
     def test_worker_never_uses_available_eye_in_hand_when_fixed_missing(self):
-        rs = Mock()
-        device = Mock()
+        rs = mock.Mock()
+        device = mock.Mock()
         device.get_info.return_value = '405622073572'
         rs.context.return_value.query_devices.return_value = [device]
-        with patch.dict(
-            'sys.modules', {'pyrealsense2': rs, 'cv2': Mock(), 'numpy': Mock()}
-        ), patch.object(camera, 'ROOT', Path(self.tmp.name)):
+        with mock.patch.dict(
+            'sys.modules',
+            {'pyrealsense2': rs, 'cv2': mock.Mock(), 'numpy': mock.Mock()},
+        ), mock.patch.object(camera, 'ROOT', pathlib.Path(self.tmp.name)):
             with self.assertRaisesRegex(ValueError, '不会改用'):
                 camera.capture('344422070678')
         rs.pipeline.assert_not_called()
@@ -203,9 +208,9 @@ class SharedMonitorTests(unittest.TestCase):
 
     def test_shared_frame_is_used_without_opening_hardware(self):
         result = self.frame()
-        opener = Mock()
+        opener = mock.Mock()
         opener.open.return_value = io.BytesIO(json.dumps(result).encode())
-        with patch.object(
+        with mock.patch.object(
             camera.urllib.request, 'build_opener', return_value=opener
         ):
             self.assertEqual(
@@ -223,11 +228,11 @@ class SharedMonitorTests(unittest.TestCase):
             {'image_base64': 'bad'},
             {'mime_type': 'image/png'},
         ):
-            opener = Mock()
+            opener = mock.Mock()
             opener.open.return_value = io.BytesIO(
                 json.dumps(self.frame(**changes)).encode()
             )
-            with self.subTest(changes=changes), patch.object(
+            with self.subTest(changes=changes), mock.patch.object(
                 camera.urllib.request, 'build_opener', return_value=opener
             ):
                 with self.assertRaises(ValueError):
@@ -240,9 +245,9 @@ class SharedMonitorTests(unittest.TestCase):
                 'local', 409, 'idle', {}, io.BytesIO(b'')
             ),
         ]:
-            opener = Mock()
+            opener = mock.Mock()
             opener.open.side_effect = error
-            with patch.object(
+            with mock.patch.object(
                 camera.urllib.request, 'build_opener', return_value=opener
             ):
                 self.assertIsNone(
@@ -250,7 +255,7 @@ class SharedMonitorTests(unittest.TestCase):
                 )
 
     def test_other_model_does_not_consult_d405_preview(self):
-        with patch.object(camera.urllib.request, 'build_opener') as build:
+        with mock.patch.object(camera.urllib.request, 'build_opener') as build:
             self.assertIsNone(
                 camera.monitor_frame('344422070678', 'RealSense D435I')
             )

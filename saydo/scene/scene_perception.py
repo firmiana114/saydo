@@ -1,12 +1,12 @@
 """Run all instance localization on one immutable RGB-D frame, on the GPU owner thread."""
 
 import hashlib
-from pathlib import Path
+import pathlib
 import time
 import numpy as np
-from saydo.perception.live_checks import checked_box, pose_health
-from saydo.geometry.pose_symmetry import canonical_pose, object_rotation_error
-from saydo.scene.scene_features import object_features
+from saydo.perception import live_checks
+from saydo.geometry import pose_symmetry
+from saydo.scene import scene_features
 
 
 def automatic_candidates(frame, info, detector, local_detector, check):
@@ -45,13 +45,13 @@ def localize_scene(
     import torch
     from estimater import FoundationPose
     from Utils import nvdiffrast_render
-    from saydo.objects.object_catalog import select_object
+    from saydo.objects import object_catalog
     rgb = cv2.cvtColor(frame['bgr'], cv2.COLOR_BGR2RGB)
     rows = []
     used = []
     for target in targets:
         check()
-        info = select_object(models_root, target['object_id'])
+        info = object_catalog.select_object(models_root, target['object_id'])
         progress('定位场景实例：' + target['instance_id'])
         box = target['box']
         if box is None:
@@ -64,7 +64,7 @@ def localize_scene(
                     f'{len(candidates)}个），请结合画面指定box后重新采集'
                 )
             box = candidates[0]['box']
-        box = checked_box(box, 640, 360)
+        box = live_checks.checked_box(box, 640, 360)
         for model, previous in used:
             if model == target['object_id']:
                 a = np.asarray(box)
@@ -82,7 +82,7 @@ def localize_scene(
         used.append((target['object_id'], box))
         check()
         mesh_sha256 = hashlib.sha256(
-            Path(info['mesh']).read_bytes()
+            pathlib.Path(info['mesh']).read_bytes()
         ).hexdigest()
         mesh = trimesh.load(info['mesh'], force='mesh')
         if (
@@ -137,7 +137,7 @@ def localize_scene(
                     ),
                     glctx=context,
                 )
-                quality = pose_health(
+                quality = live_checks.pose_health(
                     pose,
                     rd[0].detach().cpu().numpy(),
                     frame['depth'],
@@ -158,7 +158,7 @@ def localize_scene(
                         iteration=2,
                     )
                     shift = np.linalg.norm(pose[:3, 3] - prior[:3, 3])
-                    turn = object_rotation_error(
+                    turn = pose_symmetry.object_rotation_error(
                         pose[:3, :3], prior[:3, :3], info.get('pose_mode', '6d')
                     )
                     if shift > .005 or turn > np.deg2rad(15):
@@ -171,7 +171,7 @@ def localize_scene(
                         )
                 check()
             if info.get('pose_mode') == '5d':
-                pose = canonical_pose(pose, '5d')
+                pose = pose_symmetry.canonical_pose(pose, '5d')
             rows.append(
                 {
                     **target,
@@ -182,7 +182,9 @@ def localize_scene(
                     'pose_mode': info.get('pose_mode', '6d'),
                     'pose_mode_revision': info.get('pose_mode_revision'),
                     'quality': quality,
-                    **object_features(models_root, target['object_id']),
+                    **scene_features.object_features(
+                        models_root, target['object_id']
+                    ),
                 }
             )
             del instance

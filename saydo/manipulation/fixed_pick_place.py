@@ -9,13 +9,13 @@ import uuid
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import controller_pose, transform, rotation_error
-from saydo.robot.grasp_robot import RobotClient
-from saydo.objects.grasp_library import revision
-from saydo.robot.motion_validation import check_waypoints
-from saydo.manipulation.object_motion_geometry import segment_samples, plan_object_motion
-from saydo.manipulation.reorientation_geometry import model_geometry
-from saydo.contracts.motion_contract import checked_goal
+from saydo.geometry import grasp_geometry
+from saydo.robot import grasp_robot
+from saydo.objects import grasp_library
+from saydo.robot import motion_validation
+from saydo.manipulation import object_motion_geometry
+from saydo.manipulation import reorientation_geometry
+from saydo.contracts import motion_contract
 
 
 # Straight segments run as one joint move per sample (about 10 mm apart), so a
@@ -69,7 +69,7 @@ def placement_goals(scene, request, geometry):
         raise ValueError('源物品和参照物须是静态场景中的不同实例')
     if rack.get('pose_mode') != '6d':
         raise ValueError('试管架必须提供完整6D参考坐标系')
-    frame = transform(rack['base_T_object'])
+    frame = grasp_geometry.transform(rack['base_T_object'])
     if frame[2, 2] < np.cos(np.deg2rad(5)):
         raise ValueError('试管架Z轴未朝上或倾斜超过5度，不能使用该定位结果')
     points = np.asarray(geometry['vertices'])
@@ -80,15 +80,15 @@ def placement_goals(scene, request, geometry):
     diameter = 2 * float(np.linalg.norm(points[:, :2], axis=1).max())
     features = {f['id']: f for f in rack['features']}
     slots = list(request['free_slots'])
-    origin = transform(source['base_T_object'])[:2, 3]
+    origin = grasp_geometry.transform(source['base_T_object'])[:2, 3]
     goals = []
     for slot in slots:
         entry = features.get(slot + '.entry')
         support = features.get(slot + '.support')
         if entry is None or support is None:
             raise ValueError('孔位缺少entry/support模型特征：' + slot)
-        e = transform(entry['object_T_feature'])
-        s = transform(support['object_T_feature'])
+        e = grasp_geometry.transform(entry['object_T_feature'])
+        s = grasp_geometry.transform(support['object_T_feature'])
         hole_diameter = entry.get('diameter_m')
         if (
             type(hole_diameter) not in (int, float)
@@ -113,7 +113,7 @@ def placement_goals(scene, request, geometry):
         )
         if lateral > (hole_diameter - diameter) / 2:
             continue
-        goal = checked_goal(
+        goal = motion_contract.checked_goal(
             {
                 'reference_frame': 'scene_object',
                 'scene_id': scene['scene_id'],
@@ -145,11 +145,11 @@ def placement_goals(scene, request, geometry):
 
 
 def path_samples(arm, waypoints, held, vertices, config, grasp=False):
-    previous = controller_pose(arm['pose'])
+    previous = grasp_geometry.controller_pose(arm['pose'])
     points = []
     ends = {}
     for w in waypoints:
-        target = controller_pose(w['controller_pose'])
+        target = grasp_geometry.controller_pose(w['controller_pose'])
         method = (
             ('joint_pose' if w['name'] == 'pregrasp' else 'linear')
             if grasp
@@ -157,7 +157,7 @@ def path_samples(arm, waypoints, held, vertices, config, grasp=False):
         )
         attachment = held if not grasp or w['name'] == 'lift' else None
         points.extend(
-            segment_samples(
+            object_motion_geometry.segment_samples(
                 previous,
                 target,
                 attachment,
@@ -247,14 +247,16 @@ class FixedPickPlaceMixin:
             raise ValueError('固定流程配置已变化')
         self.validate_scene(plan['scene_id'])
         if (
-            revision(self.grasp_library().object(plan['grasp']['object_id']))
+            grasp_library.revision(
+                self.grasp_library().object(plan['grasp']['object_id'])
+            )
             != plan['grasp']['grasp_library_revision']
         ):
             raise ValueError('夹法库已变化')
 
     def plan_fixed_pick_place(self, request, report):
         config = json.loads(self.config_path.read_text())
-        self.robot = RobotClient(
+        self.robot = grasp_robot.RobotClient(
             config['robot_ip'], config['robot_port'], writes=False
         )
         binding = self.motion_binding(config)
@@ -264,7 +266,9 @@ class FixedPickPlaceMixin:
             for r in scene['instances']
             if r['instance_id'] == request['source_instance_id']
         )
-        geometry = model_geometry(self.tracker.models_root, source['object_id'])
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, source['object_id']
+        )
         source, rack, goals = placement_goals(scene, request, geometry)
         observation = self.scene_observation(
             scene['scene_id'], source['instance_id'], source['object_id']
@@ -275,7 +279,7 @@ class FixedPickPlaceMixin:
         )
         if grasp['execution_blockers']:
             raise ValueError('；'.join(grasp['execution_blockers']))
-        grasp_tcp = controller_pose(
+        grasp_tcp = grasp_geometry.controller_pose(
             next(
                 w for w in grasp['waypoints'] if w['name'] == 'grasp'
             )['controller_pose']
@@ -296,7 +300,8 @@ class FixedPickPlaceMixin:
             hold_id='predicted-before-grasp',
             orientation_version=0,
             object_T_tcp=(
-                np.linalg.inv(transform(grasp['base_T_object'])) @ grasp_tcp
+                np.linalg.inv(grasp_geometry.transform(grasp['base_T_object']))
+                @ grasp_tcp
             ).tolist(),
             base_T_object_at_grasp=grasp['base_T_object'],
             min_table_clearance_m=grasp['effective_parameters'][
@@ -308,7 +313,9 @@ class FixedPickPlaceMixin:
         )
         tool = {'flange_T_grip_tcp': grasp['flange_T_grip_tcp']}
         checker = self.root / effective['ik_checker']
-        ok, detail = check_waypoints(checker, tool, arm, prefix)
+        ok, detail = motion_validation.check_waypoints(
+            checker, tool, arm, prefix
+        )
         if not ok:
             raise ValueError('抓取完整采样路径失败：' + detail['reason'])
         lift = next(w for w in grasp['waypoints'] if w['name'] == 'lift')
@@ -328,14 +335,16 @@ class FixedPickPlaceMixin:
             full_points = prefix + points
             if len(full_points) > 480:
                 raise ValueError('全程超过480个采样点')
-            return check_waypoints(checker, tool, arm, full_points, timeout)
+            return motion_validation.check_waypoints(
+                checker, tool, arm, full_points, timeout
+            )
 
         for slot, goal, frame, distance in goals:
             self.check_cancel()
             row = {'slot': slot, 'distance_from_source_m': distance}
             attempts.append(row)
             try:
-                release = plan_object_motion(
+                release = object_motion_geometry.plan_object_motion(
                     held,
                     geometry['vertices'],
                     predicted_arm,
@@ -431,7 +440,7 @@ class FixedPickPlaceMixin:
         grasp = plan['grasp']
         # Repeat hardware checks read-only before enabling any write; the new
         # candidate is validation evidence, never a replacement execution path.
-        self.robot = RobotClient(
+        self.robot = grasp_robot.RobotClient(
             config['robot_ip'], config['robot_port'], writes=False
         )
         arm = self.stationary_scene_arm()
@@ -448,7 +457,9 @@ class FixedPickPlaceMixin:
         self.prepare_grasp_plan(
             observation, json.loads(self.config_path.read_text()), arm, {}
         )
-        geometry = model_geometry(self.tracker.models_root, grasp['object_id'])
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, grasp['object_id']
+        )
         prefix, _ = path_samples(
             arm,
             grasp['waypoints'],
@@ -467,11 +478,11 @@ class FixedPickPlaceMixin:
         )
         if release['retreat_waypoint']:
             suffix.extend(
-                segment_samples(
-                    controller_pose(
+                object_motion_geometry.segment_samples(
+                    grasp_geometry.controller_pose(
                         release['waypoints'][-1]['controller_pose']
                     ),
-                    controller_pose(
+                    grasp_geometry.controller_pose(
                         release['retreat_waypoint']['controller_pose']
                     ),
                     None,
@@ -510,7 +521,7 @@ class FixedPickPlaceMixin:
         # Each grasp segment re-solves the remaining part of this same path from
         # real feedback.
         self._fixed_path_points = points
-        self.robot = RobotClient(
+        self.robot = grasp_robot.RobotClient(
             config['robot_ip'], config['robot_port'], writes=True
         )
         self.robot.motion_log = report.setdefault('motion_events', [])
@@ -520,11 +531,14 @@ class FixedPickPlaceMixin:
         actual = self.held_snapshot()
         if actual is None:
             raise ValueError('抓取后没有有效夹持')
-        a = transform(actual['object_T_tcp'])
-        b = transform(plan['predicted_hold']['object_T_tcp'])
+        a = grasp_geometry.transform(actual['object_T_tcp'])
+        b = grasp_geometry.transform(plan['predicted_hold']['object_T_tcp'])
         if (
             np.linalg.norm(a[:3, 3] - b[:3, 3]) > .002
-            or rotation_error(a[:3, :3], b[:3, :3]) > np.deg2rad(2)
+            or (
+                grasp_geometry.rotation_error(a[:3, :3], b[:3, :3])
+                > np.deg2rad(2)
+            )
         ):
             raise ValueError('实际夹持关系偏离预先规划，不重新规划或继续下降')
         release = copy.deepcopy(plan['release'])

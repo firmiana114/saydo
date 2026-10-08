@@ -2,7 +2,7 @@
 
 import copy
 import math
-from saydo.task_runner.planning_validation import READONLY_PLANNING
+from saydo.task_runner import planning_validation
 
 
 class RetryLimit(ValueError):
@@ -60,7 +60,9 @@ class MotionRetry:
         }
 
     def before(self, name, args, held):
-        planning = name in READONLY_PLANNING or name == 'reorient'
+        planning = (
+            name in planning_validation.READONLY_PLANNING or name == 'reorient'
+        )
         executing = name in ('reorient', 'execute_plan')
         if self.pending and self.execution >= 3 and (planning or executing):
             raise RetryLimit('同一目标已尝试执行3次，达到上限')

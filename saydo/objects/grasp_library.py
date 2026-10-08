@@ -4,14 +4,14 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
+import pathlib
 import tempfile
 import time
 import uuid
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import transform, minimum_table_clearance, checked_tcp_offset
+from saydo.geometry import grasp_geometry
 
 MAX_GRASPS = 32
 
@@ -33,7 +33,7 @@ def checked_profile(value):
         raise ValueError('夹爪朝向必须为 3×3 旋转矩阵')
     matrix = np.eye(4)
     matrix[:3, :3] = rotation
-    transform(matrix)
+    grasp_geometry.transform(matrix)
     return {
         'orientation': 'follow_object',
         'grasp_point_object_m': point.tolist(),
@@ -59,9 +59,9 @@ def checked_overrides(value):
         raise ValueError('夹法参数覆盖项无效')
     for key, number in value.items():
         if key == 'tcp_offset_m':
-            checked_tcp_offset(number)
+            grasp_geometry.checked_tcp_offset(number)
         elif key == 'min_table_clearance_m':
-            minimum_table_clearance({key: number})
+            grasp_geometry.minimum_table_clearance({key: number})
         elif key == 'pregrasp_distance_m':
             if (
                 type(number) not in (int, float)
@@ -129,7 +129,7 @@ def binding_error(entry, model_hash, tool_response, handeye=None):
 def effective_config(config, entry):
     result = copy.deepcopy(config)
     overrides = checked_bound_overrides(entry.get('overrides', {}))
-    result['tcp_offset_m'] = checked_tcp_offset(
+    result['tcp_offset_m'] = grasp_geometry.checked_tcp_offset(
         overrides.get('tcp_offset_m', [0, 0, 0])
     )
     if 'pregrasp_distance_m' in overrides:
@@ -158,7 +158,7 @@ def effective_parameters(config, entry):
         ),
         'open_position_units': 'native_position_0_to_1000',
         'pregrasp_distance_m': result.get('pregrasp_distance_m'),
-        'min_table_clearance_m': minimum_table_clearance(result),
+        'min_table_clearance_m': grasp_geometry.minimum_table_clearance(result),
         'table_clearance_source': (
             'grasp_profile'
             if 'min_table_clearance_m' in entry.get('overrides', {})
@@ -173,17 +173,19 @@ def held_clearance_config(config, held):
     """Keep the clearance of the actual grasp, independent of later editor saves."""
     result = copy.deepcopy(config)
     if 'min_table_clearance_m' in held:
-        result['min_table_clearance_m'] = minimum_table_clearance(held)
+        result['min_table_clearance_m'] = (
+            grasp_geometry.minimum_table_clearance(held)
+        )
     return result
 
 
 class GraspLibrary:
     def __init__(self, root, models_root=None):
-        self.directory = Path(root) / 'work/grasp'
+        self.directory = pathlib.Path(root) / 'work/grasp'
         self.models_root = (
-            Path(models_root)
+            pathlib.Path(models_root)
             if models_root is not None
-            else Path(root) / 'work/object_models'
+            else pathlib.Path(root) / 'work/object_models'
         )
         # Read-only compatibility sources. New writes always belong to one
         # model.
@@ -300,7 +302,7 @@ class GraspLibrary:
             with tempfile.NamedTemporaryFile(
                 mode='w', dir=directory, prefix='.grasps-', delete=False
             ) as out:
-                temporary = Path(out.name)
+                temporary = pathlib.Path(out.name)
                 os.fchmod(
                     out.fileno(),
                     (

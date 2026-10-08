@@ -3,10 +3,9 @@ import json
 import time
 import unittest
 from tests.task_runner import test_runner as base
-from tests.task_runner.test_runner import FakeLLM, FakeAdapter, call, end
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.observations import valid_global
-from saydo.agent.client import BackendError
+from saydo.task_runner import runner
+from saydo.task_runner import observations
+from saydo.agent import client
 
 
 class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -18,9 +17,9 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_executor_takes_global_image_after_each_action_and_logs_origin(
         self
     ):
-        llm = FakeLLM(
-            call('grasp', {'object_id': 'bottle'}, 'g'),
-            call(
+        llm = base.FakeLLM(
+            base.call('grasp', {'object_id': 'bottle'}, 'g'),
+            base.call(
                 'place',
                 {
                     'hold_id': 'h',
@@ -29,7 +28,7 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
                 },
                 'p',
             ),
-            end('succeeded', ['g', 'p']),
+            base.end('succeeded', ['g', 'p']),
         )
         run, _ = await self.execute(llm)
         self.assertEqual(run['state'], 'succeeded')
@@ -63,12 +62,12 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_global_image_blocks_next_motion_without_replaying_grasp(
         self
     ):
-        self.adapter.global_error = BackendError(
+        self.adapter.global_error = client.BackendError(
             {'code': 'CAMERA_UNAVAILABLE', 'message': 'camera disconnected'}
         )
-        llm = FakeLLM(
-            call('grasp', {'object_id': 'bottle'}, 'g'),
-            call(
+        llm = base.FakeLLM(
+            base.call('grasp', {'object_id': 'bottle'}, 'g'),
+            base.call(
                 'place',
                 {
                     'hold_id': 'h',
@@ -91,18 +90,18 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
         async def execute(name, *args):
             if name == 'observe_global' and self.adapter.global_requests == 0:
                 self.adapter.global_requests += 1
-                raise BackendError(
+                raise client.BackendError(
                     {'code': 'CAMERA_UNAVAILABLE', 'message': 'temporary'}
                 )
             return await original(name, *args)
 
         self.adapter.execute = execute
-        final = end('succeeded', ['g'])
+        final = base.end('succeeded', ['g'])
         final['output'][0]['call_id'] = 'finish-second'
-        llm = FakeLLM(
-            call('grasp', {'object_id': 'bottle'}, 'g'),
-            end('succeeded', ['g']),
-            call('observe_global', {}, 'o'),
+        llm = base.FakeLLM(
+            base.call('grasp', {'object_id': 'bottle'}, 'g'),
+            base.end('succeeded', ['g']),
+            base.call('observe_global', {}, 'o'),
             final,
         )
         run, _ = await self.execute(llm)
@@ -129,8 +128,9 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
             return await original(name, *args)
 
         self.adapter.execute = execute
-        llm = FakeLLM(
-            call('grasp', {'object_id': 'bottle'}, 'g'), end('blocked', ['g'])
+        llm = base.FakeLLM(
+            base.call('grasp', {'object_id': 'bottle'}, 'g'),
+            base.end('blocked', ['g']),
         )
         run, _ = await self.execute(llm)
         self.assertEqual(run['state'], 'blocked')
@@ -142,7 +142,7 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
             'image_base64': 'AA==',
             'mime_type': 'image/png',
         }
-        self.assertFalse(valid_global(frame, time.time() - 1))
+        self.assertFalse(observations.valid_global(frame, time.time() - 1))
 
     def test_context_keeps_one_image_per_camera_and_explicit_provenance(self):
         h = []
@@ -155,8 +155,10 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
                 'captured_at': time.time(),
             }
 
-        Runner.append_result(h, 'eye-1', 'get_camera_frame', frame('wrist'))
-        Runner.append_result(
+        runner.Runner.append_result(
+            h, 'eye-1', 'get_camera_frame', frame('wrist')
+        )
+        runner.Runner.append_result(
             h,
             'global-1',
             'observe_global',
@@ -166,7 +168,9 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
                 'camera_serial': 'fixed',
             },
         )
-        Runner.append_result(h, 'eye-2', 'get_camera_frame', frame('wrist'))
+        runner.Runner.append_result(
+            h, 'eye-2', 'get_camera_frame', frame('wrist')
+        )
         items = [
             i
             for i in h

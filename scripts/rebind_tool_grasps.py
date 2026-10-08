@@ -4,8 +4,8 @@ The caller must hold the robot lock and stop the runtime before applying a chang
 
 import copy
 import numpy as np
-from saydo.geometry.grasp_geometry import controller_pose
-from saydo.objects.grasp_library import revision, checked_bound_overrides
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
 
 
 def updated_tool_config(
@@ -41,7 +41,7 @@ def updated_tool_config(
         recorded_at=recorded_at,
         translation_m=(np.asarray(pose[:3]) / 1e6).tolist(),
         rpy_rad=(np.asarray(pose[3:]) / 1000).tolist(),
-        flange_T_grip_tcp=controller_pose(pose).tolist(),
+        flange_T_grip_tcp=grasp_geometry.controller_pose(pose).tolist(),
     )
     result['load'].update(
         mass_kg=mass / 1000,
@@ -85,13 +85,15 @@ def rebind_grasps(library, old_tool, new_tool, apply=False):
         after = copy.deepcopy(before)
         for entry in after['grasps']:
             if entry.get('tool_response') == new_tool:
-                checked_bound_overrides(entry.get('overrides', {}))
+                grasp_library.checked_bound_overrides(
+                    entry.get('overrides', {})
+                )
                 continue  # Already rebound: do not erase subsequent user edits.
             if entry.get('tool_response') != old_tool:
                 raise ValueError(
                     f'{oid}/{entry["id"]}工具绑定与本次旧工具不一致，未迁移'
                 )
-            entry['overrides'] = checked_bound_overrides(
+            entry['overrides'] = grasp_library.checked_bound_overrides(
                 {**entry.get('overrides', {}), 'tcp_offset_m': [0., 0., 0.]}
             )
             entry.update(
@@ -101,7 +103,7 @@ def rebind_grasps(library, old_tool, new_tool, apply=False):
             )
             count += 1
         if before != after:
-            changes.append((oid, revision(before), after))
+            changes.append((oid, grasp_library.revision(before), after))
     # All objects are prechecked before writing the first one.
     if apply:
         for oid, expected, value in changes:

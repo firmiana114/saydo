@@ -3,12 +3,12 @@
 import base64
 import json
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 from mcp import Client
-from saydo.agent.client import BackendError
-from saydo.agent.server import create_server
-from saydo.agent.global_camera import CameraUnavailable
+from saydo.agent import client as agent_client
+from saydo.agent import server
+from saydo.agent import global_camera
 
 
 class FakeBackend:
@@ -19,7 +19,7 @@ class FakeBackend:
     def request(self, path, value=None):
         self.calls.append((path, value))
         if self.fail:
-            raise BackendError(
+            raise agent_client.BackendError(
                 {
                     'code': 'REQUEST_UNCERTAIN',
                     'task_id': 'fixed-id',
@@ -53,8 +53,10 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             'camera_serial': '344422070678',
             'calibrated_to_robot_base': False,
         }
-        with patch('saydo.agent.server.capture_global', return_value=frame):
-            async with Client(create_server(backend)) as client:
+        with mock.patch(
+            'saydo.agent.global_camera.observe_global', return_value=frame
+        ):
+            async with Client(server.create_server(backend)) as client:
                 result = await client.call_tool('observe_global', {})
         self.assertFalse(result.is_error)
         self.assertEqual(result.content[0].type, 'image')
@@ -63,11 +65,11 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn('image_base64', result.structured_content)
         self.assertEqual(backend.calls, [])
-        with patch(
-            'saydo.agent.server.capture_global',
-            side_effect=CameraUnavailable('missing'),
+        with mock.patch(
+            'saydo.agent.global_camera.observe_global',
+            side_effect=global_camera.CameraUnavailable('missing'),
         ):
-            async with Client(create_server(backend)) as client:
+            async with Client(server.create_server(backend)) as client:
                 result = await client.call_tool('observe_global', {})
         self.assertTrue(result.is_error)
         self.assertEqual(len(result.content), 1)
@@ -77,7 +79,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.calls, [])
 
     async def test_complete_tool_catalog_and_annotations(self):
-        async with Client(create_server(FakeBackend())) as client:
+        async with Client(server.create_server(FakeBackend())) as client:
             tools = await client.list_tools()
             tools = tools.tools if hasattr(tools, 'tools') else tools
             names = {t.name: t for t in tools}
@@ -101,7 +103,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scene_tools_and_grasp_references(self):
         backend = FakeBackend()
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             targets = [
                 {
                     'object_id': 'tube',
@@ -134,7 +136,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_image_block_and_metadata_are_native_mcp_content(self):
-        async with Client(create_server(FakeBackend())) as client:
+        async with Client(server.create_server(FakeBackend())) as client:
             result = await client.call_tool('get_camera_frame', {})
             self.assertFalse(result.is_error)
             self.assertEqual(result.content[0].type, 'image')
@@ -144,7 +146,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_frozen_candidates_image_uses_separate_route(self):
         backend = FakeBackend()
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             result = await client.call_tool('get_tracking_candidates_frame', {})
             self.assertFalse(result.is_error)
             self.assertEqual(result.content[0].type, 'image')
@@ -152,7 +154,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_motion_arguments_ids_and_stop_route(self):
         backend = FakeBackend()
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             for name, args, operation in [
                 (
                     'grasp',
@@ -195,7 +197,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_errors_do_not_retry_or_claim_completion(self):
         backend = FakeBackend()
         backend.fail = True
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             result = await client.call_tool(
                 'grasp',
                 {
@@ -213,7 +215,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_reset_target_never_reaches_backend(self):
         backend = FakeBackend()
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             result = await client.call_tool(
                 'reset_arm', {'target': 'arbitrary', 'request_id': 'fixed-id'}
             )
@@ -230,7 +232,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
             'position_mode': 'adaptive',
             'request_id': 'reorient-001',
         }
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             for name in ('preview_reorient', 'reorient'):
                 result = await client.call_tool(name, args)
                 self.assertFalse(result.is_error)
@@ -265,7 +267,7 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_general_object_planning_execution_and_read_tools(self):
         backend = FakeBackend()
-        async with Client(create_server(backend)) as client:
+        async with Client(server.create_server(backend)) as client:
             args = {
                 'object_id': 'bottle',
                 'hold_id': 'h',

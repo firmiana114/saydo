@@ -2,7 +2,7 @@
 
 import unittest
 
-from saydo.geometry.grasp_geometry import workspace_blockers, minimum_table_clearance
+from saydo.geometry import grasp_geometry
 from tests.manipulation import test_grasp
 
 
@@ -18,19 +18,20 @@ class DiagnosticTests(unittest.TestCase):
             (0, False), (.005, False), (.006, False), (.01, True), (.02, True)
         ]:
             config['min_table_clearance_m'] = minimum
-            reasons = workspace_blockers(plan, config)
+            reasons = grasp_geometry.workspace_blockers(plan, config)
             self.assertEqual(bool(reasons), blocked)
             if blocked:
                 self.assertIn(f'要求至少 {minimum*1000:.3f}', reasons[0])
         for invalid in (-.01, True, '0.01', None, float('nan'), float('inf')):
             config['min_table_clearance_m'] = invalid
             with self.assertRaises(ValueError):
-                minimum_table_clearance(config)
+                grasp_geometry.minimum_table_clearance(config)
             self.assertIn(
-                'min_table_clearance_m', workspace_blockers(plan, config)[0]
+                'min_table_clearance_m',
+                grasp_geometry.workspace_blockers(plan, config)[0],
             )
         config.pop('min_table_clearance_m')
-        self.assertEqual(minimum_table_clearance(config), .01)
+        self.assertEqual(grasp_geometry.minimum_table_clearance(config), .01)
 
     def test_workspace_reports_all_points_axes_and_clearance(self):
         config = test_grasp.GraspTests().config()
@@ -42,7 +43,7 @@ class DiagnosticTests(unittest.TestCase):
                 {'name': 'lift', 'position_m': [0, 1.2, .2]},
             ],
         }
-        reasons = workspace_blockers(plan, config)
+        reasons = grasp_geometry.workspace_blockers(plan, config)
         self.assertEqual(len(reasons), 3)
         self.assertIn('夹持点：X=1100.000', reasons[0])
         self.assertIn('6.457 毫米', reasons[1])
@@ -60,7 +61,7 @@ class DiagnosticTests(unittest.TestCase):
             'current_position_m': [0, 0, .2],
             'waypoints': [{'name': 'grasp', 'position_m': [0, 0, -.011507]}],
         }
-        reasons = workspace_blockers(plan, config)
+        reasons = grasp_geometry.workspace_blockers(plan, config)
         self.assertEqual(len(reasons), 1)
         for expected in (
             '违反基座工作区Z限制',
@@ -85,7 +86,7 @@ class DiagnosticTests(unittest.TestCase):
             (-.011507, '桌面上方 14.583'),
             (-.02609, '与配置桌面等高'),
         ]:
-            reasons = workspace_blockers(
+            reasons = grasp_geometry.workspace_blockers(
                 {
                     'current_position_m': [0, 0, .2],
                     'waypoints': [{'name': 'grasp', 'position_m': [0, 0, z]}],
@@ -112,7 +113,7 @@ class DiagnosticTests(unittest.TestCase):
                 {'name': 'lift', 'position_m': [0, 0, 1.1]},
             ],
         }
-        reasons = workspace_blockers(plan, config)
+        reasons = grasp_geometry.workspace_blockers(plan, config)
         self.assertEqual(len(reasons), 3)
         self.assertIn('违反基座工作区Z限制', reasons[0])
         self.assertIn('桌面下方 13.910', reasons[0])

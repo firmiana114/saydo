@@ -1,11 +1,11 @@
 import copy
 import fcntl
 import json
-from pathlib import Path
+import pathlib
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
-from saydo.manipulation.motion_speed import checked_speed, reorientation_speed_settings, placement_speed_settings
+from saydo.manipulation import motion_speed
 from tests.manipulation import test_operator_controls
 from tests.manipulation import test_reorientation_retry
 from tests.manipulation import test_placement
@@ -21,7 +21,7 @@ class SpeedConfigTests(unittest.TestCase):
         held = {'hold_id': 'preserve'}
         self.service.held_object = held
         revision = self.service.motion_speed_configuration()['revision']
-        with patch(
+        with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection',
             side_effect=AssertionError('no hardware'),
         ):
@@ -34,13 +34,13 @@ class SpeedConfigTests(unittest.TestCase):
         self.assertNotEqual(original['arm_speed_percent'], 20)
         self.assertFalse(result['motion_sent'])
         self.assertEqual(
-            reorientation_speed_settings(
+            motion_speed.reorientation_speed_settings(
                 current, {'arm_speed_percent': 5}
             )['arm_speed_percent'],
             20,
         )
         self.assertEqual(
-            placement_speed_settings(
+            motion_speed.placement_speed_settings(
                 current,
                 {'transfer_speed_percent': 10, 'descent_speed_percent': 5},
             ),
@@ -49,7 +49,7 @@ class SpeedConfigTests(unittest.TestCase):
         self.assertEqual(self.service.motion_speed_configuration()['value'], 20)
         with self.assertRaisesRegex(ValueError, '变化'):
             self.service.set_arm_speed(21, revision)
-        with patch(
+        with mock.patch(
             'saydo.manipulation.grasp_control.threading.Thread'
         ) as thread:
             self.service.start_reset('zero')
@@ -76,13 +76,15 @@ class SpeedConfigTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaises(BlockingIOError):
                 self.service.set_arm_speed(25, revision)
-        with patch.object(Path, 'replace', side_effect=OSError('disk full')):
+        with mock.patch.object(
+            pathlib.Path, 'replace', side_effect=OSError('disk full')
+        ):
             with self.assertRaises(OSError):
                 self.service.set_arm_speed(25, revision)
         self.assertEqual(self.path.read_bytes(), before)
         self.assertFalse(list(self.path.parent.glob('.speed-*')))
-        self.assertEqual(checked_speed(1), 1)
-        self.assertEqual(checked_speed(25), 25)
+        self.assertEqual(motion_speed.checked_speed(1), 1)
+        self.assertEqual(motion_speed.checked_speed(25), 25)
 
 
 class ReorientationSpeedTests(unittest.TestCase):
@@ -93,16 +95,14 @@ class ReorientationSpeedTests(unittest.TestCase):
     ):
         self.config['arm_speed_percent'] = 20
         self.path.write_text(json.dumps(self.config))
-        self.service.reorientation_hardware = Mock(
+        self.service.reorientation_hardware = mock.Mock(
             return_value=(self.arm, {'flange_T_grip_tcp': np.eye(4).tolist()})
         )
-        with patch(
-            'saydo.manipulation.reorientation_control.RobotClient'
-        ), patch(
-            'saydo.manipulation.reorientation_control.model_geometry',
+        with mock.patch('saydo.robot.grasp_robot.RobotClient'), mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.mesh,
-        ), patch(
-            'saydo.manipulation.reorientation_control.plan_reorientation',
+        ), mock.patch(
+            'saydo.manipulation.reorientation_geometry.plan_reorientation',
             return_value={'offset_distance_m': 0, 'waypoints': []},
         ) as plan:
             self.service.run_reorient(
@@ -142,18 +142,18 @@ class PlacementSpeedTests(unittest.TestCase):
             }
         )
         self.assertEqual(saved['settings']['transfer_speed_percent'], 20)
-        self.service.reorientation_hardware = Mock(
+        self.service.reorientation_hardware = mock.Mock(
             return_value=(self.arm, {'flange_T_grip_tcp': np.eye(4).tolist()})
         )
         mesh = {
             'model_sha256': self.held['model_sha256'],
             'vertices': np.asarray(self.vertices).tolist(),
         }
-        with patch('saydo.manipulation.placement_control.RobotClient'), patch(
-            'saydo.manipulation.placement_control.model_geometry',
+        with mock.patch('saydo.robot.grasp_robot.RobotClient'), mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=mesh,
-        ), patch(
-            'saydo.manipulation.placement_control.plan_placement',
+        ), mock.patch(
+            'saydo.manipulation.placement_geometry.plan_placement',
             return_value={},
         ) as plan:
             self.service.run_placement(

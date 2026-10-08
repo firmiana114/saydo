@@ -1,21 +1,20 @@
-from tests.task_runner.test_runner import mock_global_camera
+from tests.task_runner import test_runner
 import asyncio
 import copy
 import tempfile
 import unittest
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked, Cancelled
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from saydo.task_runner.tool_registry import validate
-from saydo.task_runner.planning_validation import PlanningArgumentError
-from tests.task_runner.test_runner import FakeLLM, call, end
-from tests.task_runner.test_object_motion import ObjectBackend
-from saydo.agent.client import BackendError
-from saydo.contracts.motion_contract import DEFAULT_GOAL, checked_goal, GoalArgumentError
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store
+from saydo.task_runner import tool_registry
+from saydo.task_runner import planning_validation
+from tests.task_runner import test_object_motion
+from saydo.agent import client
+from saydo.contracts import motion_contract
 
 GOAL = {
-    **copy.deepcopy(DEFAULT_GOAL),
+    **copy.deepcopy(motion_contract.DEFAULT_GOAL),
     'reference_frame': 'scene_object',
     'scene_id': 'a' * 32,
     'reference_instance_id': 'rack_1',
@@ -35,12 +34,12 @@ ARGS = {
 
 class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        mock_global_camera(self)
+        test_runner.mock_global_camera(self)
 
     def make(self, backend=None):
-        return RobotAdapter(
-            Config(api_key='test', poll_interval=.001),
-            backend or ObjectBackend(),
+        return robot_adapter.RobotAdapter(
+            config.Config(api_key='test', poll_interval=.001),
+            backend or test_object_motion.ObjectBackend(),
         )
 
     async def test_external_release_without_position_is_correctable_and_not_submitted(
@@ -70,12 +69,12 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         args['goal']['target_position_m'] = [0, 0, .002]
-        checked_goal(args['goal'], release=True)
+        motion_contract.checked_goal(args['goal'], release=True)
         args['goal']['target_position_m'] = None
         # Orientation-only held motion remains valid.
-        checked_goal(args['goal'], release=False)
+        motion_contract.checked_goal(args['goal'], release=False)
         # Explicit current-position release remains separate.
-        checked_goal(None, release=True)
+        motion_contract.checked_goal(None, release=True)
 
     async def test_real_failed_scene_arguments_correct_then_release_without_regrasp(
         self
@@ -83,14 +82,16 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
         adapter = self.make()
         fixed = copy.deepcopy(ARGS)
         fixed['goal']['reference_object_id'] = None
-        llm = FakeLLM(
-            call('plan_release', ARGS, 'bad'),
-            call('plan_release', fixed, 'fixed'),
-            call('execute_plan', {'plan_id': 'b' * 32}, 'release'),
-            end('succeeded', ['release']),
+        llm = test_runner.FakeLLM(
+            test_runner.call('plan_release', ARGS, 'bad'),
+            test_runner.call('plan_release', fixed, 'fixed'),
+            test_runner.call('execute_plan', {'plan_id': 'b' * 32}, 'release'),
+            test_runner.end('succeeded', ['release']),
         )
         with tempfile.TemporaryDirectory() as d:
-            runner = Runner(adapter.config, Store(d), llm, lambda: adapter)
+            runner = task_runner_runner.Runner(
+                adapter.config, store.Store(d), llm, lambda: adapter
+            )
             ident = runner.submit('继续放置已夹持物品')
             await runner.worker
             r = runner.store.get(ident)
@@ -139,14 +140,19 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['retry_budget']['planning_attempts'], n + 1)
         invalid = copy.deepcopy(ARGS)
         invalid['goal']['max_rotation_step_deg'] = 16
-        with self.assertRaises(PlanningArgumentError) as caught:
-            validate(call('plan_release', invalid)['output'][0], 'execute')
+        with self.assertRaises(
+            planning_validation.PlanningArgumentError
+        ) as caught:
+            tool_registry.validate(
+                test_runner.call('plan_release', invalid)['output'][0],
+                'execute',
+            )
         e = caught.exception
         result = await adapter.planning_argument_error(
             e.name, e.arguments, e.detail, cancel
         )
         self.assertEqual(result['retry_budget']['planning_attempts'], 5)
-        with self.assertRaisesRegex(Blocked, '规划5次'):
+        with self.assertRaisesRegex(robot_adapter.Blocked, '规划5次'):
             await adapter.execute(
                 'plan_held_object_motion',
                 {k: v for k, v in ARGS.items() if k != 'retreat_vector_base_m'},
@@ -166,13 +172,15 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
         invalid['goal']['target_position_m'] = ['bad', 0, 0]
         fixed = copy.deepcopy(ARGS)
         fixed['goal']['reference_object_id'] = None
-        llm = FakeLLM(
-            call('plan_release', invalid, 'bad'),
-            call('plan_release', fixed, 'good'),
-            end('answered', ['bad', 'good']),
+        llm = test_runner.FakeLLM(
+            test_runner.call('plan_release', invalid, 'bad'),
+            test_runner.call('plan_release', fixed, 'good'),
+            test_runner.end('answered', ['bad', 'good']),
         )
         with tempfile.TemporaryDirectory() as d:
-            runner = Runner(adapter.config, Store(d), llm, lambda: adapter)
+            runner = task_runner_runner.Runner(
+                adapter.config, store.Store(d), llm, lambda: adapter
+            )
             ident = runner.submit('仅规划')
             await runner.worker
             r = runner.store.get(ident)
@@ -210,7 +218,7 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
                 def request(path, value=None):
                     if value is not None:
                         backend.requests.append((path, copy.deepcopy(value)))
-                        raise BackendError(
+                        raise client.BackendError(
                             {
                                 'code': code,
                                 'message': 'goal字段需要修正',
@@ -218,7 +226,7 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
                             }
                         )
                     if path.startswith('/api/agent/tasks/'):
-                        raise BackendError({'code': 'TASK_NOT_FOUND'})
+                        raise client.BackendError({'code': 'TASK_NOT_FOUND'})
                     return original(path, value)
 
                 backend.request = request
@@ -241,7 +249,9 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertIsNone(adapter.active_request)
                 else:
-                    with self.assertRaises((Blocked, BackendError)):
+                    with self.assertRaises(
+                        (robot_adapter.Blocked, client.BackendError)
+                    ):
                         await adapter.execute(
                             'plan_release',
                             fixed,
@@ -263,7 +273,7 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
 
         def reject(path, value=None):
             if value is not None:
-                raise BackendError(
+                raise client.BackendError(
                     {
                         'code': 'INVALID_ARGUMENTS',
                         'message': 'actual motion rejected',
@@ -272,7 +282,7 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
             return original(path, value)
 
         adapter.backend.request = reject
-        with self.assertRaises(BackendError):
+        with self.assertRaises(client.BackendError):
             await adapter.execute(
                 'execute_plan',
                 {'plan_id': 'a' * 32},
@@ -283,35 +293,35 @@ class PlanningArgumentsTests(unittest.IsolatedAsyncioTestCase):
         cancel = asyncio.Event()
         cancel.set()
         count = len(adapter.backend.requests)
-        with self.assertRaises(Cancelled):
+        with self.assertRaises(robot_adapter.Cancelled):
             await adapter.planning_argument_error(
                 'plan_release', ARGS, {'message': 'error'}, cancel
             )
         self.assertEqual(len(adapter.backend.requests), count)
 
     def test_frame_rules_remain_strict_with_specific_hints(self):
-        with self.assertRaises(GoalArgumentError) as e:
-            checked_goal(GOAL, True)
+        with self.assertRaises(motion_contract.GoalArgumentError) as e:
+            motion_contract.checked_goal(GOAL, True)
         self.assertEqual(e.exception.field, 'goal.reference_object_id')
         self.assertIsNone(e.exception.expected)
         self.assertEqual(
-            checked_goal(
+            motion_contract.checked_goal(
                 {**GOAL, 'reference_object_id': None}, True
             )['reference_frame'],
             'scene_object',
         )
-        with self.assertRaises(GoalArgumentError):
-            checked_goal(
+        with self.assertRaises(motion_contract.GoalArgumentError):
+            motion_contract.checked_goal(
                 {
-                    **DEFAULT_GOAL,
+                    **motion_contract.DEFAULT_GOAL,
                     'reference_frame': 'tracked_object',
                     'target_position_m': [0, 0, .3],
                 }
             )
-        with self.assertRaises(GoalArgumentError):
-            checked_goal(
+        with self.assertRaises(motion_contract.GoalArgumentError):
+            motion_contract.checked_goal(
                 {
-                    **DEFAULT_GOAL,
+                    **motion_contract.DEFAULT_GOAL,
                     'reference_instance_id': 'stray',
                     'target_position_m': [0, 0, .3],
                 }

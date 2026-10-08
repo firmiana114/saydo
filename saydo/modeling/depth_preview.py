@@ -1,6 +1,6 @@
 """Fixed-scale depth visualization; numeric depth is never changed."""
 
-from pathlib import Path
+import pathlib
 
 import cv2
 import numpy as np
@@ -33,7 +33,7 @@ def export_previews(directory, bgr, depth_m):
     color = depth_color(depth_m)
     if bgr.shape != color.shape or bgr.dtype != np.uint8:
         raise ValueError('Expected uint8 BGR matching depth dimensions')
-    directory = Path(directory)
+    directory = pathlib.Path(directory)
     for name, data in [
         ('depth_color.png', color), ('preview.jpg', np.hstack([bgr, color]))
     ]:

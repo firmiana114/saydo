@@ -1,15 +1,15 @@
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
 
-from saydo.manipulation.grasp_control import GraspController
-from saydo.manipulation.gripper_diagnostics import CloseDiagnostics, MAX_SAMPLES, contact_failure_message
+from saydo.manipulation import grasp_control
+from saydo.manipulation import gripper_diagnostics
 from tests.manipulation import test_grasp
 
 
@@ -38,7 +38,7 @@ class ClosureDiagnosticsTests(unittest.TestCase):
     ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        root = Path(temp.name)
+        root = pathlib.Path(temp.name)
         config = test_grasp.GraspTests().config()
         config['gripper']['close_timeout_s'] = timeout
         cfg = root / 'grasp.json'
@@ -83,8 +83,10 @@ class ClosureDiagnosticsTests(unittest.TestCase):
                 }
             },
         }
-        service = GraspController(root, SimpleNamespace(), cfg)
-        robot = Mock()
+        service = grasp_control.GraspController(
+            root, types.SimpleNamespace(), cfg
+        )
+        robot = mock.Mock()
         closed = False
         index = 0
         force_calls = 0
@@ -140,17 +142,17 @@ class ClosureDiagnosticsTests(unittest.TestCase):
         robot.move_linear.side_effect = move
         robot.move_joint_pose.side_effect = move
         robot.stop.side_effect = stop
-        with patch(
-            'saydo.manipulation.grasp_control.RobotClient', return_value=robot
-        ), patch.object(
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
+        ), mock.patch.object(
             service, 'calibration', return_value=(handeye, tool)
-        ), patch.object(
+        ), mock.patch.object(
             service, 'paired_observation', return_value=(arm, observation)
-        ), patch.object(
+        ), mock.patch.object(
             service,
             'verify_motion_targets',
             return_value={'joint_travel_deg': 1},
-        ), patch('saydo.manipulation.grasp_control.wait_for_pose'):
+        ), mock.patch('saydo.robot.motion_validation.wait_for_pose'):
             service.run(observation)
         report = json.loads(
             next((root / 'work/grasp/jobs').glob('*.json')).read_text()
@@ -242,24 +244,29 @@ class ClosureDiagnosticsTests(unittest.TestCase):
 
     def test_sampling_is_bounded_but_terminal_sample_survives(self):
         report = {}
-        diag = CloseDiagnostics(
+        diag = gripper_diagnostics.CloseDiagnostics(
             report, test_grasp.GraspTests().config()['gripper']
         )
-        robot = Mock()
+        robot = mock.Mock()
         raw = state(dof_state=[1], pos=[500])
         robot.query.side_effect = lambda *_: {'state_info': raw}
-        for _ in range(MAX_SAMPLES + 4):
+        for _ in range(gripper_diagnostics.MAX_SAMPLES + 4):
             diag.sample(robot)
         raw.update(dof_state=[5], current=[999])
         sample = diag.sample(robot)
         diag.decision('fault', sample)
         raw['current'][0] = 0
-        self.assertEqual(len(diag.data['samples']), MAX_SAMPLES)
+        self.assertEqual(
+            len(diag.data['samples']), gripper_diagnostics.MAX_SAMPLES
+        )
         self.assertEqual(diag.data['samples_dropped'], 5)
         self.assertEqual(
             diag.data['decision']['sample']['state']['current'], [999]
         )
-        self.assertEqual(diag.data['last_sample']['sequence'], MAX_SAMPLES + 5)
+        self.assertEqual(
+            diag.data['last_sample']['sequence'],
+            gripper_diagnostics.MAX_SAMPLES + 5,
+        )
         json.dumps(report, allow_nan=False)
 
     def test_cancellation_keeps_last_feedback_and_stops_without_lifting(self):

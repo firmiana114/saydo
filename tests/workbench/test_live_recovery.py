@@ -1,9 +1,9 @@
-from pathlib import Path
+import pathlib
 import tempfile
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 from saydo.workbench import live_tracker
 
@@ -11,10 +11,10 @@ from saydo.workbench import live_tracker
 class RecoveryLifecycleTests(unittest.TestCase):
     def test_loss_requeues_latest_frame_and_pause_cancels_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             mesh = root / 'model.obj'
             mesh.write_text('# fixture for state-machine test\n')
-            args = SimpleNamespace(
+            args = types.SimpleNamespace(
                 mesh=mesh,
                 grasp_config=live_tracker.ROOT / 'config/grasp/trial.json',
                 serial='test',
@@ -22,7 +22,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
                 auto_recover=True,
                 recovery_interval=2.,
             )
-            with patch.object(live_tracker, 'ROOT', root):
+            with mock.patch.object(live_tracker, 'ROOT', root):
                 tracker = live_tracker.Tracker(args)
             tracker.state['model_ready'] = True
             tracker.latest = {'time': time.time(), 'sequence': 7}
@@ -47,10 +47,10 @@ class RecoveryLifecycleTests(unittest.TestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             mesh = root / 'model.obj'
             mesh.write_text('# fixture\n')
-            args = SimpleNamespace(
+            args = types.SimpleNamespace(
                 mesh=mesh,
                 grasp_config=live_tracker.ROOT / 'config/grasp/trial.json',
                 serial='test',
@@ -58,7 +58,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
                 auto_recover=True,
                 recovery_interval=0.,
             )
-            with patch.object(live_tracker, 'ROOT', root):
+            with mock.patch.object(live_tracker, 'ROOT', root):
                 tracker = live_tracker.Tracker(args)
             tracker.state['model_ready'] = True
             tracker.latest = {'time': time.time(), 'sequence': 7}

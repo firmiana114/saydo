@@ -1,9 +1,9 @@
 import copy
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 from tests.scene import test_scene_snapshot as fixtures
-from saydo.workbench.agent_api import AgentAPI
+from saydo.workbench import agent_api
 
 
 class SceneAPITests(unittest.TestCase):
@@ -16,7 +16,7 @@ class SceneAPITests(unittest.TestCase):
         token = self.root / 'token'
         token.write_text('x' * 48)
         token.chmod(0o600)
-        self.api = AgentAPI(self.tracker, token)
+        self.api = agent_api.AgentAPI(self.tracker, token)
 
     def capture(self):
         request = {
@@ -26,9 +26,11 @@ class SceneAPITests(unittest.TestCase):
                 'targets': fixtures.TARGETS, 'environment_static': True
             },
         }
-        with patch(
-            'saydo.scene.scene_control.RobotClient', return_value=self.robot
-        ), patch('saydo.scene.scene_control.check_camera_observation'):
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=self.robot
+        ), mock.patch(
+            'saydo.perception.camera_checks.check_camera_observation'
+        ):
             task = self.api.start(request)
             self.service.thread.join(3)
         task = self.api.get_task(request['request_id'])
@@ -47,7 +49,7 @@ class SceneAPITests(unittest.TestCase):
             self.api.status()['grasp'],
             'status must not expose obsolete capture-time instance states',
         )
-        self.service.run = Mock(
+        self.service.run = mock.Mock(
             side_effect=lambda observation, preview=False: self.service.update(
                 state='preview', busy=False
             )
@@ -81,15 +83,17 @@ class SceneAPITests(unittest.TestCase):
                 'targets': fixtures.TARGETS, 'environment_static': True
             },
         }
-        with patch(
-            'saydo.scene.scene_control.RobotClient', return_value=self.robot
-        ), patch('saydo.scene.scene_control.check_camera_observation'):
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=self.robot
+        ), mock.patch(
+            'saydo.perception.camera_checks.check_camera_observation'
+        ):
             self.api.start(request)
             self.service.thread.join(3)
         self.assertEqual(
             self.api.get_task(request['request_id'])['state'], 'failed'
         )
-        self.service.run = Mock()
+        self.service.run = mock.Mock()
         task = self.api.start(
             {
                 'operation': 'grasp',

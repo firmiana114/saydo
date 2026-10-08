@@ -1,14 +1,14 @@
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest import mock
 import numpy as np
 from scipy.spatial.transform import Rotation
-from saydo.geometry.grasp_geometry import plan_grasp, checked_tcp_offset
-from saydo.objects.grasp_library import checked_overrides, effective_config, effective_parameters, GraspLibrary, revision
-from scripts.rebind_tool_grasps import rebind_grasps, updated_tool_config
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
+from scripts import rebind_tool_grasps
 from tests.objects import test_grasp_library
 
 
@@ -32,12 +32,15 @@ class OffsetTests(unittest.TestCase):
             [0, 0, .30001],
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                checked_overrides({'tcp_offset_m': bad})
-        self.assertEqual(checked_tcp_offset([-.3, 0, .3]), [-.3, 0, .3])
+                grasp_library.checked_overrides({'tcp_offset_m': bad})
+        self.assertEqual(
+            grasp_geometry.checked_tcp_offset([-.3, 0, .3]), [-.3, 0, .3]
+        )
         self.config['tcp_offset_m'] = [.1, .1, .1]
         entry = {'overrides': {'force_target_raw': 30, 'open_position': 500}}
         self.assertEqual(
-            effective_config(self.config, entry)['tcp_offset_m'], [0, 0, 0]
+            grasp_library.effective_config(self.config, entry)['tcp_offset_m'],
+            [0, 0, 0],
         )
         self.assertEqual(self.config['tcp_offset_m'], [.1, .1, .1])
 
@@ -53,9 +56,9 @@ class OffsetTests(unittest.TestCase):
             'object_R_tcp': rotation.tolist(),
             'grasp_point_object_m': [.01, -.02, .03],
         }
-        baseline = plan_grasp(arm['pose'], base, profile, config)
+        baseline = grasp_geometry.plan_grasp(arm['pose'], base, profile, config)
         offset = [.005, -.008, -.03]
-        plan = plan_grasp(
+        plan = grasp_geometry.plan_grasp(
             arm['pose'],
             base,
             profile,
@@ -83,7 +86,7 @@ class OffsetTests(unittest.TestCase):
         saved = self.save(overrides={'tcp_offset_m': [0, 0, 0]})
         ident = saved['saved_id']
         args = self.candidate_args()
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             return_value={'joint_travel_deg': 1}
         )
         before = self.library.object('cup')['grasps'][0]['profile']
@@ -117,7 +120,7 @@ class RebindTests(unittest.TestCase):
         old = {'tool_name': 'grip_tcp', 'pose': [0, 0, 190500, 0, 0, 2611]}
         new = {**old, 'pose': [0, 0, 222500, 0, 0, 2611]}
         with tempfile.TemporaryDirectory() as d:
-            lib = GraspLibrary(Path(d))
+            lib = grasp_library.GraspLibrary(pathlib.Path(d))
             entry = {
                 'id': 'g',
                 'name': '保留',
@@ -135,13 +138,18 @@ class RebindTests(unittest.TestCase):
                 'selected_id': 'g',
                 'grasps': [entry],
             }
-            lib.write_object('cup', value, revision(lib.object('cup')))
+            lib.write_object(
+                'cup', value, grasp_library.revision(lib.object('cup'))
+            )
             before = lib.object_path('cup').read_bytes()
             self.assertEqual(
-                rebind_grasps(lib, old, new)['grasps_to_rebind'], 1
+                rebind_tool_grasps.rebind_grasps(lib, old, new)[
+                    'grasps_to_rebind'
+                ],
+                1,
             )
             self.assertEqual(lib.object_path('cup').read_bytes(), before)
-            rebind_grasps(lib, old, new, True)
+            rebind_tool_grasps.rebind_grasps(lib, old, new, True)
             result = lib.object('cup')
             g = result['grasps'][0]
             for key in [
@@ -166,9 +174,14 @@ class RebindTests(unittest.TestCase):
                 )
             )
             g['overrides']['tcp_offset_m'] = [0, 0, -.02]
-            lib.write_object('cup', result, revision(lib.object('cup')))
+            lib.write_object(
+                'cup', result, grasp_library.revision(lib.object('cup'))
+            )
             self.assertEqual(
-                rebind_grasps(lib, old, new, True)['files_to_write'], 0
+                rebind_tool_grasps.rebind_grasps(
+                    lib, old, new, True
+                )['files_to_write'],
+                0,
             )
             self.assertEqual(
                 lib.object('cup')['grasps'][0]['overrides']['tcp_offset_m'],
@@ -179,10 +192,10 @@ class RebindTests(unittest.TestCase):
             lib.write_object(
                 'wrong',
                 {**value, 'grasps': [wrong]},
-                revision(lib.object('wrong')),
+                grasp_library.revision(lib.object('wrong')),
             )
             with self.assertRaisesRegex(ValueError, '不一致'):
-                rebind_grasps(lib, old, new, True)
+                rebind_tool_grasps.rebind_grasps(lib, old, new, True)
 
     def test_tool_snapshot_updates_transform_load_and_provenance_without_mutating_old(
         self
@@ -206,7 +219,7 @@ class RebindTests(unittest.TestCase):
             'payload': 1146.8065185546875,
             'position': [-15000, 8000, 55000],
         }
-        result = updated_tool_config(
+        result = rebind_tool_grasps.updated_tool_config(
             previous, new, 'work/readback.json', 'hash', 'date'
         )
         self.assertEqual(previous, before)
@@ -225,7 +238,9 @@ class RebindTests(unittest.TestCase):
         changed = copy.deepcopy(new)
         changed['pose'][5] += 1
         with self.assertRaises(ValueError):
-            updated_tool_config(previous, changed, 'p', 'h', 'date')
+            rebind_tool_grasps.updated_tool_config(
+                previous, changed, 'p', 'h', 'date'
+            )
 
 
 if __name__ == '__main__':

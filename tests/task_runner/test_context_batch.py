@@ -2,19 +2,19 @@ import asyncio
 import copy
 import json
 import unittest
-from unittest.mock import AsyncMock
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, model_result
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.tool_registry import validate
+from unittest import mock
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import runner
+from saydo.task_runner import tool_registry
 
 
 class ContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_batch_only_reads_and_returns_image_for_existing_pipeline(
         self
     ):
-        adapter = RobotAdapter(Config(api_key='test'))
-        adapter.request = AsyncMock(return_value={'ok': True})
+        adapter = robot_adapter.RobotAdapter(config.Config(api_key='test'))
+        adapter.request = mock.AsyncMock(return_value={'ok': True})
         args = {
             'object_ids': ['tube', 'rack'],
             'include_profiles': True,
@@ -22,7 +22,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             'include_frame': True,
             'scene_id': 'scene',
         }
-        validate(
+        tool_registry.validate(
             {
                 'type': 'function_call',
                 'call_id': 'c',
@@ -53,7 +53,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
                 'mime_type': 'image/jpeg',
                 'captured_at': i,
             }
-            Runner.append_result(
+            runner.Runner.append_result(
                 history,
                 str(i),
                 'get_task_context',
@@ -94,7 +94,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
         before = copy.deepcopy(value)
-        result = model_result('plan_held_object_motion', value)
+        result = robot_adapter.model_result('plan_held_object_motion', value)
         self.assertEqual(value, before)
         self.assertNotIn('object_motion_plan', result['status']['grasp'])
         p = result['task']['result']['object_motion_plan']
@@ -104,4 +104,6 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result['features'][-1]['position_object_m'], [119, 0, 0]
         )
-        self.assertEqual(model_result('get_task_diagnostics', value), value)
+        self.assertEqual(
+            robot_adapter.model_result('get_task_diagnostics', value), value
+        )

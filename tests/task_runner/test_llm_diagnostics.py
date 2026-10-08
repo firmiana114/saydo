@@ -1,18 +1,18 @@
 import asyncio
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 import httpx
-from saydo.task_runner.config import Config
-from saydo.task_runner.llm_client import LLMClient, LLMError
-from saydo.task_runner.llm_diagnostics import RequestDiagnostics
-from saydo.task_runner.robot_adapter import model_result
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from tests.task_runner.test_runner import FakeAdapter
+from saydo.task_runner import config
+from saydo.task_runner import llm_client
+from saydo.task_runner import llm_diagnostics
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store as task_runner_store
+from tests.task_runner import test_runner
 
 OK = {
     'status': 'completed',
@@ -45,15 +45,15 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     async def invoke(self, handler, timeout=1):
         rows = []
         base = httpx.AsyncClient
-        with patch(
+        with mock.patch(
             'saydo.task_runner.llm_client.httpx.AsyncClient',
             side_effect=lambda **kw: base(
                 transport=httpx.MockTransport(handler), **kw
             ),
         ):
             try:
-                value = await LLMClient(
-                    Config(api_key='SECRET', llm_timeout=timeout)
+                value = await llm_client.LLMClient(
+                    config.Config(api_key='SECRET', llm_timeout=timeout)
                 ).generate(
                     [],
                     [],
@@ -118,7 +118,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.2)
 
         result, rows = await self.invoke(handle, .02)
-        self.assertIsInstance(result, LLMError)
+        self.assertIsInstance(result, llm_client.LLMError)
         self.assertIn('等待响应头', str(result))
         self.assertEqual(rows[-1]['exception_type'], 'TimeoutError')
         self.assertEqual(rows[-1]['phase'], 'waiting_headers')
@@ -134,7 +134,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         result, rows = await self.invoke(
             lambda r: httpx.Response(200, stream=SlowBody()), .02
         )
-        self.assertIsInstance(result, LLMError)
+        self.assertIsInstance(result, llm_client.LLMError)
         self.assertIn('读取响应正文', str(result))
         self.assertEqual(rows[-1]['response_bytes'], 1)
         self.assertIn('first_byte_s', rows[-1])
@@ -177,7 +177,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                     headers={'x-request-id': 'bad token with spaces'},
                 )
             )
-            self.assertIsInstance(result, LLMError)
+            self.assertIsInstance(result, llm_client.LLMError)
             self.assertEqual(rows[-1]['http_status'], status)
             self.assertEqual(rows[-1]['outcome'], 'failed')
             self.assertNotIn('provider_request_id', rows[-1])
@@ -193,7 +193,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             'input': [],
             'tools': [],
         }
-        d = RequestDiagnostics(payload, b'{}', 90, True)
+        d = llm_diagnostics.RequestDiagnostics(payload, b'{}', 90, True)
         await d.trace(
             'http11.send_request_body.complete', {'authorization': 'SECRET'}
         )
@@ -209,10 +209,14 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as directory:
-            c = Config(api_key='SECRET', mode='read_only', llm_timeout=.02)
-            store = Store(directory)
-            adapter = FakeAdapter()
-            runner = Runner(c, store, adapter_factory=lambda: adapter)
+            c = config.Config(
+                api_key='SECRET', mode='read_only', llm_timeout=.02
+            )
+            store = task_runner_store.Store(directory)
+            adapter = test_runner.FakeAdapter()
+            runner = task_runner_runner.Runner(
+                c, store, adapter_factory=lambda: adapter
+            )
             base = httpx.AsyncClient
 
             async def handle(request):
@@ -221,7 +225,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await asyncio.sleep(.2)
 
-            with patch(
+            with mock.patch(
                 'saydo.task_runner.llm_client.httpx.AsyncClient',
                 side_effect=lambda **kw: base(
                     transport=httpx.MockTransport(handle), **kw
@@ -280,7 +284,9 @@ class ContextTests(unittest.TestCase):
         result = self.fixture()
         original = copy.deepcopy(result)
         history = []
-        saved = Runner.append_result(history, 'c', 'grasp', result)
+        saved = task_runner_runner.Runner.append_result(
+            history, 'c', 'grasp', result
+        )
         small = json.loads(history[0]['output'])
         self.assertEqual(result, original)
         self.assertEqual(saved, original)
@@ -303,22 +309,30 @@ class ContextTests(unittest.TestCase):
         result = self.fixture()
         result['task']['state'] = 'failed'
         result['verified'] = False
-        self.assertEqual(model_result('grasp', result)['task'], result['task'])
-        self.assertEqual(model_result('get_task_diagnostics', result), result)
+        self.assertEqual(
+            robot_adapter.model_result('grasp', result)['task'], result['task']
+        )
+        self.assertEqual(
+            robot_adapter.model_result('get_task_diagnostics', result), result
+        )
         for state in ('preview', 'object_motion_planned', 'failed'):
             status = {
                 'grasp': {
                     'state': state, 'object_motion_plan': {'plan_id': 'pending'}
                 }
             }
-            self.assertEqual(model_result('get_status', status), status)
+            self.assertEqual(
+                robot_adapter.model_result('get_status', status), status
+            )
         result['task']['result']['object_motion_plan'] = {
             'plan_id': 'p',
             'goal': {'target_position_m': [.3, 0, .3]},
             'validation_scope': {'environment_collision_checked': False},
         }
         self.assertEqual(
-            model_result('plan_held_object_motion', result)['task'],
+            robot_adapter.model_result(
+                'plan_held_object_motion', result
+            )['task'],
             result['task'],
         )
 
@@ -328,13 +342,13 @@ class ContextTests(unittest.TestCase):
         result = self.fixture()
         result['status']['grasp']['held_object']['hold_id'] = 'changed'
         self.assertEqual(
-            model_result(
+            robot_adapter.model_result(
                 'grasp', result
             )['status']['grasp']['held_object']['hold_id'],
             'changed',
         )
         result['status']['grasp']['error'] = 'blocked'
-        initial = model_result(
+        initial = robot_adapter.model_result(
             'initial',
             {
                 'status': result['status'],

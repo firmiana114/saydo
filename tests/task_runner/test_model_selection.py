@@ -1,15 +1,15 @@
 import asyncio
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 import httpx
-from saydo.task_runner.config import Config, UI_MODELS, UI_REASONING_EFFORTS
-from saydo.task_runner.llm_client import LLMClient, ModelUnavailable
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from tests.task_runner.test_runner import FakeLLM, FakeAdapter, call, end
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import llm_client
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store
+from tests.task_runner import test_runner
 
 
 class SelectionTests(unittest.IsolatedAsyncioTestCase):
@@ -17,16 +17,21 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as directory:
-            config = Config(api_key='test', mode='read_only')
-            llm = FakeLLM(
+            config = task_runner_config.Config(api_key='test', mode='read_only')
+            llm = test_runner.FakeLLM(
                 *[
-                    end()
-                    for _ in range(len(UI_MODELS) * len(UI_REASONING_EFFORTS))
+                    test_runner.end()
+                    for _ in range(
+                        len(task_runner_config.UI_MODELS)
+                        * len(task_runner_config.UI_REASONING_EFFORTS)
+                    )
                 ]
             )
-            runner = Runner(config, Store(directory), llm, FakeAdapter)
-            for model in UI_MODELS:
-                for effort in UI_REASONING_EFFORTS:
+            runner = task_runner_runner.Runner(
+                config, store.Store(directory), llm, test_runner.FakeAdapter
+            )
+            for model in task_runner_config.UI_MODELS:
+                for effort in task_runner_config.UI_REASONING_EFFORTS:
                     ident = runner.submit(
                         '读取状态', model=model, reasoning_effort=effort
                     )
@@ -52,9 +57,14 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_selection_is_frozen_for_all_rounds(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = Config(api_key='test', mode='read_only')
-            llm = FakeLLM(call('get_status'), end('answered', ['call-1']))
-            runner = Runner(config, Store(directory), llm, FakeAdapter)
+            config = task_runner_config.Config(api_key='test', mode='read_only')
+            llm = test_runner.FakeLLM(
+                test_runner.call('get_status'),
+                test_runner.end('answered', ['call-1']),
+            )
+            runner = task_runner_runner.Runner(
+                config, store.Store(directory), llm, test_runner.FakeAdapter
+            )
             ident = runner.submit(
                 '读取', model='gpt-6-astra', reasoning_effort='high'
             )
@@ -69,9 +79,13 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_selection_disables_automatic_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = Config(api_key='test', fallback_model='gpt-6-luna')
-            llm = FakeLLM(ModelUnavailable('no channel'))
-            runner = Runner(config, Store(directory), llm, FakeAdapter)
+            config = task_runner_config.Config(
+                api_key='test', fallback_model='gpt-6-luna'
+            )
+            llm = test_runner.FakeLLM(llm_client.ModelUnavailable('no channel'))
+            runner = task_runner_runner.Runner(
+                config, store.Store(directory), llm, test_runner.FakeAdapter
+            )
             ident = runner.submit(
                 '查询', model='gpt-6-sol', reasoning_effort='low'
             )
@@ -81,8 +95,11 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_values_never_create_run(self):
         with tempfile.TemporaryDirectory() as directory:
-            runner = Runner(
-                Config(api_key='test'), Store(directory), FakeLLM(), FakeAdapter
+            runner = task_runner_runner.Runner(
+                task_runner_config.Config(api_key='test'),
+                store.Store(directory),
+                test_runner.FakeLLM(),
+                test_runner.FakeAdapter,
             )
             for options in (
                 {'model': 'gpt-6-terra'},
@@ -115,15 +132,15 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         client_type = httpx.AsyncClient
-        with patch(
+        with mock.patch(
             'saydo.task_runner.llm_client.httpx.AsyncClient',
             side_effect=lambda **kw: client_type(
                 transport=httpx.MockTransport(handle), **kw
             ),
         ):
-            await LLMClient(Config(api_key='secret')).generate(
-                [], [], 'gpt-5.5', 'test', reasoning_effort='high'
-            )
+            await llm_client.LLMClient(
+                task_runner_config.Config(api_key='secret')
+            ).generate([], [], 'gpt-5.5', 'test', reasoning_effort='high')
         self.assertEqual(sent[0]['model'], 'gpt-5.5')
         self.assertEqual(sent[0]['reasoning'], {'effort': 'high'})
         self.assertNotIn('reasoning_effort', sent[0])

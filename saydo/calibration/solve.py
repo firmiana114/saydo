@@ -7,12 +7,12 @@ import hashlib
 import itertools
 import json
 import math
-from pathlib import Path
+import pathlib
 import uuid
 
 import cv2
 import numpy as np
-from saydo.calibration.geometry import object_points, pose_matrix, zero_reference_frames
+from saydo.calibration import geometry
 
 from saydo import paths
 
@@ -123,7 +123,7 @@ def evaluate(samples, handeye, training_board_reference):
                 @ np.linalg.inv(rigid(sample['base_T_flange']))
                 @ training_board_reference
             )
-            points = object_points()
+            points = geometry.object_points()
             camera_points = (
                 (prediction[:3, :3] @ points.T).T + prediction[:3, 3]
             )
@@ -271,7 +271,7 @@ def load_dataset(session):
         if any(x != 0 for x in sample['camera']['distortion_coefficients']):
             raise ValueError('Unsupported nonzero distortion')
         preflight = sample['preflight']
-        zero_reference_frames(
+        geometry.zero_reference_frames(
             preflight['get_current_tool_frame'],
             preflight['get_current_work_frame'],
         )
@@ -295,7 +295,7 @@ def load_dataset(session):
         if (
             len(before) != 1
             or not np.allclose(
-                pose_matrix(before[0]['reply']['arm_state']['pose']),
+                geometry.pose_matrix(before[0]['reply']['arm_state']['pose']),
                 sample['base_T_flange'],
                 atol=1e-10,
             )
@@ -308,7 +308,7 @@ def load_dataset(session):
             rigid(sample['camera_T_board_candidate']),
         )
         projected = cv2.projectPoints(
-            object_points(),
+            geometry.object_points(),
             cv2.Rodrigues(c[:3, :3])[0],
             c[:3, 3],
             np.array(sample['camera']['K']),

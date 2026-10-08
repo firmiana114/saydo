@@ -3,7 +3,7 @@
 
 import argparse
 import json
-from pathlib import Path
+import pathlib
 import sys
 import time
 
@@ -17,8 +17,8 @@ ROOT = paths.ROOT
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--run', required=True, type=Path)
-    parser.add_argument('--segmentation', required=True, type=Path)
+    parser.add_argument('--run', required=True, type=pathlib.Path)
+    parser.add_argument('--segmentation', required=True, type=pathlib.Path)
     parser.add_argument('--session', default='tape_20260915')
     parser.add_argument('--rerank-topk', type=int, default=0)
     args = parser.parse_args()

@@ -4,13 +4,13 @@ import asyncio
 import copy
 import math
 import time
-from urllib.parse import quote
-from saydo.agent.client import RobotBackend, BackendError
-from saydo.agent.global_camera import observe_global, CameraUnavailable
-from saydo.contracts.observation import label_frame
-from saydo.task_runner.tool_registry import READS, ACTIONS, MOTIONS, VISION
-from saydo.task_runner.motion_retry import MotionRetry, RetryLimit
-from saydo.task_runner.planning_validation import READONLY_PLANNING, validate_planning_arguments, goal_error_detail
+import urllib.parse
+from saydo.agent import client
+from saydo.agent import global_camera
+from saydo.contracts import observation
+from saydo.task_runner import tool_registry
+from saydo.task_runner import motion_retry
+from saydo.task_runner import planning_validation
 
 
 class Blocked(RuntimeError):
@@ -57,7 +57,7 @@ class RobotAdapter:
     def __init__(self, config, backend=None):
         self.config = config
         self.backend = (
-            backend or RobotBackend(config.robot_url, config.token_file)
+            backend or client.RobotBackend(config.robot_url, config.token_file)
         )
         self.pending = set()
         self.session_id = None
@@ -66,7 +66,7 @@ class RobotAdapter:
         self.scene_ids = set()
         self.scene_corrections = 0
         self.held_scene_id = None
-        self.motion_retry = MotionRetry()
+        self.motion_retry = motion_retry.MotionRetry()
 
     async def request(self, path, value=None, cancelled=None):
         if cancelled is not None and cancelled.is_set():
@@ -168,7 +168,7 @@ class RobotAdapter:
         }
 
     async def planning_argument_error(self, name, args, detail, cancelled):
-        if name not in READONLY_PLANNING:
+        if name not in planning_validation.READONLY_PLANNING:
             raise Blocked('该工具不允许自动纠正后重试')
         if cancelled.is_set():
             raise Cancelled()
@@ -180,7 +180,7 @@ class RobotAdapter:
             self.motion_retry.before(
                 name, args, state['grasp'].get('held_object')
             )
-        except RetryLimit as e:
+        except motion_retry.RetryLimit as e:
             raise Blocked(str(e)) from e
         return self.argument_error_result(name, detail, state, 'local_schema')
 
@@ -189,9 +189,9 @@ class RobotAdapter:
             raise Cancelled()
         if name == 'observe_global':
             try:
-                result = await asyncio.to_thread(observe_global)
-            except CameraUnavailable as error:
-                raise BackendError(
+                result = await asyncio.to_thread(global_camera.observe_global)
+            except global_camera.CameraUnavailable as error:
+                raise client.BackendError(
                     {
                         'code': 'CAMERA_UNAVAILABLE',
                         'message': str(error),
@@ -201,7 +201,7 @@ class RobotAdapter:
                 ) from error
             if cancelled.is_set():
                 raise Cancelled()
-            return label_frame(result, 'observe_global')
+            return observation.label_frame(result, 'observe_global')
         if name == 'get_task_context':
             queries = []
             for object_id in args['object_ids']:
@@ -239,26 +239,33 @@ class RobotAdapter:
                 )
             )
             return dict(zip((key for key, _, _ in queries), values))
-        if name in READS:
-            path = '/api/agent/' + READS[name]
+        if name in tool_registry.READS:
+            path = '/api/agent/' + tool_registry.READS[name]
             if name in ('get_grasp_profiles', 'get_object_geometry'):
-                path += '?object_id=' + quote(args['object_id'], safe='')
+                path += (
+                    '?object_id='
+                    + urllib.parse.quote(args['object_id'], safe='')
+                )
             if name == 'get_scene_snapshot':
-                path += '?scene_id=' + quote(args['scene_id'], safe='')
+                path += (
+                    '?scene_id=' + urllib.parse.quote(args['scene_id'], safe='')
+                )
             if name == 'get_task_diagnostics':
-                path += '?task_id=' + quote(args['task_id'], safe='')
+                path += (
+                    '?task_id=' + urllib.parse.quote(args['task_id'], safe='')
+                )
             result = self.scene_view(
                 await self.request(path, cancelled=cancelled)
             )
             return (
-                label_frame(result, name)
+                observation.label_frame(result, name)
                 if name == 'get_camera_frame'
                 else result
             )
-        if name in VISION:
+        if name in tool_registry.VISION:
             await self.request(
                 '/api/agent/vision',
-                {'operation': VISION[name], 'arguments': args},
+                {'operation': tool_registry.VISION[name], 'arguments': args},
                 cancelled,
             )
             deadline = time.monotonic() + self.config.vision_timeout
@@ -287,7 +294,7 @@ class RobotAdapter:
                         try:
                             pose = await self.request('/api/agent/pose')
                             return {**state, 'pose': pose}
-                        except BackendError as error:
+                        except client.BackendError as error:
                             if error.payload.get('code') != 'POSE_NOT_READY':
                                 raise
                     if (
@@ -297,24 +304,27 @@ class RobotAdapter:
                         raise Blocked('跟踪初始化失败')
                 await asyncio.sleep(self.config.poll_interval)
             raise Blocked('等待模型或跟踪初始化超时；未发送机械臂动作')
-        if name not in ACTIONS:
+        if name not in tool_registry.ACTIONS:
             raise ValueError('不支持的工具')
         state = await self.status()
         self.check_idle(state)
         if cancelled.is_set():
             raise Cancelled()
-        if name in READONLY_PLANNING:
+        if name in planning_validation.READONLY_PLANNING:
             try:
                 self.motion_retry.before(
                     name, args, state['grasp'].get('held_object')
                 )
-            except RetryLimit as error:
+            except motion_retry.RetryLimit as error:
                 raise Blocked(str(error)) from error
             try:
-                validate_planning_arguments(name, args)
+                planning_validation.validate_planning_arguments(name, args)
             except ValueError as error:
                 return self.argument_error_result(
-                    name, goal_error_detail(error), state, 'local_semantics'
+                    name,
+                    planning_validation.goal_error_detail(error),
+                    state,
+                    'local_semantics',
                 )
         if (
             name
@@ -336,7 +346,7 @@ class RobotAdapter:
                 raise Blocked(
                     '物品、夹持关系或朝向版本已变化；先读取状态并重新规划'
                 )
-        if name in MOTIONS:
+        if name in tool_registry.MOTIONS:
             if (
                 self.config.mode != 'execute'
                 or state['grasp'].get('mode') != 'execute'
@@ -375,31 +385,31 @@ class RobotAdapter:
             }
         if cancelled.is_set():
             raise Cancelled()
-        if name not in READONLY_PLANNING:
+        if name not in planning_validation.READONLY_PLANNING:
             try:
                 self.motion_retry.before(
                     name, args, state['grasp'].get('held_object')
                 )
-            except RetryLimit as error:
+            except motion_retry.RetryLimit as error:
                 raise Blocked(str(error)) from error
         if name == 'capture_scene_snapshot':
             self.scene_ids.clear()
         self.active_request = request_id
-        self.motion_inflight = name in MOTIONS
+        self.motion_inflight = name in tool_registry.MOTIONS
         value = {
-            'operation': ACTIONS[name],
+            'operation': tool_registry.ACTIONS[name],
             'request_id': request_id,
             'arguments': args,
         }
         try:
             result = await self.request('/api/agent/tasks', value, cancelled)
-        except BackendError as error:
+        except client.BackendError as error:
             if error.payload.get('outcome_unknown'):
                 raise Blocked(
                     '后端报告请求结果未知，禁止自动纠错重试', uncertain=True
                 ) from error
             if (
-                name in READONLY_PLANNING
+                name in planning_validation.READONLY_PLANNING
                 and error.payload.get('code') == 'INVALID_ARGUMENTS'
                 and not error.payload.get('outcome_unknown')
             ):
@@ -445,7 +455,7 @@ class RobotAdapter:
             await asyncio.sleep(self.config.poll_interval)
             try:
                 result = await self.request('/api/agent/tasks/' + request_id)
-            except BackendError as error:
+            except client.BackendError as error:
                 raise Blocked(
                     '提交结果未知，按原编号查询仍失败；禁止换编号重试',
                     uncertain=True,
@@ -459,7 +469,7 @@ class RobotAdapter:
             raise Blocked('后端报告结果未知，需人工核对', uncertain=True)
         expected = (
             'completed'
-            if name in MOTIONS
+            if name in tool_registry.MOTIONS
             else {
                 'capture_scene_snapshot': 'scene_ready',
                 'preview_grasp': 'preview',
@@ -528,7 +538,7 @@ class RobotAdapter:
                     raise Blocked('恢复条件未通过', uncertain=True)
                 try:
                     self.motion_retry.recover(recovery)
-                except RetryLimit as error:
+                except motion_retry.RetryLimit as error:
                     raise Blocked(str(error)) from error
                 return {
                     'task': result,
@@ -595,7 +605,7 @@ class RobotAdapter:
         ):
             try:
                 self.motion_retry.plan(plan)
-            except RetryLimit as error:
+            except motion_retry.RetryLimit as error:
                 return {
                     'task': result,
                     'status': latest,
@@ -616,7 +626,7 @@ class RobotAdapter:
                 'task': result,
                 'status': latest,
                 'retry_budget': budget,
-                'verified': name in MOTIONS,
+                'verified': name in tool_registry.MOTIONS,
                 'verification_scope': (
                     'controller_feedback_only; not independent '
                     'contact/slip/visual verification'
@@ -914,7 +924,7 @@ class RobotAdapter:
                 task = await self.request(
                     '/api/agent/tasks/' + self.active_request
                 )
-            except BackendError as error:
+            except client.BackendError as error:
                 raise Blocked(
                     '停止已应答，但此前提交结果仍未知', uncertain=True
                 ) from error
@@ -961,7 +971,7 @@ def model_result(name, value):
         strip_history(controller)
     task = result.get('task')
     if (
-        name in MOTIONS
+        name in tool_registry.MOTIONS
         and isinstance(task, dict)
         and task.get('state') == 'completed'
         and result.get('verified') is True

@@ -5,7 +5,7 @@ import argparse
 import datetime
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import sys
 
 import cv2
@@ -89,7 +89,7 @@ def load_views(session, segmentation, heldout, width):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session', default='tape_20260915')
-    parser.add_argument('--segmentation', required=True, type=Path)
+    parser.add_argument('--segmentation', required=True, type=pathlib.Path)
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--steps', type=int, default=1000)
     parser.add_argument(
@@ -105,7 +105,7 @@ def main():
             'origin'
         ),
     )
-    parser.add_argument('--output', type=Path)
+    parser.add_argument('--output', type=pathlib.Path)
     parser.add_argument('--texture', action='store_true')
     parser.add_argument(
         '--include-rgb-only-rays',

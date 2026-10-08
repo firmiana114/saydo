@@ -6,7 +6,7 @@ import fcntl
 import json
 import logging
 import os
-from pathlib import Path
+import pathlib
 import re
 import signal
 import subprocess
@@ -15,7 +15,7 @@ import time
 import urllib.request
 
 # 本文件位于 <根目录>/scripts/，按路径直接运行，不依赖 saydo 包。
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST, PORT = '192.168.101.65', 8089
 RUNNER_URL = 'http://127.0.0.1:8091/api/task-runs'
 LIVE = ROOT / 'work/foundationpose_live'
@@ -29,7 +29,7 @@ TRACKER_ARGS = [
     '--serial',
     '405622073572',
     '--agent-token-file',
-    str(Path.home() / '.local/share/saydo-mcp/robot-backend-token'),
+    str(pathlib.Path.home() / '.local/share/saydo-mcp/robot-backend-token'),
     '--mesh',
     'work/object_models/transparent_test_tube_150mm/model/model.obj',
     '--auto-start',
@@ -103,7 +103,7 @@ def children(pid):
 
 
 def stop(pid, timeout=30):
-    command = Path(
+    command = pathlib.Path(
         '/proc/%d/cmdline' % pid
     ).read_bytes().replace(b'\0', b' ').decode(errors='replace')
     # 同时认得旧的启动方式（脚本路径）和新的启动方式（-m 模块名）。
@@ -117,7 +117,7 @@ def stop(pid, timeout=30):
     LOG.info('停止跟踪服务 PID %d（含子进程 %s）', pid, waiting[1:])
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
-    while any(Path('/proc/%d' % p).exists() for p in waiting):
+    while any(pathlib.Path('/proc/%d' % p).exists() for p in waiting):
         if time.monotonic() > deadline:
             raise RuntimeError(
                 '%d 秒内进程未退出，未强制结束，请人工检查：%s'

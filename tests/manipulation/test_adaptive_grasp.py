@@ -3,17 +3,17 @@
 import copy
 import json
 import math
-from pathlib import Path
+import pathlib
 import tempfile
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import controller_pose, pose_values, rotation_error, plan_grasp
-from saydo.manipulation.grasp_control import GraspController
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import grasp_control
 from tests.manipulation import test_grasp
 
 
@@ -39,7 +39,9 @@ class AdaptiveGraspTests(unittest.TestCase):
             'object_R_tcp': rotation,
             'grasp_point_object_m': [.02, 0, 0],
         }
-        plan = plan_grasp([0, 0, 200000, 0, 0, 0], obj, profile, config)
+        plan = grasp_geometry.plan_grasp(
+            [0, 0, 200000, 0, 0, 0], obj, profile, config
+        )
         np.testing.assert_allclose(
             plan['target_position_m'], [.1, .02, .2], atol=1e-9
         )
@@ -59,8 +61,10 @@ class AdaptiveGraspTests(unittest.TestCase):
         expected = obj[:3, :3] @ rotation
         for waypoint in plan['waypoints']:
             self.assertLess(
-                rotation_error(
-                    controller_pose(waypoint['controller_pose'])[:3, :3],
+                grasp_geometry.rotation_error(
+                    grasp_geometry.controller_pose(
+                        waypoint['controller_pose']
+                    )[:3, :3],
                     expected,
                 ),
                 .002,
@@ -75,14 +79,18 @@ class AdaptiveGraspTests(unittest.TestCase):
         ):
             profile = {**config['grasp_profile'], 'object_R_tcp': rotation}
             with self.assertRaises(ValueError):
-                plan_grasp([0, 0, 200000, 0, 0, 0], obj, profile, config)
+                grasp_geometry.plan_grasp(
+                    [0, 0, 200000, 0, 0, 0], obj, profile, config
+                )
         profile = {
             **config['grasp_profile'],
             'object_R_tcp': np.eye(3).tolist(),
             'approach_axis_tcp': [0, 0, 0],
         }
         with self.assertRaises(ValueError):
-            plan_grasp([0, 0, 200000, 0, 0, 0], obj, profile, config)
+            grasp_geometry.plan_grasp(
+                [0, 0, 200000, 0, 0, 0], obj, profile, config
+            )
 
     def test_pose_conversion_roundtrip_including_gimbal_lock(self):
         rng = np.random.default_rng(9)
@@ -91,15 +99,19 @@ class AdaptiveGraspTests(unittest.TestCase):
             + [[400, math.pi * 500, 700], [400, -math.pi * 500, 700]]
         )
         for angles_raw in angles:
-            T = controller_pose([100000, 200000, 300000, *angles_raw])
-            raw = pose_values(T) * [1e6, 1e6, 1e6, 1e3, 1e3, 1e3]
-            np.testing.assert_allclose(controller_pose(raw), T, atol=1e-8)
+            T = grasp_geometry.controller_pose(
+                [100000, 200000, 300000, *angles_raw]
+            )
+            raw = grasp_geometry.pose_values(T) * [1e6, 1e6, 1e6, 1e3, 1e3, 1e3]
+            np.testing.assert_allclose(
+                grasp_geometry.controller_pose(raw), T, atol=1e-8
+            )
 
     def test_teaching_saves_relative_pose_and_rejects_changed_model_or_tool(
         self
     ):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'config.json'
             config = self.config()
             cfg.write_text(json.dumps(config))
@@ -122,22 +134,22 @@ class AdaptiveGraspTests(unittest.TestCase):
                 'camera': {'K': np.eye(3).tolist()},
                 'flange_T_color_optical_camera': np.eye(4).tolist(),
             }
-            tracker = SimpleNamespace(
-                grasp_observation=Mock(return_value=observation)
+            tracker = types.SimpleNamespace(
+                grasp_observation=mock.Mock(return_value=observation)
             )
-            service = GraspController(root, tracker, cfg)
-            robot = Mock()
+            service = grasp_control.GraspController(root, tracker, cfg)
+            robot = mock.Mock()
             robot.query.side_effect = (
                 lambda q: raw if q == 'get_current_tool_frame' else {
                     'frame_name': 'Base', 'pose': [0] * 6
                 }
             )
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient',
+            with mock.patch(
+                'saydo.robot.grasp_robot.RobotClient',
                 return_value=robot,
-            ) as client, patch.object(
+            ) as client, mock.patch.object(
                 service, 'paired_observation', return_value=(arm, observation)
-            ), patch.object(
+            ), mock.patch.object(
                 service, 'calibration', return_value=(handeye, tool)
             ):
                 result = service.teach(
@@ -165,7 +177,7 @@ class AdaptiveGraspTests(unittest.TestCase):
                 robot.move_linear.assert_not_called()
                 robot.move_gripper.assert_not_called()
                 robot.set_register.assert_not_called()
-                fresh = GraspController(root, tracker, cfg)
+                fresh = grasp_control.GraspController(root, tracker, cfg)
                 self.assertEqual(
                     fresh.profile_for(config, observation, tool, handeye),
                     result['profile'],
@@ -192,7 +204,7 @@ class AdaptiveGraspTests(unittest.TestCase):
                 saved = (
                     root / 'work/object_models/cup/grasp_profiles.json'
                 ).read_bytes()
-                with patch.object(
+                with mock.patch.object(
                     service,
                     'check_cancel',
                     side_effect=ValueError('抓取已取消'),

@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import sys
 import time
 
@@ -18,7 +18,7 @@ MODEL_SHA256 = (
 
 
 def read_local_detection(directory):
-    path = Path(directory) / 'local_detection.json'
+    path = pathlib.Path(directory) / 'local_detection.json'
     if not path.exists():
         return None
     if path.is_symlink() or path.stat().st_size > 16384:
@@ -129,7 +129,7 @@ class LocalGroundingDetector:
     name = 'Grounding DINO Tiny'
 
     def __init__(self, root=ROOT):
-        self.root = Path(root)
+        self.root = pathlib.Path(root)
         self.processor = None
         self.model = None
 

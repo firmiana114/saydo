@@ -2,9 +2,9 @@
 
 import json
 from jsonschema import Draft202012Validator
-from saydo.contracts.motion_contract import GOAL_SCHEMA, VECTOR
-from saydo.contracts.scene_contract import TARGETS
-from saydo.task_runner.planning_validation import READONLY_PLANNING, PlanningArgumentError
+from saydo.contracts import motion_contract
+from saydo.contracts import scene_contract
+from saydo.task_runner import planning_validation
 
 STRING = {'type': 'string', 'minLength': 1, 'maxLength': 200}
 INT = {'type': 'integer', 'minimum': 0}
@@ -211,7 +211,7 @@ DEFINITIONS = {
             '后端重启/标定改变/30分钟过期失效。'
         ),
         {
-            'targets': TARGETS,
+            'targets': scene_contract.TARGETS,
             'environment_static': {'type': 'boolean', 'const': True},
         },
     ),
@@ -255,7 +255,7 @@ DEFINITIONS = {
             'object_id': STRING,
             'hold_id': STRING,
             'orientation_version': INT,
-            'goal': GOAL_SCHEMA,
+            'goal': motion_contract.GOAL_SCHEMA,
         },
     ),
     'plan_release': (
@@ -272,9 +272,9 @@ DEFINITIONS = {
             'object_id': STRING,
             'hold_id': STRING,
             'orientation_version': INT,
-            'goal': {**GOAL_SCHEMA, 'type': ['object', 'null']},
+            'goal': {**motion_contract.GOAL_SCHEMA, 'type': ['object', 'null']},
             'retreat_vector_base_m': {
-                **VECTOR,
+                **motion_contract.VECTOR,
                 'items': {'type': 'number', 'minimum': -.3, 'maximum': .3},
             },
         },
@@ -394,7 +394,10 @@ def validate(call, mode):
     validator = Draft202012Validator(schema(name)['parameters'])
     errors = list(validator.iter_errors(args))
     if errors:
-        if name in READONLY_PLANNING and isinstance(args, dict):
+        if (
+            name in planning_validation.READONLY_PLANNING
+            and isinstance(args, dict)
+        ):
             fields = [
                 {
                     'field': (
@@ -406,7 +409,7 @@ def validate(call, mode):
                 }
                 for e in errors[:5]
             ]
-            raise PlanningArgumentError(
+            raise planning_validation.PlanningArgumentError(
                 name,
                 args,
                 {

@@ -1,25 +1,25 @@
-from pathlib import Path
+import pathlib
 import json
 import tempfile
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 import cv2
 import numpy as np
 
 from saydo.workbench import live_tracker
-from saydo.perception.live_checks import catchup_frame
+from saydo.perception import live_checks
 
 
 class LivePreviewTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        root = Path(self.directory.name)
+        root = pathlib.Path(self.directory.name)
         mesh = root / 'model.obj'
         mesh.write_text('# fixture\n')
-        args = SimpleNamespace(
+        args = types.SimpleNamespace(
             mesh=mesh,
             grasp_config=live_tracker.ROOT / 'config/grasp/trial.json',
             serial='test',
@@ -27,7 +27,7 @@ class LivePreviewTests(unittest.TestCase):
             auto_recover=True,
             recovery_interval=0.,
         )
-        with patch.object(live_tracker, 'ROOT', root):
+        with mock.patch.object(live_tracker, 'ROOT', root):
             self.tracker = live_tracker.Tracker(args)
 
     def tearDown(self):
@@ -85,7 +85,9 @@ class LivePreviewTests(unittest.TestCase):
     def test_missing_history_and_user_pause_do_not_publish_old_pose(self):
         now = time.time()
         with self.assertRaises(ValueError):
-            catchup_frame([{'sequence': 20, 'time': now}], 1, now - 4)
+            live_checks.catchup_frame(
+                [{'sequence': 20, 'time': now}], 1, now - 4
+            )
         t = self.tracker
         frames = [{'sequence': i, 'time': now - 1 + i * .1} for i in range(11)]
         t.history.extend(frames)
@@ -119,9 +121,9 @@ class LivePreviewTests(unittest.TestCase):
                 )
             return pose
 
-        with patch.object(
+        with mock.patch.object(
             live_tracker.time, 'time', side_effect=lambda: clock[0]
-        ), patch.object(
+        ), mock.patch.object(
             live_tracker.time, 'perf_counter', side_effect=lambda: clock[0]
         ):
             result = t.catch_up(0, frame, np.eye(4), advance)
@@ -184,7 +186,7 @@ class LivePreviewTests(unittest.TestCase):
             pose_frame_at=100.,
             object_id='cup',
         )
-        with patch.object(live_tracker.time, 'time', return_value=100.1):
+        with mock.patch.object(live_tracker.time, 'time', return_value=100.1):
             for times, accepted in [
                 ([99., 99.25, 99.5, 99.75, 100.], True),
                 ([99.25, 99.5, 99.75, 100.], False),
@@ -232,7 +234,7 @@ class LivePreviewTests(unittest.TestCase):
                 }
             )
         self.assertEqual(t.grasp_observation()['object_id'], 'bottle')
-        with patch.object(live_tracker.time, 'time', return_value=now):
+        with mock.patch.object(live_tracker.time, 'time', return_value=now):
             for age in (.4, .5, .501):
                 t.state['pose_frame_at'] = now - age
                 t.pose_history.clear()

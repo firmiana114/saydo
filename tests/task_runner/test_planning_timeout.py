@@ -1,17 +1,19 @@
 import asyncio
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import AsyncMock
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.robot_adapter import RobotAdapter, Cancelled
-from saydo.task_runner.config import Config
-from tests.task_runner.test_adapter import Backend
+from unittest import mock
+from saydo.task_runner import runner
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import config as task_runner_config
+from tests.task_runner import test_adapter
 
 
 class PlanningTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_planning_wait_exceeds_action_timeout_and_can_cancel(self):
-        config = Config(api_key='test', action_timeout=.005, poll_interval=.002)
-        backend = Backend()
+        config = task_runner_config.Config(
+            api_key='test', action_timeout=.005, poll_interval=.002
+        )
+        backend = test_adapter.Backend()
         backend.state['grasp']['held_object'] = {
             'object_id': 'tube', 'hold_id': 'h', 'orientation_version': 0
         }
@@ -34,7 +36,7 @@ class PlanningTimeoutTests(unittest.IsolatedAsyncioTestCase):
             return original(path, value)
 
         backend.request = request
-        adapter = RobotAdapter(config, backend)
+        adapter = robot_adapter.RobotAdapter(config, backend)
         args = {
             'object_id': 'tube',
             'hold_id': 'h',
@@ -48,7 +50,7 @@ class PlanningTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['error']['code'], 'PLAN_FAILED')
         self.assertGreaterEqual(len(polls), 8)
         cancel.set()
-        with self.assertRaises(Cancelled):
+        with self.assertRaises(robot_adapter.Cancelled):
             await adapter.execute(
                 'plan_release', args, 'next', cancel, lambda _: None
             )
@@ -58,8 +60,10 @@ class PlanningTimeoutTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.04)
             return {'ok': True}
 
-        host = SimpleNamespace(
-            adapter=SimpleNamespace(execute=AsyncMock(side_effect=slow)),
+        host = types.SimpleNamespace(
+            adapter=types.SimpleNamespace(
+                execute=mock.AsyncMock(side_effect=slow)
+            ),
             cancelled=asyncio.Event(),
             progress=lambda _: None,
         )
@@ -67,7 +71,9 @@ class PlanningTimeoutTests(unittest.IsolatedAsyncioTestCase):
             host.run_deadline = timer
             self.assertTrue(
                 (
-                    await Runner.execute_tool(host, 'plan_release', {}, 'id')
+                    await runner.Runner.execute_tool(
+                        host, 'plan_release', {}, 'id'
+                    )
                 )['ok']
             )
             self.assertGreater(
@@ -76,4 +82,4 @@ class PlanningTimeoutTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             async with asyncio.timeout(.01) as timer:
                 host.run_deadline = timer
-                await Runner.execute_tool(host, 'execute_plan', {}, 'id')
+                await runner.Runner.execute_tool(host, 'execute_plan', {}, 'id')

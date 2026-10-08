@@ -1,13 +1,13 @@
 import base64
 import http.client
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock, patch
-from http.server import ThreadingHTTPServer
+from unittest import mock
+import http.server
 
 from saydo.camera_monitor import server as monitor
 
@@ -29,7 +29,7 @@ def tracker_frame(serial='435123456789', age=0):
 class TestCamera(unittest.TestCase):
     def test_tracker_reuses_raw_frame_without_device_access(self):
         camera = monitor.Camera(
-            1280, 720, 15, serial='435123456789', tracker=Mock()
+            1280, 720, 15, serial='435123456789', tracker=mock.Mock()
         )
         stop = threading.Event()
         data = tracker_frame()
@@ -38,7 +38,7 @@ class TestCamera(unittest.TestCase):
             monitor.Camera.publish(camera, *args)
             stop.set()
 
-        with patch.object(camera, 'publish', side_effect=publish):
+        with mock.patch.object(camera, 'publish', side_effect=publish):
             camera.capture_tracker(data, stop)
         self.assertEqual(camera.source, 'tracker')
         self.assertEqual(camera.requested_size, (1280, 720))
@@ -53,16 +53,16 @@ class TestCamera(unittest.TestCase):
             {**tracker_frame(), 'mime_type': 'image/png'},
         ]:
             camera = monitor.Camera(
-                1280, 720, 15, serial='435123456789', tracker=Mock()
+                1280, 720, 15, serial='435123456789', tracker=mock.Mock()
             )
             with self.assertRaises((RuntimeError, ValueError)):
                 camera.capture_tracker(data, threading.Event())
             self.assertIsNone(camera.jpeg)
 
     def test_tracker_failure_does_not_open_device_or_issue_writes(self):
-        from saydo.agent.client import BackendError
-        tracker = Mock()
-        tracker.request.side_effect = BackendError(
+        from saydo.agent import client
+        tracker = mock.Mock()
+        tracker.request.side_effect = client.BackendError(
             {'code': 'CAMERA_UNAVAILABLE', 'message': 'stale'}
         )
         camera = monitor.Camera(1280, 720, 15, tracker=tracker)
@@ -73,7 +73,7 @@ class TestCamera(unittest.TestCase):
 
     def test_subscribers_share_worker_and_limit_is_per_camera(self):
         camera = monitor.Camera(1280, 720, 15)
-        with patch.object(
+        with mock.patch.object(
             camera, 'capture', side_effect=lambda epoch, stop: stop.wait(2)
         ):
             epochs = [camera.subscribe() for _ in range(4)]
@@ -104,8 +104,8 @@ class TestCamera(unittest.TestCase):
 
     def test_device_binding_and_independent_lock_release_on_error(self):
         camera = monitor.Camera(1280, 720, 15, 'd405', '405123456789')
-        rs = Mock()
-        device = Mock()
+        rs = mock.Mock()
+        device = mock.Mock()
         device.get_info.side_effect = lambda key: '405123456789' if key == rs.camera_info.serial_number else 'RealSense D405'
         rs.context.return_value.query_devices.return_value = [device]
         rs.pipeline.return_value.start.return_value.get_device.return_value = (
@@ -114,12 +114,13 @@ class TestCamera(unittest.TestCase):
         rs.pipeline.return_value.wait_for_frames.side_effect = RuntimeError(
             'fixture ended'
         )
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            monitor, 'PROJECT', Path(directory)
-        ), patch.object(
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            monitor, 'PROJECT', pathlib.Path(directory)
+        ), mock.patch.object(
             monitor, 'camera_users', return_value=[]
-        ) as users, patch.dict(
-            'sys.modules', {'pyrealsense2': rs, 'cv2': Mock(), 'numpy': Mock()}
+        ) as users, mock.patch.dict(
+            'sys.modules',
+            {'pyrealsense2': rs, 'cv2': mock.Mock(), 'numpy': mock.Mock()},
         ):
             camera.capture(1, threading.Event())
         rs.config.return_value.enable_device.assert_called_once_with(
@@ -132,12 +133,13 @@ class TestCamera(unittest.TestCase):
 
     def test_multiple_devices_never_guess_serial(self):
         camera = monitor.Camera(1280, 720, 15, 'd405')
-        rs = Mock()
-        device = Mock()
+        rs = mock.Mock()
+        device = mock.Mock()
         device.get_info.return_value = 'RealSense D405'
         rs.context.return_value.query_devices.return_value = [device, device]
-        with patch.dict(
-            'sys.modules', {'pyrealsense2': rs, 'cv2': Mock(), 'numpy': Mock()}
+        with mock.patch.dict(
+            'sys.modules',
+            {'pyrealsense2': rs, 'cv2': mock.Mock(), 'numpy': mock.Mock()},
         ):
             camera.capture(1, threading.Event())
         self.assertEqual(camera.state, 'error')
@@ -147,9 +149,9 @@ class TestCamera(unittest.TestCase):
         self
     ):
         camera = monitor.Camera(1280, 720, 15, 'd435i', '435123456789')
-        rs = Mock()
-        device = Mock()
-        color = Mock()
+        rs = mock.Mock()
+        device = mock.Mock()
+        color = mock.Mock()
         clock = [100.]
         device.get_info.side_effect = lambda key: '435123456789' if key == rs.camera_info.serial_number else 'RealSense D435I'
         rs.context.return_value.query_devices.return_value = [device]
@@ -160,8 +162,8 @@ class TestCamera(unittest.TestCase):
         color.get_frame_number.return_value = 2
         color.get_width.return_value = 1280
         color.get_height.return_value = 720
-        cv = Mock()
-        encoded = Mock()
+        cv = mock.Mock()
+        encoded = mock.Mock()
         encoded.tobytes.return_value = JPEG
         attempts = [0]
 
@@ -178,11 +180,13 @@ class TestCamera(unittest.TestCase):
             self.assertEqual(attempts[0], 2)
             stop.set()
 
-        with patch.dict(
-            'sys.modules', {'pyrealsense2': rs, 'cv2': cv, 'numpy': Mock()}
-        ), patch.object(monitor, 'camera_users', return_value=[]), patch.object(
+        with mock.patch.dict(
+            'sys.modules', {'pyrealsense2': rs, 'cv2': cv, 'numpy': mock.Mock()}
+        ), mock.patch.object(
+            monitor, 'camera_users', return_value=[]
+        ), mock.patch.object(
             monitor.time, 'time', side_effect=lambda: clock[0]
-        ), patch.object(camera, 'publish', side_effect=publish) as output:
+        ), mock.patch.object(camera, 'publish', side_effect=publish) as output:
             camera.capture(1, stop)
         output.assert_called_once()
         self.assertIsNone(camera.error)
@@ -213,7 +217,9 @@ class FixtureCamera(monitor.Camera):
 
 class TestHTTP(unittest.TestCase):
     def setUp(self):
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), monitor.Handler)
+        self.server = http.server.ThreadingHTTPServer(
+            ('127.0.0.1', 0), monitor.Handler
+        )
         self.server.daemon_threads = True
         self.server.cameras = {
             'd435i': FixtureCamera(1280, 720, 15, 'd435i', '435123456789'),

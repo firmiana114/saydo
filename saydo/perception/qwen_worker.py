@@ -8,7 +8,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+import pathlib
 import signal
 import sys
 import time
@@ -50,7 +50,7 @@ def serve(config):
     )
     if free / 1024 ** 2 < minimum:
         raise RuntimeError('Insufficient free GPU memory for resident Qwen')
-    directory = Path(config['model_dir'])
+    directory = pathlib.Path(config['model_dir'])
     source = json.loads((directory / 'source.json').read_text())
     if source.get('revision') != REVISION:
         raise ValueError('Qwen checkpoint revision mismatch')
@@ -209,9 +209,9 @@ def serve(config):
 
 if __name__ == '__main__':
     try:
-        config = json.loads(Path(sys.argv[1]).read_text())
+        config = json.loads(pathlib.Path(sys.argv[1]).read_text())
         lock_path = (
-            Path(__file__).resolve().parents[2]
+            pathlib.Path(__file__).resolve().parents[2]
             / 'work/qwen_detection/worker.lock'
         )
         lock_path.parent.mkdir(parents=True, exist_ok=True)

@@ -3,7 +3,7 @@
 import copy
 import time
 
-from saydo.geometry.grasp_geometry import contact_result
+from saydo.geometry import grasp_geometry
 
 MAX_SAMPLES = 128
 
@@ -109,7 +109,7 @@ class CloseDiagnostics:
                 robot.query('get_rm_plus_state_info')['state_info']
             )
             sample['received'] = self.stamp()
-            sample['classification'] = contact_result(
+            sample['classification'] = grasp_geometry.contact_result(
                 sample['state'], self.gripper
             )
         except Exception as error:

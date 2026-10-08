@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import transform, rotation_error
+from saydo.geometry import grasp_geometry
 
 
 HORIZONTAL_AXIS_TOLERANCE_DEG = 10.
@@ -33,7 +33,7 @@ def axis_rotation(axis):
 
 
 def canonical_pose(pose, mode='6d'):
-    result = transform(pose).copy()
+    result = grasp_geometry.transform(pose).copy()
     if mode == '5d':
         result[:3, :3] = axis_rotation(result[:3, 2])
     return result
@@ -46,11 +46,11 @@ def object_rotation_error(a, b, mode='6d'):
                 np.clip(np.dot(np.asarray(a)[:, 2], np.asarray(b)[:, 2]), -1, 1)
             )
         )
-    return rotation_error(a, b)
+    return grasp_geometry.rotation_error(a, b)
 
 
 def pose_fields(pose, mode='6d'):
-    matrix = transform(pose)
+    matrix = grasp_geometry.transform(pose)
     return {
         'pose_mode': mode,
         'spin_observable': mode != '5d',
@@ -114,7 +114,7 @@ def effective_profile(entry, mode='6d'):
         raise ValueError('5D夹法尚无接近夹角，请在夹法编辑器中新建或记录夹法')
     matrix = np.eye(4)
     matrix[:3, :3] = old['object_R_tcp']
-    rotation = transform(matrix)[:3, :3]
+    rotation = grasp_geometry.transform(matrix)[:3, :3]
     return checked_axis_profile(
         {
             'grasp_point_object_m': [0, 0, old['grasp_point_object_m'][2]],
@@ -127,7 +127,7 @@ def effective_profile(entry, mode='6d'):
 
 def grasp_variants(base_object, profile, current_rotation):
     """Search a bounded azimuth set, seeded by the current approach direction."""
-    base_object = transform(base_object)
+    base_object = grasp_geometry.transform(base_object)
     axis = base_object[:3, 2]
     elevation = float(np.rad2deg(np.arcsin(np.clip(axis[2], -1., 1.))))
     if abs(elevation) <= HORIZONTAL_AXIS_TOLERANCE_DEG + 1e-10:
@@ -159,7 +159,11 @@ def grasp_variants(base_object, profile, current_rotation):
                 'jaw_roll_deg': float(np.rad2deg(roll)),
             }
             candidates.append(
-                (rotation_error(current_rotation, rotation), resolved, details)
+                (
+                    grasp_geometry.rotation_error(current_rotation, rotation),
+                    resolved,
+                    details,
+                )
             )
         return [
             (resolved, details)
@@ -185,7 +189,7 @@ def grasp_variants(base_object, profile, current_rotation):
             }
             candidates.append(
                 (
-                    rotation_error(current_rotation, target),
+                    grasp_geometry.rotation_error(current_rotation, target),
                     resolved,
                     {
                         'azimuth_deg': float(np.rad2deg(azimuth) % 360),
@@ -204,7 +208,7 @@ def orientation_variants(rotation, held, current_tcp):
     if held.get('pose_mode', '6d') != '5d':
         return [np.asarray(rotation)]
     basis = axis_rotation(np.asarray(rotation)[:, 2])
-    attachment = transform(held['object_T_tcp'])[:3, :3]
+    attachment = grasp_geometry.transform(held['object_T_tcp'])[:3, :3]
     reference = np.asarray(current_tcp)[:3, :3] @ attachment.T
     # Maximize trace(reference.T @ basis @ Rz(phi)), the continuous nearest
     # twist.
@@ -215,7 +219,7 @@ def orientation_variants(rotation, held, current_tcp):
     variants = [basis @ z_rotation(phase + k * np.pi / 12) for k in range(24)]
     return sorted(
         variants,
-        key=lambda r: rotation_error(
+        key=lambda r: grasp_geometry.rotation_error(
             np.asarray(current_tcp)[:3, :3], r @ attachment
         ),
     )
@@ -223,7 +227,7 @@ def orientation_variants(rotation, held, current_tcp):
 
 def object_bounds(pose, vertices, mode='6d'):
     """Exact support bounds of the mesh's continuous rotational sweep, not samples."""
-    matrix = transform(pose)
+    matrix = grasp_geometry.transform(pose)
     points = np.asarray(vertices, dtype=float)
     if (
         points.ndim != 2

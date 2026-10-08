@@ -1,30 +1,30 @@
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import controller_pose, object_in_base, plan_grasp, workspace_blockers, contact_result
-from saydo.robot.grasp_robot import RobotClient
-from saydo.manipulation.grasp_control import GraspController
+from saydo.geometry import grasp_geometry
+from saydo.robot import grasp_robot
+from saydo.manipulation import grasp_control
 
 
 class GraspTests(unittest.TestCase):
     def test_manual_open_releases_contact_and_rejects_conflicts(self):
         import fcntl
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'config.json'
             cfg.write_text(json.dumps(self.config()))
-            service = GraspController(root, None, cfg)
+            service = grasp_control.GraspController(root, None, cfg)
             robot = self.force_robot()
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient',
+            with mock.patch(
+                'saydo.robot.grasp_robot.RobotClient',
                 return_value=robot,
             ) as client:
                 service.status['busy'] = True
@@ -94,19 +94,21 @@ class GraspTests(unittest.TestCase):
             'force': [0],
         }
         for position in (997, 1000, 297, 300, 303):
-            GraspController.check_gripper_start(
+            grasp_control.GraspController.check_gripper_start(
                 {**state, 'pos': [position]}, grip
             )
         for position in (0, 296, 304, 500, 996):
             with self.subTest(position=position), self.assertRaisesRegex(
                 ValueError, '当前位置'
             ):
-                GraspController.check_gripper_start(
+                grasp_control.GraspController.check_gripper_start(
                     {**state, 'pos': [position]}, grip
                 )
         for change in ({'speed': [1]}, {'dof_err': [1]}, {'sys_err': 1}):
             with self.subTest(change=change), self.assertRaises(ValueError):
-                GraspController.check_gripper_start({**state, **change}, grip)
+                grasp_control.GraspController.check_gripper_start(
+                    {**state, **change}, grip
+                )
 
     def test_manual_open_allows_retained_force_stop_but_not_closed_contact(
         self
@@ -123,7 +125,7 @@ class GraspTests(unittest.TestCase):
         grip = self.config()['gripper']
         for force in (0, 10):
             for position in (997, 1000):
-                GraspController.check_gripper_start(
+                grasp_control.GraspController.check_gripper_start(
                     {**state, 'pos': [position], 'force': [force]}, grip
                 )
         for changes in (
@@ -134,7 +136,9 @@ class GraspTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaisesRegex(
                 ValueError, '人工张开复位'
             ):
-                GraspController.check_gripper_start({**state, **changes}, grip)
+                grasp_control.GraspController.check_gripper_start(
+                    {**state, **changes}, grip
+                )
         for changes in (
             {'speed': [1]},
             {'sys_err': 1},
@@ -145,7 +149,9 @@ class GraspTests(unittest.TestCase):
             {'pos': [1001]},
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                GraspController.check_gripper_start({**state, **changes}, grip)
+                grasp_control.GraspController.check_gripper_start(
+                    {**state, **changes}, grip
+                )
 
     def test_start_freezes_one_observation_before_background_work(self):
         observation = {
@@ -154,11 +160,11 @@ class GraspTests(unittest.TestCase):
             'pose': np.eye(4).tolist(),
             'generation': 1,
         }
-        tracker = SimpleNamespace(
-            grasp_observation=Mock(return_value=observation)
+        tracker = types.SimpleNamespace(
+            grasp_observation=mock.Mock(return_value=observation)
         )
-        service = GraspController('.', tracker, 'unused')
-        with patch(
+        service = grasp_control.GraspController('.', tracker, 'unused')
+        with mock.patch(
             'saydo.manipulation.grasp_control.threading.Thread'
         ) as thread:
             service.start()
@@ -172,11 +178,13 @@ class GraspTests(unittest.TestCase):
             thread.return_value.start.assert_called_once_with()
 
     def test_missing_initial_tracking_never_starts_job(self):
-        tracker = SimpleNamespace(
-            grasp_observation=Mock(side_effect=ValueError('没有可靠跟踪位姿'))
+        tracker = types.SimpleNamespace(
+            grasp_observation=mock.Mock(
+                side_effect=ValueError('没有可靠跟踪位姿')
+            )
         )
-        service = GraspController('.', tracker, 'unused')
-        with patch(
+        service = grasp_control.GraspController('.', tracker, 'unused')
+        with mock.patch(
             'saydo.manipulation.grasp_control.threading.Thread'
         ) as thread:
             with self.assertRaisesRegex(ValueError, '没有可靠跟踪位姿'):
@@ -185,11 +193,11 @@ class GraspTests(unittest.TestCase):
             self.assertFalse(service.status['busy'])
 
     def test_initial_snapshot_requires_fresh_image_and_stationary_arm(self):
-        service = GraspController('.', None, 'unused')
+        service = grasp_control.GraspController('.', None, 'unused')
         arm = {'joint': [0] * 7, 'pose': [0, 0, 200000, 0, 0, 0]}
-        with patch.object(
+        with mock.patch.object(
             service, 'arm_state', return_value=arm
-        ) as read, patch('saydo.manipulation.grasp_control.time.sleep'):
+        ) as read, mock.patch('saydo.manipulation.grasp_control.time.sleep'):
             with self.assertRaisesRegex(ValueError, '过期'):
                 service.paired_observation({'time': time.time() - 1})
             read.assert_not_called()
@@ -239,14 +247,16 @@ class GraspTests(unittest.TestCase):
         }
 
     def test_rotated_tcp_offset_is_inverted_as_transform(self):
-        base_flange = controller_pose([100000, 200000, 300000, 1571, 0, 0])
+        base_flange = grasp_geometry.controller_pose(
+            [100000, 200000, 300000, 1571, 0, 0]
+        )
         flange_tcp = np.eye(4)
         flange_tcp[2, 3] = .2225
         flange_camera = np.eye(4)
         flange_camera[0, 3] = .07
         camera_object = np.eye(4)
         camera_object[2, 3] = .4
-        got = object_in_base(
+        got = grasp_geometry.object_in_base(
             base_flange @ flange_tcp, flange_tcp, flange_camera, camera_object
         )
         np.testing.assert_allclose(
@@ -256,7 +266,7 @@ class GraspTests(unittest.TestCase):
     def test_plan_starts_at_directional_pregrasp_and_lifts_ten_cm(self):
         target = np.eye(4)
         target[:3, 3] = [.1, 0, .2]
-        plan = plan_grasp(
+        plan = grasp_geometry.plan_grasp(
             [0, 0, 200000, 0, 0, 0],
             target,
             self.config()['grasp_profile'],
@@ -272,16 +282,16 @@ class GraspTests(unittest.TestCase):
             plan['waypoints'][-1]['controller_pose'],
             [100000, 0, 300000, 0, 0, 0],
         )
-        self.assertFalse(workspace_blockers(plan, self.config()))
+        self.assertFalse(grasp_geometry.workspace_blockers(plan, self.config()))
         config = self.config()
         config['workspace_max_m'][2] = .29
         # Only the lift exceeds this ceiling.
-        self.assertTrue(workspace_blockers(plan, config))
+        self.assertTrue(grasp_geometry.workspace_blockers(plan, config))
         for height in (0, -0.1, float('nan')):
             config = self.config()
             config['lift_height_m'] = height
             with self.assertRaises(ValueError):
-                plan_grasp(
+                grasp_geometry.plan_grasp(
                     [0, 0, 200000, 0, 0, 0],
                     target,
                     config['grasp_profile'],
@@ -289,7 +299,7 @@ class GraspTests(unittest.TestCase):
                 )
         config = self.config()
         config['workspace_reviewed'] = False
-        self.assertTrue(workspace_blockers(plan, config))
+        self.assertTrue(grasp_geometry.workspace_blockers(plan, config))
 
     def test_table_clearance_ten_mm_for_start_and_waypoints(self):
         config = self.config()
@@ -306,7 +316,8 @@ class GraspTests(unittest.TestCase):
                         ],
                     }
                     self.assertEqual(
-                        bool(workspace_blockers(plan, config)), blocked
+                        bool(grasp_geometry.workspace_blockers(plan, config)),
+                        blocked,
                     )
 
     def test_force_contact_is_distinct_from_empty_close_or_current_protection(
@@ -322,24 +333,33 @@ class GraspTests(unittest.TestCase):
             'force': [10],
         }
         grip = self.config()['gripper']
-        self.assertEqual(contact_result(state, grip), 'force_contact')
         self.assertEqual(
-            contact_result({**state, 'dof_state': [2], 'pos': [0]}, grip),
+            grasp_geometry.contact_result(state, grip), 'force_contact'
+        )
+        self.assertEqual(
+            grasp_geometry.contact_result(
+                {**state, 'dof_state': [2], 'pos': [0]}, grip
+            ),
             'empty_close',
         )
         self.assertEqual(
-            contact_result({**state, 'dof_state': [5]}, grip), 'fault'
+            grasp_geometry.contact_result({**state, 'dof_state': [5]}, grip),
+            'fault',
         )
         self.assertEqual(
-            contact_result({**state, 'force': [100]}, grip), 'force_contact'
+            grasp_geometry.contact_result({**state, 'force': [100]}, grip),
+            'force_contact',
         )
         self.assertEqual(
-            contact_result({**state, 'force': [0]}, grip), 'force_stop'
+            grasp_geometry.contact_result({**state, 'force': [0]}, grip),
+            'force_stop',
         )
 
     def test_acknowledgement_without_register_data_is_rejected(self):
-        robot = RobotClient('test')
-        with patch.object(robot, 'query', return_value={'get_state': True}):
+        robot = grasp_robot.RobotClient('test')
+        with mock.patch.object(
+            robot, 'query', return_value={'get_state': True}
+        ):
             with self.assertRaisesRegex(ValueError, '实际数值'):
                 robot.register(1220)
         with self.assertRaises(ValueError):
@@ -356,7 +376,7 @@ class GraspTests(unittest.TestCase):
             with self.subTest(
                 mode=mode, preview=preview
             ), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = pathlib.Path(directory)
                 config = self.config()
                 config['gripper']['force_control_verified'] = True
                 config['grasp_profile'].update(
@@ -373,12 +393,14 @@ class GraspTests(unittest.TestCase):
                     'object_id': 'never_configured_paper_cup',
                     'K': np.diag([.5, .5, 1]).tolist(),
                 }
-                tracker = SimpleNamespace(
-                    grasp_observation=Mock(
+                tracker = types.SimpleNamespace(
+                    grasp_observation=mock.Mock(
                         side_effect=AssertionError('must not reread tracking')
                     )
                 )
-                service = GraspController(root, tracker, cfg, mode)
+                service = grasp_control.GraspController(
+                    root, tracker, cfg, mode
+                )
                 service.force_override = 17
                 arm = {
                     'pose': [0, 0, 200000, 0, 0, 0],
@@ -429,27 +451,27 @@ class GraspTests(unittest.TestCase):
                         }
                     },
                 }
-                fake = Mock()
+                fake = mock.Mock()
                 fake.query.side_effect = lambda command: copy.deepcopy(
                     replies[command]
                 )
                 fake.register.side_effect = AssertionError(
                     'numeric readback must not be required'
                 )
-                with patch(
-                    'saydo.manipulation.grasp_control.RobotClient',
+                with mock.patch(
+                    'saydo.robot.grasp_robot.RobotClient',
                     return_value=fake,
-                ) as client, patch.object(
+                ) as client, mock.patch.object(
                     service, 'calibration', return_value=(handeye, tool)
-                ), patch.object(
+                ), mock.patch.object(
                     service,
                     'paired_observation',
                     return_value=(arm, observation),
-                ), patch.object(
+                ), mock.patch.object(
                     service,
                     'verify_motion_targets',
                     return_value={'joint_travel_deg': 10},
-                ) as verify, patch.object(service, 'execute') as execute:
+                ) as verify, mock.patch.object(service, 'execute') as execute:
                     service.run(observation, preview=preview)
                     self.assertEqual(
                         client.call_args.kwargs['writes'],
@@ -494,7 +516,7 @@ class GraspTests(unittest.TestCase):
                     fake.move_gripper.assert_not_called()
 
     def force_robot(self):
-        robot = Mock()
+        robot = mock.Mock()
         replies = {
             'get_rm_plus_mode': {'mode': 115200},
             'get_rm_plus_base_info': {
@@ -526,14 +548,14 @@ class GraspTests(unittest.TestCase):
 
     def test_force_input_writes_hardware_and_preserves_session_value(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'grasp.json'
             original = json.dumps(self.config())
             cfg.write_text(original)
-            service = GraspController(root, None, cfg)
+            service = grasp_control.GraspController(root, None, cfg)
             robot = self.force_robot()
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient',
+            with mock.patch(
+                'saydo.robot.grasp_robot.RobotClient',
                 return_value=robot,
             ) as client:
                 for invalid in (0, 101, -1, True, 1.5, '10', None):
@@ -558,7 +580,7 @@ class GraspTests(unittest.TestCase):
                 )
             self.assertEqual(cfg.read_text(), original)
             self.assertFalse(
-                GraspController(root, None, cfg).force_config()[
+                grasp_control.GraspController(root, None, cfg).force_config()[
                     'hardware_applied'
                 ]
             )
@@ -569,13 +591,13 @@ class GraspTests(unittest.TestCase):
 
     def test_force_failure_does_not_commit_value_or_retry(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'config.json'
             cfg.write_text(json.dumps(self.config()))
-            service = GraspController(root, None, cfg)
+            service = grasp_control.GraspController(root, None, cfg)
             robot = self.force_robot()
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient',
+            with mock.patch(
+                'saydo.robot.grasp_robot.RobotClient',
                 return_value=robot,
             ):
                 service.set_force_config(10)
@@ -590,13 +612,11 @@ class GraspTests(unittest.TestCase):
 
     def test_preview_force_update_never_connects(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'config.json'
             cfg.write_text(json.dumps(self.config()))
-            service = GraspController(root, None, cfg, 'preview')
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient'
-            ) as client:
+            service = grasp_control.GraspController(root, None, cfg, 'preview')
+            with mock.patch('saydo.robot.grasp_robot.RobotClient') as client:
                 self.assertEqual(service.set_force_config(50)['value'], 50)
                 client.assert_not_called()
             self.assertFalse(service.force_config()['hardware_applied'])
@@ -604,14 +624,14 @@ class GraspTests(unittest.TestCase):
     def test_force_write_is_blocked_by_another_grasp_process(self):
         import fcntl
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'config.json'
             cfg.write_text(json.dumps(self.config()))
             path = root / 'work/grasp'
             path.mkdir(parents=True)
-            service = GraspController(root, None, cfg)
-            with (path / 'robot.lock').open('a') as lock, patch(
-                'saydo.manipulation.grasp_control.RobotClient'
+            service = grasp_control.GraspController(root, None, cfg)
+            with (path / 'robot.lock').open('a') as lock, mock.patch(
+                'saydo.robot.grasp_robot.RobotClient'
             ) as client:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 with self.assertRaises(ValueError):
@@ -619,8 +639,8 @@ class GraspTests(unittest.TestCase):
                 client.assert_not_called()
 
     def test_gripper_position_transport_and_force_rejection(self):
-        robot = RobotClient('test', writes=True)
-        with patch.object(
+        robot = grasp_robot.RobotClient('test', writes=True)
+        with mock.patch.object(
             robot, '_request', return_value={'set_state': True}
         ) as request:
             robot.move_gripper(1000)
@@ -631,7 +651,9 @@ class GraspTests(unittest.TestCase):
             request.assert_called_with(
                 {'command': 'hand_follow_pos', 'hand_pos': [0]}
             )
-        with patch.object(robot, '_request', return_value={'set_state': False}):
+        with mock.patch.object(
+            robot, '_request', return_value={'set_state': False}
+        ):
             with self.assertRaises(RuntimeError):
                 robot.set_register(1220, 10)
 
@@ -639,24 +661,24 @@ class GraspTests(unittest.TestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             cfg = root / 'grasp.json'
             cfg.write_text(json.dumps(self.config()))
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient'
-            ) as client:
-                service = GraspController(root, None, cfg)
+            with mock.patch('saydo.robot.grasp_robot.RobotClient') as client:
+                service = grasp_control.GraspController(root, None, cfg)
                 self.assertEqual(service.snapshot()['mode'], 'execute')
                 self.assertTrue(service.snapshot()['motion_enabled'])
                 self.assertFalse(service.snapshot()['busy'])
                 self.assertIsNone(service.thread)
-                preview = GraspController(root, None, cfg, 'preview')
+                preview = grasp_control.GraspController(
+                    root, None, cfg, 'preview'
+                )
                 self.assertFalse(preview.snapshot()['motion_enabled'])
                 client.assert_not_called()
 
     def test_executor_lifts_only_after_contact(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = pathlib.Path(directory)
             config = self.config()
             cfg = root / 'config.json'
             cfg.write_text(json.dumps(config))
@@ -666,10 +688,10 @@ class GraspTests(unittest.TestCase):
                 'generation': 1,
                 'object_id': 'never_configured_paper_cup',
             }
-            service = GraspController(
+            service = grasp_control.GraspController(
                 root,
-                SimpleNamespace(
-                    grasp_observation=Mock(
+                types.SimpleNamespace(
+                    grasp_observation=mock.Mock(
                         side_effect=AssertionError('tracking lost')
                     )
                 ),
@@ -681,7 +703,7 @@ class GraspTests(unittest.TestCase):
             }
             target = np.eye(4)
             target[:3, 3] = [.1, 0, .2]
-            plan = plan_grasp(
+            plan = grasp_geometry.plan_grasp(
                 arm['pose'], target, config['grasp_profile'], config
             )
             plan.update(
@@ -740,7 +762,7 @@ class GraspTests(unittest.TestCase):
 
             robot = FakeRobot()
             service.robot = robot
-            service.verify_motion_targets = Mock()
+            service.verify_motion_targets = mock.Mock()
             report = {}
             service.execute(plan, config, report)
             self.assertEqual(service.status['state'], 'completed')
@@ -781,7 +803,7 @@ class GraspTests(unittest.TestCase):
             )
             robot.calls.clear()
             arm['pose'] = [0, 0, 200000, 0, 0, 0]
-            with patch.object(
+            with mock.patch.object(
                 robot, 'set_register', side_effect=RuntimeError('rejected')
             ):
                 with self.assertRaisesRegex(RuntimeError, 'rejected'):
@@ -800,7 +822,9 @@ class GraspTests(unittest.TestCase):
                         )
                     return reply
 
-                with patch.object(robot, 'query', side_effect=failed_close):
+                with mock.patch.object(
+                    robot, 'query', side_effect=failed_close
+                ):
                     with self.assertRaisesRegex(
                         ValueError, '未确认接触|电流保护'
                     ):
@@ -817,7 +841,7 @@ class GraspTests(unittest.TestCase):
                 # About 5.7 degrees, above the 2-degree tolerance.
                 arm['pose'][3] += 100
 
-            with patch.object(
+            with mock.patch.object(
                 robot, 'move_linear', side_effect=wrong_orientation
             ):
                 with self.assertRaisesRegex(ValueError, '朝向'):

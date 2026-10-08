@@ -3,37 +3,46 @@
 import copy
 import itertools
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import subprocess
-from unittest.mock import Mock, patch
+from unittest import mock
 import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
-from tests.manipulation.test_reorientation import fixture
-from saydo.manipulation.grasp_control import GraspController
-from saydo.manipulation.reorientation_geometry import (reorientation_settings, checked_position_request, position_offsets, plan_reorientation, adaptive_candidate, endpoint_reachability)
+from tests.manipulation import test_reorientation
+from saydo.manipulation import grasp_control
+from saydo.manipulation import reorientation_geometry
+from saydo.robot import motion_validation
 
 
 class AdaptiveReorientationTests(unittest.TestCase):
     def test_settings_and_request_mode(self):
-        _, settings, _, _, _ = fixture()
-        settings = reorientation_settings(
+        _, settings, _, _, _ = test_reorientation.fixture()
+        settings = reorientation_geometry.reorientation_settings(
             {**settings, 'adaptive_max_shift_m': .001}
         )
-        self.assertEqual(checked_position_request('adaptive'), 'adaptive')
+        self.assertEqual(
+            reorientation_geometry.checked_position_request('adaptive'),
+            'adaptive',
+        )
         self.assertNotIn('adaptive_max_shift_m', settings)
         for mode in ['other', None, True]:
             with self.assertRaises(ValueError):
-                checked_position_request(mode)
+                reorientation_geometry.checked_position_request(mode)
         for k, v in [('search_step_m', 0), ('orientation_tolerance_deg', True)]:
             with self.assertRaises(ValueError):
-                reorientation_settings({**settings, k: v})
+                reorientation_geometry.reorientation_settings(
+                    {**settings, k: v}
+                )
 
     def test_candidates_expand_beyond_old_radius_and_allow_downward(self):
         current = np.array([.3, .2, .4])
         offsets = list(
-            itertools.islice(position_offsets(current, .102001, .025), 1600)
+            itertools.islice(
+                reorientation_geometry.position_offsets(current, .102001, .025),
+                1600,
+            )
         )
         np.testing.assert_allclose(offsets[0], 0)
         self.assertTrue(any(np.linalg.norm(x) > .5 for x in offsets))
@@ -43,9 +52,9 @@ class AdaptiveReorientationTests(unittest.TestCase):
         )
 
     def test_fixed_solution_preferred_when_final_height_sufficient(self):
-        c, s, h, v, a = fixture()
-        check = Mock(return_value=(True, {'max_joint_step_deg': 1}))
-        p = plan_reorientation(
+        c, s, h, v, a = test_reorientation.fixture()
+        check = mock.Mock(return_value=(True, {'max_joint_step_deg': 1}))
+        p = reorientation_geometry.plan_reorientation(
             h, v, np.eye(3), a, c, s, check, lambda: None, 'adaptive'
         )
         check.assert_called_once()
@@ -54,7 +63,7 @@ class AdaptiveReorientationTests(unittest.TestCase):
         self.assertNotIn('max_shift_m', p)
 
     def test_low_start_is_allowed_and_final_height_has_feedback_margin(self):
-        c, s, h, _, a = fixture()
+        c, s, h, _, a = test_reorientation.fixture()
         a['pose'][2] = 50000
         h['object_T_tcp'] = np.eye(4).tolist()
         v = np.array([[-.001, -.001, -.001], [.001, .001, .001]])
@@ -64,14 +73,14 @@ class AdaptiveReorientationTests(unittest.TestCase):
             workspace_max_m=None,
             min_table_clearance_m=.20,
         )
-        p = plan_reorientation(
+        p = reorientation_geometry.plan_reorientation(
             h,
             v,
             np.eye(3),
             a,
             c,
             s,
-            Mock(return_value=(True, {})),
+            mock.Mock(return_value=(True, {})),
             lambda: None,
             'adaptive',
         )
@@ -90,7 +99,7 @@ class AdaptiveReorientationTests(unittest.TestCase):
     def test_search_can_exceed_20cm_and_ignore_workspace_and_grasp_distance(
         self
     ):
-        c, s, h, v, a = fixture()
+        c, s, h, v, a = test_reorientation.fixture()
         c.update(
             workspace_reviewed=False,
             workspace_min_m=[0, 0, 0],
@@ -106,7 +115,7 @@ class AdaptiveReorientationTests(unittest.TestCase):
                 points[-1]['position_m'][0] > .54, {'max_joint_step_deg': 2}
             )
 
-        p = plan_reorientation(
+        p = reorientation_geometry.plan_reorientation(
             h, v, rotation, a, c, s, check, lambda: None, 'adaptive'
         )
         self.assertGreater(p['offset_distance_m'], .20)
@@ -119,17 +128,17 @@ class AdaptiveReorientationTests(unittest.TestCase):
         )
 
     def test_fixed_mode_still_uses_existing_workspace(self):
-        c, s, h, v, a = fixture()
+        c, s, h, v, a = test_reorientation.fixture()
         c['workspace_reviewed'] = False
         with self.assertRaisesRegex(ValueError, '工作区'):
-            plan_reorientation(
-                h, v, np.eye(3), a, c, s, Mock(), lambda: None, 'fixed'
+            reorientation_geometry.plan_reorientation(
+                h, v, np.eye(3), a, c, s, mock.Mock(), lambda: None, 'fixed'
             )
 
     def test_large_joint_endpoint_change_is_not_a_cartesian_sample_jump(self):
-        c, s, h, v, a = fixture()
-        check = Mock(return_value=(True, {'max_joint_step_deg': 45}))
-        p = plan_reorientation(
+        c, s, h, v, a = test_reorientation.fixture()
+        check = mock.Mock(return_value=(True, {'max_joint_step_deg': 45}))
+        p = reorientation_geometry.plan_reorientation(
             h, v, np.eye(3), a, c, s, check, lambda: None, 'adaptive'
         )
         check.assert_called_once()
@@ -137,10 +146,10 @@ class AdaptiveReorientationTests(unittest.TestCase):
         self.assertFalse(p['intermediate_path_checked'])
 
     def test_cancel_and_time_budget(self):
-        c, s, h, v, a = fixture()
-        check = Mock(return_value=(False, {}))
+        c, s, h, v, a = test_reorientation.fixture()
+        check = mock.Mock(return_value=(False, {}))
         with self.assertRaisesRegex(RuntimeError, 'cancel'):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 h,
                 v,
                 np.eye(3),
@@ -148,52 +157,52 @@ class AdaptiveReorientationTests(unittest.TestCase):
                 c,
                 s,
                 check,
-                Mock(side_effect=RuntimeError('cancel')),
+                mock.Mock(side_effect=RuntimeError('cancel')),
                 'adaptive',
             )
         check.assert_not_called()
-        with patch(
+        with mock.patch(
             'saydo.manipulation.reorientation_geometry.time.monotonic',
             side_effect=[0, 21],
         ), self.assertRaisesRegex(TimeoutError, '时间预算'):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 h, v, np.eye(3), a, c, s, check, lambda: None, 'adaptive'
             )
         check.assert_not_called()
 
     def test_candidate_timeout_does_not_cancel_remaining_search(self):
-        c, s, h, v, a = fixture()
-        check = Mock(
+        c, s, h, v, a = test_reorientation.fixture()
+        check = mock.Mock(
             side_effect=[
                 subprocess.TimeoutExpired('ik', 3),
                 (True, {'max_joint_step_deg': 1}),
             ]
         )
-        p = plan_reorientation(
+        p = reorientation_geometry.plan_reorientation(
             h, v, np.eye(3), a, c, s, check, lambda: None, 'adaptive'
         )
         self.assertGreater(p['offset_distance_m'], 0)
         self.assertIn('超时', p['search_attempts'][0]['reason'])
 
     def test_final_10cm_boundary_and_object_collision(self):
-        c, s, h, _, a = fixture()
-        s = reorientation_settings(s)
+        c, s, h, _, a = test_reorientation.fixture()
+        s = reorientation_geometry.reorientation_settings(s)
         h['object_T_tcp'] = np.eye(4).tolist()
         a['pose'][2] = 100000
         v = np.array([[-.001, -.001, -.001], [.001, .001, .001]])
         with self.assertRaisesRegex(ValueError, '高于桌面'):
-            adaptive_candidate(
+            reorientation_geometry.adaptive_candidate(
                 h, v, np.eye(3), a, c, s, np.zeros(3), adaptive=True
             )
         a['pose'][2] = 400000
         v = np.array([[0, 0, -.5], [.01, .01, 0]])
         with self.assertRaisesRegex(ValueError, '桌面'):
-            adaptive_candidate(
+            reorientation_geometry.adaptive_candidate(
                 h, v, np.eye(3), a, c, s, np.zeros(3), adaptive=True
             )
 
     def test_diagnostics_remain_bounded_during_expanding_search(self):
-        c, s, h, v, a = fixture()
+        c, s, h, v, a = test_reorientation.fixture()
         counter = [0]
         attempts = []
 
@@ -201,7 +210,7 @@ class AdaptiveReorientationTests(unittest.TestCase):
             counter[0] += 1
             return counter[0] >= 201, {}
 
-        p = plan_reorientation(
+        p = reorientation_geometry.plan_reorientation(
             h, v, np.eye(3), a, c, s, check, lambda: None, 'adaptive', attempts
         )
         self.assertEqual(len(attempts), 128)
@@ -213,14 +222,14 @@ class AdaptiveReorientationTests(unittest.TestCase):
 
     def test_final_actual_height_is_enforced_even_within_pose_tolerance(self):
         with tempfile.TemporaryDirectory() as d:
-            c, s, h, _, a = fixture()
-            s = reorientation_settings(s)
-            root = Path(d)
+            c, s, h, _, a = test_reorientation.fixture()
+            s = reorientation_geometry.reorientation_settings(s)
+            root = pathlib.Path(d)
             cfg = root / 'trial.json'
             cfg.write_text(json.dumps(c))
             h['object_T_tcp'] = np.eye(4).tolist()
             v = np.array([[-.001, -.001, -.001], [.001, .001, .001]])
-            plan = adaptive_candidate(
+            plan = reorientation_geometry.adaptive_candidate(
                 h,
                 v,
                 np.eye(3),
@@ -231,12 +240,12 @@ class AdaptiveReorientationTests(unittest.TestCase):
                 adaptive=True,
             )
             plan['position_mode'] = 'adaptive'
-            service = GraspController(root, None, cfg)
+            service = grasp_control.GraspController(root, None, cfg)
             service.held_object = h
-            service.robot = Mock()
-            service.verify_motion_targets = Mock()
-            service.check_reorient_contact = Mock()
-            service.arm_state = Mock(side_effect=lambda: copy.deepcopy(a))
+            service.robot = mock.Mock()
+            service.verify_motion_targets = mock.Mock()
+            service.check_reorient_contact = mock.Mock()
+            service.arm_state = mock.Mock(side_effect=lambda: copy.deepcopy(a))
             count = [0]
             targets = {}
 
@@ -264,21 +273,23 @@ class AdaptiveReorientationTests(unittest.TestCase):
     def test_execution_translates_then_rotates_without_gripper_write(self):
         for fault in [None, 'collision', 'early_arrival', 'cancel', 'contact']:
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as d:
-                c, s, h, v, a = fixture()
-                s = reorientation_settings(s)
-                root = Path(d)
+                c, s, h, v, a = test_reorientation.fixture()
+                s = reorientation_geometry.reorientation_settings(s)
+                root = pathlib.Path(d)
                 cfg = root / 'trial.json'
                 cfg.write_text(json.dumps(c))
-                service = GraspController(root, None, cfg)
+                service = grasp_control.GraspController(root, None, cfg)
                 service.held_object = h
-                robot = service.robot = Mock()
-                plan = adaptive_candidate(
+                robot = service.robot = mock.Mock()
+                plan = reorientation_geometry.adaptive_candidate(
                     h, v, np.eye(3), a, c, s, np.array([0, -.05, 0])
                 )
                 calls = []
-                service.verify_motion_targets = Mock()
-                service.arm_state = Mock(side_effect=lambda: copy.deepcopy(a))
-                service.check_reorient_contact = Mock()
+                service.verify_motion_targets = mock.Mock()
+                service.arm_state = mock.Mock(
+                    side_effect=lambda: copy.deepcopy(a)
+                )
+                service.check_reorient_contact = mock.Mock()
                 targets = {}
 
                 def verify(plan, config, report, current, points):

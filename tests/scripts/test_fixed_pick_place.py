@@ -1,14 +1,14 @@
 import argparse
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
-from scripts.fixed_pick_place import workflow, wait_task, box, main
-from saydo.agent.client import BackendError
+from unittest import mock
+from scripts import fixed_pick_place
+from saydo.agent import client
 
 
 class WorkflowTests(unittest.TestCase):
     def test_fixed_planner_wait_has_no_elapsed_deadline(self):
-        backend = Mock()
+        backend = mock.Mock()
         backend.action.return_value = {'terminal': False}
         backend.request.side_effect = [
             {'terminal': False},
@@ -18,12 +18,12 @@ class WorkflowTests(unittest.TestCase):
                 'result': {'ok': True},
             },
         ]
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.time.monotonic',
             side_effect=[0, 10000, 20000],
-        ), patch('scripts.fixed_pick_place.time.sleep'):
+        ), mock.patch('scripts.fixed_pick_place.time.sleep'):
             self.assertTrue(
-                wait_task(
+                fixed_pick_place.wait_task(
                     backend, 'plan_fixed_pick_place', {}, 'id', timeout=1
                 )['ok']
             )
@@ -43,7 +43,7 @@ class WorkflowTests(unittest.TestCase):
             execute=False,
             output=self.temp.name,
         )
-        self.backend = Mock()
+        self.backend = mock.Mock()
         self.backend.request.return_value = {'grasp': {'mode': 'execute'}}
         self.plan = {
             'plan_id': 'p',
@@ -58,19 +58,19 @@ class WorkflowTests(unittest.TestCase):
         results = [
             {'scene_id': 'scene'}, {'fixed_pick_place_plan': self.plan}, {}
         ]
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task', side_effect=results
         ) as wait:
-            workflow(self.backend, self.args)
+            fixed_pick_place.workflow(self.backend, self.args)
         self.assertEqual(
             [c.args[1] for c in wait.call_args_list],
             ['capture_scene_snapshot', 'plan_fixed_pick_place'],
         )
         self.args.execute = True
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task', side_effect=results
         ) as wait:
-            workflow(self.backend, self.args)
+            fixed_pick_place.workflow(self.backend, self.args)
         self.assertEqual(
             wait.call_args_list[-1].args[1:3],
             ('execute_fixed_pick_place', {'plan_id': 'p'}),
@@ -78,34 +78,34 @@ class WorkflowTests(unittest.TestCase):
 
     def test_failed_planning_never_dispatches_execute(self):
         self.args.execute = True
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task',
             side_effect=[{'scene_id': 's'}, RuntimeError('no path')],
         ) as wait:
             with self.assertRaises(RuntimeError):
-                workflow(self.backend, self.args)
+                fixed_pick_place.workflow(self.backend, self.args)
         self.assertEqual(wait.call_count, 2)
 
     def test_keyboard_interrupt_cancels_only_original_readonly_planning(self):
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task',
             side_effect=[{'scene_id': 's'}, KeyboardInterrupt()],
         ):
             with self.assertRaises(KeyboardInterrupt):
-                workflow(self.backend, self.args)
+                fixed_pick_place.workflow(self.backend, self.args)
         path, args = self.backend.request.call_args.args
         self.assertEqual(path, '/api/agent/cancel-planning')
         self.assertTrue(args['task_id'].endswith('-plan'))
 
     def test_omitted_tube_box_requests_automatic_scene_detection(self):
         self.args.tube_box = None
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task',
             side_effect=[
                 {'scene_id': 's'}, {'fixed_pick_place_plan': self.plan}
             ],
         ) as wait:
-            workflow(self.backend, self.args)
+            fixed_pick_place.workflow(self.backend, self.args)
         self.assertIsNone(wait.call_args_list[0].args[2]['targets'][0]['box'])
         self.assertEqual(
             wait.call_args_list[0].args[2]['targets'][1]['box'],
@@ -116,62 +116,62 @@ class WorkflowTests(unittest.TestCase):
         self
     ):
         import contextlib, io
-        rejected = BackendError(
+        rejected = client.BackendError(
             {'code': 'INVALID_ARGUMENTS', 'message': '未知的动作或参数。'}
         )
         output = io.StringIO()
-        with patch(
+        with mock.patch(
             'sys.argv', ['fixed_pick_place', '--empty-rack']
-        ), patch('scripts.fixed_pick_place.RobotBackend'), patch(
+        ), mock.patch('saydo.agent.client.RobotBackend'), mock.patch(
             'scripts.fixed_pick_place.workflow', side_effect=rejected
         ), contextlib.redirect_stderr(output), self.assertRaises(
             SystemExit
         ) as stopped:
-            main()
+            fixed_pick_place.main()
         self.assertEqual(stopped.exception.code, 2)
         self.assertIn('restart_tracker.py', output.getvalue())
         self.assertIn('未发送机械臂或夹爪动作', output.getvalue())
-        other = BackendError({'code': 'REQUEST_UNCERTAIN'})
-        with patch(
+        other = client.BackendError({'code': 'REQUEST_UNCERTAIN'})
+        with mock.patch(
             'sys.argv', ['fixed_pick_place', '--empty-rack']
-        ), patch('scripts.fixed_pick_place.RobotBackend'), patch(
+        ), mock.patch('saydo.agent.client.RobotBackend'), mock.patch(
             'scripts.fixed_pick_place.workflow', side_effect=other
-        ), self.assertRaises(BackendError):
-            main()
+        ), self.assertRaises(client.BackendError):
+            fixed_pick_place.main()
 
     def test_omitted_rack_box_is_accepted_and_requests_automatic_detection(
         self
     ):
-        with patch(
+        with mock.patch(
             'sys.argv', ['fixed_pick_place', '--empty-rack']
-        ), patch(
-            'scripts.fixed_pick_place.RobotBackend'
-        ), patch('scripts.fixed_pick_place.workflow') as run:
-            main()
+        ), mock.patch('saydo.agent.client.RobotBackend'), mock.patch(
+            'scripts.fixed_pick_place.workflow'
+        ) as run:
+            fixed_pick_place.main()
         self.assertIsNone(run.call_args.args[1].rack_box)
         self.assertIsNone(run.call_args.args[1].tube_box)
         self.args.tube_box = self.args.rack_box = None
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task',
             side_effect=[
                 {'scene_id': 's'}, {'fixed_pick_place_plan': self.plan}
             ],
         ) as wait:
-            workflow(self.backend, self.args)
+            fixed_pick_place.workflow(self.backend, self.args)
         self.assertEqual(
             [t['box'] for t in wait.call_args_list[0].args[2]['targets']],
             [None, None],
         )
 
     def test_ambiguous_submission_queries_same_id_without_resending(self):
-        self.backend.action.side_effect = BackendError(
+        self.backend.action.side_effect = client.BackendError(
             {'code': 'REQUEST_UNCERTAIN'}
         )
         self.backend.request.return_value = {
             'terminal': True, 'state': 'completed', 'result': {'ok': True}
         }
         self.assertTrue(
-            wait_task(
+            fixed_pick_place.wait_task(
                 self.backend, 'execute_fixed_pick_place', {}, 'fixed-id'
             )['ok']
         )
@@ -182,7 +182,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_execute_failure_stops_and_does_not_retry(self):
         self.args.execute = True
-        with patch(
+        with mock.patch(
             'scripts.fixed_pick_place.wait_task',
             side_effect=[
                 {'scene_id': 's'},
@@ -191,10 +191,10 @@ class WorkflowTests(unittest.TestCase):
             ],
         ):
             with self.assertRaises(RuntimeError):
-                workflow(self.backend, self.args)
+                fixed_pick_place.workflow(self.backend, self.args)
         self.backend.request.assert_called_with('/api/agent/stop', {})
 
     def test_boxes_use_eye_in_hand_dimensions(self):
-        self.assertEqual(box('0,0,640,360'), [0, 0, 640, 360])
+        self.assertEqual(fixed_pick_place.box('0,0,640,360'), [0, 0, 640, 360])
         with self.assertRaises(argparse.ArgumentTypeError):
-            box('0,0,1280,720')
+            fixed_pick_place.box('0,0,1280,720')

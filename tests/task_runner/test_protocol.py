@@ -1,13 +1,13 @@
 import asyncio
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 import httpx
-from saydo.task_runner.config import Config, read_env
-from saydo.task_runner.llm_client import LLMClient, LLMError, ModelUnavailable
-from saydo.task_runner.tool_registry import schemas, validate
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import llm_client
+from saydo.task_runner import tool_registry
 
 
 class ProtocolTests(unittest.IsolatedAsyncioTestCase):
@@ -16,37 +16,39 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
             lambda request: httpx.Response(status, json=data)
         )
         client_type = httpx.AsyncClient
-        with patch(
+        with mock.patch(
             'saydo.task_runner.llm_client.httpx.AsyncClient',
             side_effect=lambda **kw: client_type(transport=transport, **kw),
         ):
-            return await LLMClient(Config(api_key='test')).generate(
-                [], [], 'gpt-6-luna', 'test'
-            )
+            return await llm_client.LLMClient(
+                task_runner_config.Config(api_key='test')
+            ).generate([], [], 'gpt-6-luna', 'test')
 
     async def test_incomplete_output_never_executes(self):
-        with self.assertRaises(LLMError):
+        with self.assertRaises(llm_client.LLMError):
             await self.response(
                 200,
                 {'status': 'incomplete', 'output': [{'type': 'function_call'}]},
             )
 
     async def test_model_unavailable_is_distinct(self):
-        with self.assertRaises(ModelUnavailable):
+        with self.assertRaises(llm_client.ModelUnavailable):
             await self.response(503, {'error': {'code': 'model_not_found'}})
         for status in (401, 429, 500):
-            with self.assertRaises(LLMError) as error:
+            with self.assertRaises(llm_client.LLMError) as error:
                 await self.response(status, {'error': {'code': 'generic'}})
-            self.assertNotIsInstance(error.exception, ModelUnavailable)
+            self.assertNotIsInstance(
+                error.exception, llm_client.ModelUnavailable
+            )
 
     async def test_redirect_not_followed(self):
-        with self.assertRaises(LLMError):
+        with self.assertRaises(llm_client.LLMError):
             await self.response(302, {})
 
 
 class RegistryTests(unittest.TestCase):
     def test_strict_schemas_and_no_request_ids(self):
-        all_schemas = schemas('execute')
+        all_schemas = tool_registry.schemas('execute')
         self.assertEqual(len(all_schemas), 27)
         for schema in all_schemas:
             self.assertTrue(schema['strict'])
@@ -66,7 +68,7 @@ class RegistryTests(unittest.TestCase):
             ('start_tracking', '{"object_id":"b","box":[0,0,640,640]}'),
         ]:
             with self.assertRaises(ValueError):
-                validate(
+                tool_registry.validate(
                     {
                         'type': 'function_call',
                         'name': name,
@@ -78,7 +80,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_read_only_has_no_writes(self):
         self.assertEqual(
-            {s['name'] for s in schemas('read_only')},
+            {s['name'] for s in tool_registry.schemas('read_only')},
             {
                 'observe_global',
                 'get_task_context',
@@ -97,22 +99,23 @@ class RegistryTests(unittest.TestCase):
 
     def test_env_does_not_execute_or_expand_shell(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / '.env'
+            path = pathlib.Path(directory) / '.env'
             path.write_text('SAYDO_TEST="$(touch should-not-exist)"\n')
             path.chmod(0o600)
             self.assertEqual(
-                read_env(path)['SAYDO_TEST'], '$(touch should-not-exist)'
+                task_runner_config.read_env(path)['SAYDO_TEST'],
+                '$(touch should-not-exist)',
             )
             path.chmod(0o644)
             with self.assertRaises(ValueError):
-                read_env(path)
+                task_runner_config.read_env(path)
 
     def test_fresh_env_defaults_to_terra_without_hidden_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / '.env'
+            path = pathlib.Path(directory) / '.env'
             path.write_text('SAYDO_LLM_API_KEY="test"\n')
             path.chmod(0o600)
-            config = Config.load(path)
+            config = task_runner_config.Config.load(path)
             self.assertEqual(config.model, 'gpt-6-sol')
             self.assertEqual(config.fallback_model, '')
             self.assertEqual(config.mode, 'execute')
@@ -120,7 +123,7 @@ class RegistryTests(unittest.TestCase):
     def test_provider_schema_subset_keeps_local_length_and_uniqueness_checks(
         self
     ):
-        definitions = json.dumps(schemas('execute'))
+        definitions = json.dumps(tool_registry.schemas('execute'))
         self.assertNotIn('uniqueItems', definitions)
         self.assertNotIn('minLength', definitions)
         for args in [
@@ -132,7 +135,7 @@ class RegistryTests(unittest.TestCase):
             {'outcome': 'answered', 'summary': '', 'evidence_call_ids': []},
         ]:
             with self.assertRaises(ValueError):
-                validate(
+                tool_registry.validate(
                     {
                         'type': 'function_call',
                         'name': 'finish_task',

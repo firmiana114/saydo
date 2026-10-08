@@ -5,7 +5,7 @@ import argparse
 import datetime
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 
 import cv2
 import numpy as np
@@ -21,15 +21,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--prompts',
-        type=Path,
+        type=pathlib.Path,
         default=ROOT / 'config/foundationpose/tape_20260915_prompts.json',
     )
     parser.add_argument(
         '--checkpoint',
-        type=Path,
+        type=pathlib.Path,
         default=ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth',
     )
-    parser.add_argument('--output', type=Path)
+    parser.add_argument('--output', type=pathlib.Path)
     args = parser.parse_args()
     prompts = json.loads(args.prompts.read_text())
     session = ROOT / 'work/object_scan' / prompts['session']

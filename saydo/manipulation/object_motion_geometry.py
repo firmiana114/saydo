@@ -2,14 +2,14 @@
 
 import subprocess
 import numpy as np
-from saydo.geometry.rotation_steps import interpolate, fractions
-from saydo.geometry.grasp_geometry import transform, controller_pose, rotation_error
-from saydo.objects.grasp_library import point_limits
-from saydo.manipulation.motion_speed import checked_speed
-from saydo.manipulation.placement_geometry import check_tcp_workspace
-from saydo.geometry.pose_symmetry import object_bounds, orientation_variants, object_rotation_error
-from saydo.manipulation.reorientation_geometry import rotation_from_rpy_deg, pose_waypoint, validate_object_pose, position_offsets
-from saydo.contracts.motion_contract import checked_goal, vector
+from saydo.geometry import rotation_steps
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
+from saydo.manipulation import motion_speed
+from saydo.manipulation import placement_geometry
+from saydo.geometry import pose_symmetry
+from saydo.manipulation import reorientation_geometry
+from saydo.contracts import motion_contract
 
 MAX_WAYPOINTS = 64
 MAX_VALIDATION_POINTS = 480
@@ -25,13 +25,15 @@ def object_at_reference(reference, rotation, point):
 
 
 def validate_tcp(tcp, held, vertices, config):
-    check_tcp_workspace(tcp, config)
-    validate_object_pose(tcp, held, vertices, config, False)
+    placement_geometry.check_tcp_workspace(tcp, config)
+    reorientation_geometry.validate_object_pose(
+        tcp, held, vertices, config, False
+    )
 
 
 def segment_samples(start, end, held, vertices, config, method, name):
     distance = float(np.linalg.norm(end[:3, 3] - start[:3, 3]))
-    angle = rotation_error(start[:3, :3], end[:3, :3])
+    angle = grasp_geometry.rotation_error(start[:3, :3], end[:3, :3])
     steps = (
         max(
             1, int(np.ceil(distance / .01)), int(np.ceil(angle / np.deg2rad(5)))
@@ -46,19 +48,23 @@ def segment_samples(start, end, held, vertices, config, method, name):
         fraction = k / steps
         tcp = np.eye(4)
         tcp[:3, 3] = start[:3, 3] + fraction * (end[:3, 3] - start[:3, 3])
-        tcp[:3, :3] = interpolate(start[:3, :3], end[:3, :3], fraction)
+        tcp[:3, :3] = rotation_steps.interpolate(
+            start[:3, :3], end[:3, :3], fraction
+        )
         if held is not None:
             validate_tcp(tcp, held, vertices, config)
         else:
-            check_tcp_workspace(tcp, config)
-        w = pose_waypoint(f'{name}_sample_{k}', tcp)
+            placement_geometry.check_tcp_workspace(tcp, config)
+        w = reorientation_geometry.pose_waypoint(f'{name}_sample_{k}', tcp)
         w['method'] = method
         points.append(w)
     return points
 
 
 def object_error(actual, target, point, pose_mode):
-    actual, target = transform(actual), transform(target)
+    actual, target = (
+        grasp_geometry.transform(actual), grasp_geometry.transform(target)
+    )
     point = np.asarray(point)
     return {
         'reference_position_error_m': float(
@@ -69,7 +75,9 @@ def object_error(actual, target, point, pose_mode):
         ),
         'orientation_error_deg': float(
             np.rad2deg(
-                object_rotation_error(actual[:3, :3], target[:3, :3], pose_mode)
+                pose_symmetry.object_rotation_error(
+                    actual[:3, :3], target[:3, :3], pose_mode
+                )
             )
         ),
     }
@@ -88,11 +96,11 @@ def build_candidate(
     retreat,
     route=(0., 0.),
 ):
-    current = controller_pose(arm['pose'])
-    attachment = transform(held['object_T_tcp'])
+    current = grasp_geometry.controller_pose(arm['pose'])
+    attachment = grasp_geometry.transform(held['object_T_tcp'])
     obj = current @ np.linalg.inv(attachment)
     point = np.asarray(goal['reference_point_object_m'])
-    low, high = point_limits(vertices)
+    low, high = grasp_library.point_limits(vertices)
     if np.any(point < low) or np.any(point > high):
         raise ValueError('物品参考点超出模型附近允许范围')
     if held.get('pose_mode') == '5d' and np.any(np.abs(point[:2]) > 1e-9):
@@ -122,8 +130,9 @@ def build_candidate(
         final_rpy = orientations[-1]
         if any(
             (
-                rotation_error(
-                    rotation_from_rpy_deg(r), rotation_from_rpy_deg(final_rpy)
+                grasp_geometry.rotation_error(
+                    reorientation_geometry.rotation_from_rpy_deg(r),
+                    reorientation_geometry.rotation_from_rpy_deg(final_rpy),
                 )
                 > 1e-6
             )
@@ -148,7 +157,10 @@ def build_candidate(
         if goal['position_mode'] == 'fixed' and row['position_m'] is None:
             reference = previous_ref
         requested_rotation = (
-            frame[:3, :3] @ rotation_from_rpy_deg(row['rpy_deg'])
+            (
+                frame[:3, :3]
+                @ reorientation_geometry.rotation_from_rpy_deg(row['rpy_deg'])
+            )
             if row['rpy_deg'] is not None
             else obj[:3, :3]
         )
@@ -157,7 +169,7 @@ def build_candidate(
         if chosen_rotation is not None:
             rotation = chosen_rotation
         elif row['rpy_deg'] is not None and held.get('pose_mode') == '5d':
-            rotations = orientation_variants(
+            rotations = pose_symmetry.orientation_variants(
                 requested_rotation, held, previous_tcp
             )
             rotation = rotations[spin % len(rotations)]
@@ -217,18 +229,20 @@ def build_candidate(
             stages = expanded
         for stage_ref, stage_method, label in stages:
             previous_ref = obj[:3, 3] + obj[:3, :3] @ point
-            steps = fractions(
+            steps = rotation_steps.fractions(
                 obj[:3, :3], rotation, goal['max_rotation_step_deg']
             )
             origin_obj = obj.copy()
             for k, f in enumerate(steps, 1):
-                rot = interpolate(origin_obj[:3, :3], rotation, f)
+                rot = rotation_steps.interpolate(
+                    origin_obj[:3, :3], rotation, f
+                )
                 reference_k = previous_ref + f * (stage_ref - previous_ref)
                 target_obj = object_at_reference(reference_k, rot, point)
                 tcp = target_obj @ attachment
-                w = pose_waypoint(f'{label}_{k}', tcp)
+                w = reorientation_geometry.pose_waypoint(f'{label}_{k}', tcp)
                 w['method'] = stage_method
-                quantized = controller_pose(w['controller_pose'])
+                quantized = grasp_geometry.controller_pose(w['controller_pose'])
                 validate_tcp(quantized, held, vertices, config)
                 w['object_pose'] = target_obj.tolist()
                 w['reference_position_base_m'] = reference_k.tolist()
@@ -249,7 +263,9 @@ def build_candidate(
                         > 1e-7
                     )
                     or (
-                        rotation_error(quantized[:3, :3], previous_tcp[:3, :3])
+                        grasp_geometry.rotation_error(
+                            quantized[:3, :3], previous_tcp[:3, :3]
+                        )
                         > 1e-6
                     )
                 ):
@@ -267,8 +283,10 @@ def build_candidate(
     if release and np.linalg.norm(retreat) > 0:
         endpoint = previous_tcp.copy()
         endpoint[:3, 3] += retreat
-        check_tcp_workspace(endpoint, config)
-        retreat_target = pose_waypoint('release_retreat', endpoint)
+        placement_geometry.check_tcp_workspace(endpoint, config)
+        retreat_target = reorientation_geometry.pose_waypoint(
+            'release_retreat', endpoint
+        )
         retreat_target['method'] = 'linear'
         validation.extend(
             segment_samples(
@@ -284,7 +302,9 @@ def build_candidate(
     if len(validation) > MAX_VALIDATION_POINTS:
         raise ValueError('方案超过480个检查采样点，请拆分任务')
     if not validation:
-        validation = [pose_waypoint('stationary', current)]
+        validation = [
+            reorientation_geometry.pose_waypoint('stationary', current)
+        ]
     final_ref = obj[:3, 3] + obj[:3, :3] @ point
     return {
         'kind': 'release' if release else 'held_object_motion',
@@ -305,7 +325,9 @@ def build_candidate(
         'validation_points': validation,
         'retreat_waypoint': retreat_target,
         'retreat_vector_base_m': retreat.tolist(),
-        'speed_percent': checked_speed(config['arm_speed_percent']),
+        'speed_percent': motion_speed.checked_speed(
+            config['arm_speed_percent']
+        ),
         'position_tolerance_m': POSITION_TOLERANCE,
         'orientation_tolerance_deg': ANGLE_TOLERANCE_DEG,
         'gripper_action': 'open_after_arrival' if release else 'keep_holding',
@@ -350,15 +372,17 @@ def plan_object_motion(
     retreat=None,
     diagnostics=None,
 ):
-    goal = checked_goal(goal, release)
-    frame = transform(frame)
+    goal = motion_contract.checked_goal(goal, release)
+    frame = grasp_geometry.transform(frame)
     retreat = np.asarray(
-        vector(retreat or [0, 0, 0], 'retreat_vector_base_m', .3)
+        motion_contract.vector(
+            retreat or [0, 0, 0], 'retreat_vector_base_m', .3
+        )
     )
     if np.linalg.norm(retreat) > .3:
         raise ValueError('退出位移长度不得超过300毫米')
     attempts = diagnostics if diagnostics is not None else []
-    current = controller_pose(arm['pose'])
+    current = grasp_geometry.controller_pose(arm['pose'])
     spins = (
         range(24)
         if (
@@ -371,7 +395,9 @@ def plan_object_motion(
         else range(1)
     )
     shifts = (
-        position_offsets(current[:3, 3], config['table_z_m'] + .103, .025)
+        reorientation_geometry.position_offsets(
+            current[:3, 3], config['table_z_m'] + .103, .025
+        )
         if goal['position_mode'] == 'adaptive'
         else [np.zeros(3)]
     )

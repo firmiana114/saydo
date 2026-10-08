@@ -1,40 +1,45 @@
 import asyncio
-from http.server import ThreadingHTTPServer
+import http.server
 import http.client
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
 import unittest
-from saydo.task_runner.api import make_handler
-from saydo.task_runner.config import Config
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from tests.task_runner.test_runner import FakeAdapter, FakeLLM, call, end
+from saydo.task_runner import api
+from saydo.task_runner import config
+from saydo.task_runner import runner
+from saydo.task_runner import store
+from tests.task_runner import test_runner
 
 
 class APITests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.config = Config(
+        self.config = config.Config(
             api_key='private-test-key',
             mode='read_only',
-            state_dir=Path(self.temp.name),
+            state_dir=pathlib.Path(self.temp.name),
         )
-        self.store = Store(self.temp.name, secrets=(self.config.api_key,))
+        self.store = store.Store(self.temp.name, secrets=(self.config.api_key,))
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever)
         self.thread.start()
-        self.runner = Runner(
+        self.runner = runner.Runner(
             self.config,
             self.store,
-            FakeLLM(call('get_status'), end('answered', ['call-1'])),
-            FakeAdapter,
+            test_runner.FakeLLM(
+                test_runner.call('get_status'),
+                test_runner.end('answered', ['call-1']),
+            ),
+            test_runner.FakeAdapter,
         )
-        self.server = ThreadingHTTPServer(
+        self.server = http.server.ThreadingHTTPServer(
             ('127.0.0.1', 0),
-            make_handler(self.runner, self.store, self.loop, '127.0.0.1', 0),
+            api.make_handler(
+                self.runner, self.store, self.loop, '127.0.0.1', 0
+            ),
         )
         self.serving = threading.Thread(target=self.server.serve_forever)
         self.serving.start()
@@ -109,12 +114,13 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.store.recent(), [])
 
     def test_model_options_and_selected_run_metadata(self):
-        from saydo.task_runner.config import UI_MODELS, UI_REASONING_EFFORTS
+        from saydo.task_runner import config
         status, body = self.request('GET', '/api/task-runs')
         data = json.loads(body)
-        self.assertEqual(data['llm_options']['models'], list(UI_MODELS))
+        self.assertEqual(data['llm_options']['models'], list(config.UI_MODELS))
         self.assertEqual(
-            data['llm_options']['reasoning_efforts'], list(UI_REASONING_EFFORTS)
+            data['llm_options']['reasoning_efforts'],
+            list(config.UI_REASONING_EFFORTS),
         )
         self.assertNotIn('private-test-key', body.decode())
         status, body = self.request(

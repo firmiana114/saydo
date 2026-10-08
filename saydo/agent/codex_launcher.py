@@ -3,16 +3,16 @@
 
 import os
 import json
-from pathlib import Path
+import pathlib
 import sys
 import tomllib
-from urllib.parse import urlsplit
+import urllib.parse
 
 from saydo import paths
 
 ROOT = paths.ROOT
 
-from saydo.task_runner.config import Config
+from saydo.task_runner import config as task_runner_config
 
 
 def disabled_skills(roots, known_paths=()):
@@ -20,9 +20,9 @@ def disabled_skills(roots, known_paths=()):
     paths = {
         str(
             (
-                Path(path)
-                if Path(path).name == 'SKILL.md'
-                else Path(path) / 'SKILL.md'
+                pathlib.Path(path)
+                if pathlib.Path(path).name == 'SKILL.md'
+                else pathlib.Path(path) / 'SKILL.md'
             ).absolute()
         )
         for path in known_paths
@@ -30,13 +30,13 @@ def disabled_skills(roots, known_paths=()):
     visited = set()
     for root in roots:
         for directory, children, files in os.walk(root, followlinks=True):
-            resolved = Path(directory).resolve()
+            resolved = pathlib.Path(directory).resolve()
             if resolved in visited:
                 children[:] = []
                 continue
             visited.add(resolved)
             if 'SKILL.md' in files:
-                paths.add(str(Path(directory).absolute() / 'SKILL.md'))
+                paths.add(str(pathlib.Path(directory).absolute() / 'SKILL.md'))
                 paths.add(str(resolved / 'SKILL.md'))
     return (
         'skills.config=['
@@ -50,14 +50,14 @@ def disabled_skills(roots, known_paths=()):
 
 def main():
     try:
-        config = Config.load(ROOT / '.env')
-        binary = Path.home() / '.local/lib/codex/0.156.0/bin/codex'
+        config = task_runner_config.Config.load(ROOT / '.env')
+        binary = pathlib.Path.home() / '.local/lib/codex/0.156.0/bin/codex'
         if not binary.is_file():
             raise ValueError('未找到 MSI Codex CLI 0.156.0 的官方可执行文件')
         env = os.environ.copy()
         # Keep user-level instructions, skills, memories and coding sessions out
         # of the dedicated robot operator, even when CODEX_HOME was inherited.
-        agent_home = Path.home() / '.local/share/saydo-codex/codex-home'
+        agent_home = pathlib.Path.home() / '.local/share/saydo-codex/codex-home'
         if not (agent_home / 'config.toml').is_file():
             raise ValueError('缺少任务专用 Codex 配置')
         agent_config = tomllib.loads((agent_home / 'config.toml').read_text())
@@ -72,7 +72,9 @@ def main():
         # reachable.
         bypass = env.get('NO_PROXY', env.get('no_proxy', ''))
         hosts = [
-            '127.0.0.1', 'localhost', urlsplit(config.robot_url).hostname or ''
+            '127.0.0.1',
+            'localhost',
+            urllib.parse.urlsplit(config.robot_url).hostname or '',
         ]
         env['NO_PROXY'] = env['no_proxy'] = ','.join(
             filter(None, [bypass, *hosts])
@@ -82,15 +84,15 @@ def main():
         # layers
         # cannot turn the robot-validation session into a repository coding
         # task.
-        workspace = Path.home() / '.local/share/saydo-codex/workspace'
+        workspace = pathlib.Path.home() / '.local/share/saydo-codex/workspace'
         workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chdir(workspace)
         # The host-discovery flag does not suppress repository-local Skills.
         # Refresh explicit disables at every launch, including symlinked Skills.
         skill_roots = [
             agent_home / 'skills',
-            Path.home() / '.agents/skills',
-            Path('/etc/codex/skills'),
+            pathlib.Path.home() / '.agents/skills',
+            pathlib.Path('/etc/codex/skills'),
         ]
         for parent in (workspace, *workspace.parents):
             skill_roots.extend(

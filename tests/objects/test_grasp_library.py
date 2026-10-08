@@ -4,18 +4,18 @@ import copy
 import fcntl
 import json
 import os
-from pathlib import Path
+import pathlib
 import tempfile
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import numpy as np
 import yaml
 
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import plan_grasp
-from saydo.objects.grasp_library import GraspLibrary, revision
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
 from tests.manipulation import test_grasp
 
 
@@ -23,7 +23,7 @@ class GraspLibraryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         self.config = test_grasp.GraspTests().config()
         self.config.update(tool_file='tool.yaml', handeye_file='handeye.yaml')
         self.config['grasp_profile'].update(
@@ -54,12 +54,12 @@ class GraspLibraryTests(unittest.TestCase):
             ],
             'faces': [[0, 1, 2]],
         }
-        self.service = GraspController(
-            self.root, SimpleNamespace(models_root=self.root), self.cfg
+        self.service = grasp_control.GraspController(
+            self.root, types.SimpleNamespace(models_root=self.root), self.cfg
         )
-        self.library = GraspLibrary(self.root, self.root)
-        self.mock = patch(
-            'saydo.manipulation.grasp_profiles_control.model_geometry',
+        self.library = grasp_library.GraspLibrary(self.root, self.root)
+        self.mock = mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             side_effect=lambda *args: copy.deepcopy(self.mesh),
         )
         self.mock.start()
@@ -126,7 +126,7 @@ class GraspLibraryTests(unittest.TestCase):
         )
 
     def test_save_duplicate_disable_delete_and_selection_never_connect(self):
-        with patch(
+        with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection',
             side_effect=AssertionError('editor must never connect'),
         ):
@@ -202,7 +202,9 @@ class GraspLibraryTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaises(BlockingIOError):
                 self.save()
-        with patch.object(Path, 'replace', side_effect=OSError('disk failure')):
+        with mock.patch.object(
+            pathlib.Path, 'replace', side_effect=OSError('disk failure')
+        ):
             with self.assertRaises(OSError):
                 self.save()
         self.assertEqual(self.library.object_path('cup').read_bytes(), original)
@@ -225,7 +227,7 @@ class GraspLibraryTests(unittest.TestCase):
         saved = result['grasps'][0]
         obj = np.eye(4)
         obj[:3, 3] = [-.2, 0, .2]
-        plan = plan_grasp(
+        plan = grasp_geometry.plan_grasp(
             [200000, 0, 300000, 0, 0, 0], obj, saved['profile'], self.config
         )
         np.testing.assert_allclose(plan['target_position_m'], [.2, 0, .2])
@@ -270,7 +272,7 @@ class GraspLibraryTests(unittest.TestCase):
                 raise ValueError('inverse failure')
             return {'joint_travel_deg': 10 if '转动少' in name else 90}
 
-        self.service.verify_motion_targets = Mock(side_effect=verify)
+        self.service.verify_motion_targets = mock.Mock(side_effect=verify)
         plan, profile, effective = self.service.select_grasp_candidate(*args)
         self.assertEqual(plan['grasp_name'], '转动少')
         self.assertEqual(effective['gripper']['force_target_raw'], 20)
@@ -288,7 +290,7 @@ class GraspLibraryTests(unittest.TestCase):
         self.service.edit_grasp_profiles(
             self.request('select', id=one['saved_id'], selection_mode='manual')
         )
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             side_effect=ValueError('unreachable')
         )
         with self.assertRaisesRegex(ValueError, '不可达'):
@@ -307,7 +309,7 @@ class GraspLibraryTests(unittest.TestCase):
         args[-1]['initial_gripper_state'].update(
             pos=[500], dof_state=[3], force=[10]
         )
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             return_value={'joint_travel_deg': 12}
         )
         plan, _, effective = self.service.select_grasp_candidate(*args)
@@ -343,7 +345,8 @@ class GraspLibraryTests(unittest.TestCase):
     ):
         data = json.loads(
             (
-                Path(__file__).parent / 'fixtures/grasp_candidate_replay.json'
+                pathlib.Path(__file__).parent
+                / 'fixtures/grasp_candidate_replay.json'
             ).read_text()
         )
         entries = []
@@ -365,7 +368,7 @@ class GraspLibraryTests(unittest.TestCase):
         self.library.write_object(
             'cup',
             {'selection_mode': 'auto', 'selected_id': None, 'grasps': entries},
-            revision(self.library.object('cup')),
+            grasp_library.revision(self.library.object('cup')),
         )
         config, observation, tool, handeye, _, _, report = self.candidate_args()
         config.update(

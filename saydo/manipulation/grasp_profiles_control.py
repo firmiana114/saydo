@@ -10,16 +10,16 @@ import uuid
 import numpy as np
 import yaml
 
-from saydo.geometry.grasp_geometry import plan_grasp, workspace_blockers, rotation_error, controller_pose, minimum_table_clearance
-from saydo.objects.grasp_library import (GraspLibrary, MAX_GRASPS, revision, checked_profile, checked_overrides, point_limits, binding_error, effective_config, object_gripper_defaults, checked_bound_overrides, effective_parameters)
-from saydo.manipulation.reorientation_geometry import model_geometry
-from saydo.manipulation.reorientation_visual import model_appearance
-from saydo.geometry.pose_symmetry import effective_profile, checked_axis_profile, grasp_variants
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library as objects_grasp_library
+from saydo.manipulation import reorientation_geometry
+from saydo.manipulation import reorientation_visual
+from saydo.geometry import pose_symmetry
 
 
 class GraspProfilesMixin:
     def grasp_library(self):
-        return GraspLibrary(
+        return objects_grasp_library.GraspLibrary(
             self.root, getattr(self.tracker, 'models_root', None)
         )
 
@@ -37,9 +37,13 @@ class GraspProfilesMixin:
                     for key in ('id', 'name', 'enabled', 'priority')
                 }
                 try:
-                    row['profile'] = effective_profile(entry, mode)
-                    row['effective_parameters'] = effective_parameters(
-                        config, entry
+                    row['profile'] = pose_symmetry.effective_profile(
+                        entry, mode
+                    )
+                    row['effective_parameters'] = (
+                        objects_grasp_library.effective_parameters(
+                            config, entry
+                        )
                     )
                     row['parameter_error'] = None
                 except ValueError as error:
@@ -52,22 +56,28 @@ class GraspProfilesMixin:
                 'selection_mode': value['selection_mode'],
                 'pose_mode': mode,
                 'selected_id': value['selected_id'],
-                'revision': revision(value),
+                'revision': objects_grasp_library.revision(value),
                 'grasps': entries,
-                'teaching_defaults': object_gripper_defaults(object_id),
+                'teaching_defaults': (
+                    objects_grasp_library.object_gripper_defaults(object_id)
+                ),
                 'error': None,
             }
         except (ValueError, OSError, KeyError, TypeError) as error:
             return {
                 'object_id': object_id,
                 'grasps': [],
-                'teaching_defaults': object_gripper_defaults(object_id),
+                'teaching_defaults': (
+                    objects_grasp_library.object_gripper_defaults(object_id)
+                ),
                 'error': str(error),
             }
 
     def grasp_editor_model(self, object_id):
-        geometry = model_geometry(self.tracker.models_root, object_id)
-        low, high = point_limits(geometry['vertices'])
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, object_id
+        )
+        low, high = objects_grasp_library.point_limits(geometry['vertices'])
         geometry.update(
             initial_rotation=np.eye(3).tolist(),
             holding=False,
@@ -78,7 +88,7 @@ class GraspProfilesMixin:
             point_max_m=high.tolist(),
         )
         try:
-            geometry['appearance'] = model_appearance(
+            geometry['appearance'] = reorientation_visual.model_appearance(
                 self.tracker.models_root, object_id
             )
         except (ValueError, OSError, TypeError) as error:
@@ -88,7 +98,9 @@ class GraspProfilesMixin:
         return geometry
 
     def grasp_profiles(self, object_id):
-        geometry = model_geometry(self.tracker.models_root, object_id)
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, object_id
+        )
         config = json.loads(self.config_path.read_text())
         tool = yaml.safe_load(
             (self.root / config['tool_file']).read_text()
@@ -100,19 +112,19 @@ class GraspProfilesMixin:
         entries = []
         for entry in value['grasps']:
             row = copy.deepcopy(entry)
-            row['profile'] = effective_profile(
+            row['profile'] = pose_symmetry.effective_profile(
                 entry, geometry.get('pose_mode', '6d')
             )
             if geometry.get('pose_mode') == '5d':
                 row['tested_successfully'] = entry.get(
                     'tested_successfully_5d', False
                 )
-            row['binding_error'] = binding_error(
+            row['binding_error'] = objects_grasp_library.binding_error(
                 entry, geometry['model_sha256'], tool, handeye
             )
             try:
-                row['effective_parameters'] = effective_parameters(
-                    config, entry
+                row['effective_parameters'] = (
+                    objects_grasp_library.effective_parameters(config, entry)
                 )
                 row['parameter_error'] = None
             except ValueError as error:
@@ -123,20 +135,22 @@ class GraspProfilesMixin:
         return {
             **value,
             'grasps': entries,
-            'revision': revision(value),
+            'revision': objects_grasp_library.revision(value),
             'object_id': object_id,
             'pose_mode': geometry.get('pose_mode', '6d'),
             'pose_mode_revision': geometry.get('pose_mode_revision'),
             'object_name': geometry['object_name'],
             'model_sha256': geometry['model_sha256'],
-            'maximum': MAX_GRASPS,
+            'maximum': objects_grasp_library.MAX_GRASPS,
             'changed_at': self.status.get('grasp_library_changed_at'),
             'parameter_scope': 'per_grasp',
             'defaults': {
                 'pregrasp_distance_m': config['pregrasp_distance_m'],
                 'tcp_offset_m': [0., 0., 0.],
-                'min_table_clearance_m': minimum_table_clearance(config),
-                **object_gripper_defaults(object_id),
+                'min_table_clearance_m': grasp_geometry.minimum_table_clearance(
+                    config
+                ),
+                **objects_grasp_library.object_gripper_defaults(object_id),
             },
         }
 
@@ -154,7 +168,9 @@ class GraspProfilesMixin:
             directory.mkdir(parents=True, exist_ok=True)
             with (directory / 'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                geometry = model_geometry(self.tracker.models_root, object_id)
+                geometry = reorientation_geometry.model_geometry(
+                    self.tracker.models_root, object_id
+                )
                 mode = geometry.get('pose_mode', '6d')
                 if (
                     request.get('pose_mode', '6d') != mode
@@ -169,7 +185,7 @@ class GraspProfilesMixin:
                     raise ValueError('物品位姿模式已变化，请重新载入夹法编辑器')
                 library = self.grasp_library()
                 value = library.object(object_id)
-                before = revision(value)
+                before = objects_grasp_library.revision(value)
                 if request.get('revision') != before:
                     raise ValueError('夹法已变化，请重新载入后操作')
                 selected = next(
@@ -203,7 +219,7 @@ class GraspProfilesMixin:
                     if value['selected_id'] == selected['id']:
                         value.update(selection_mode='auto', selected_id=None)
                 elif action == 'duplicate':
-                    if len(value['grasps']) >= MAX_GRASPS:
+                    if len(value['grasps']) >= objects_grasp_library.MAX_GRASPS:
                         raise ValueError('夹法数量已达上限')
                     selected = copy.deepcopy(selected)
                     selected.update(
@@ -232,17 +248,25 @@ class GraspProfilesMixin:
                     if request.get('id') is not None and selected is None:
                         raise ValueError('夹法不存在，请重新载入')
                     profile = (
-                        checked_axis_profile(data.get('profile'))
+                        pose_symmetry.checked_axis_profile(data.get('profile'))
                         if mode == '5d'
-                        else checked_profile(data.get('profile'))
+                        else objects_grasp_library.checked_profile(
+                            data.get('profile')
+                        )
                     )
-                    overrides = checked_bound_overrides(
+                    overrides = objects_grasp_library.checked_bound_overrides(
                         {
-                            **object_gripper_defaults(object_id),
-                            **checked_overrides(data.get('overrides', {})),
+                            **objects_grasp_library.object_gripper_defaults(
+                                object_id
+                            ),
+                            **objects_grasp_library.checked_overrides(
+                                data.get('overrides', {})
+                            ),
                         }
                     )
-                    low, high = point_limits(geometry['vertices'])
+                    low, high = objects_grasp_library.point_limits(
+                        geometry['vertices']
+                    )
                     point = np.asarray(profile['grasp_point_object_m'])
                     if np.any(point < low) or np.any(point > high):
                         raise ValueError('抓取中心超出模型附近允许的编辑范围')
@@ -254,14 +278,20 @@ class GraspProfilesMixin:
                         raise ValueError('编辑器模型已变化，请重新载入')
                     if (
                         selected is not None
-                        and binding_error(
+                        and objects_grasp_library.binding_error(
                             selected, geometry['model_sha256'], tool
                         )
                     ):
                         raise ValueError(
                             '旧夹法的模型或工具绑定已变化，请新建夹法'
                         )
-                    if selected is None and len(value['grasps']) >= MAX_GRASPS:
+                    if (
+                        selected is None
+                        and (
+                            len(value['grasps'])
+                            >= objects_grasp_library.MAX_GRASPS
+                        )
+                    ):
                         raise ValueError('夹法数量已达上限')
                     entry = {
                         'id': selected['id'] if selected else uuid.uuid4().hex,
@@ -282,7 +312,7 @@ class GraspProfilesMixin:
                         entry['profile'] = (
                             copy.deepcopy(selected['profile'])
                             if selected
-                            else checked_profile(profile)
+                            else objects_grasp_library.checked_profile(profile)
                         )
                         entry['tested_successfully_5d'] = False
                         if selected:
@@ -308,9 +338,11 @@ class GraspProfilesMixin:
                         if (
                             profile
                             == (
-                                effective_profile(selected, mode)
+                                pose_symmetry.effective_profile(selected, mode)
                                 if mode == '5d'
-                                else checked_profile(selected['profile'])
+                                else objects_grasp_library.checked_profile(
+                                    selected['profile']
+                                )
                             )
                         ):
                             entry.update(
@@ -352,7 +384,9 @@ class GraspProfilesMixin:
                             'object_id': object_id,
                             'id': selected['id'] if selected else None,
                             'before_revision': before,
-                            'after_revision': revision(value),
+                            'after_revision': objects_grasp_library.revision(
+                                value
+                            ),
                             'motion_sent': False,
                         },
                         ensure_ascii=False,
@@ -384,7 +418,7 @@ class GraspProfilesMixin:
                     'enabled': True,
                     'priority': 0,
                     'profile': copy.deepcopy(config['grasp_profile']),
-                    'overrides': object_gripper_defaults(
+                    'overrides': objects_grasp_library.object_gripper_defaults(
                         observation['object_id']
                     ),
                     'model_sha256': observation.get('model_sha256'),
@@ -417,7 +451,7 @@ class GraspProfilesMixin:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError('候选检查时间预算已用完')
-                error = binding_error(
+                error = objects_grasp_library.binding_error(
                     entry,
                     observation.get('model_sha256'),
                     tool['controller_readback']['tool_response_raw'],
@@ -425,13 +459,15 @@ class GraspProfilesMixin:
                 )
                 if error:
                     raise ValueError(error)
-                effective = effective_config(config, entry)
-                row['effective_parameters'] = effective_parameters(
+                effective = objects_grasp_library.effective_config(
                     config, entry
+                )
+                row['effective_parameters'] = (
+                    objects_grasp_library.effective_parameters(config, entry)
                 )
                 profile = {
                     **copy.deepcopy(config['grasp_profile']),
-                    **effective_profile(entry, mode),
+                    **pose_symmetry.effective_profile(entry, mode),
                 }
                 grip = effective['gripper']
                 base = report['gripper_base']
@@ -455,10 +491,10 @@ class GraspProfilesMixin:
                     raise ValueError('夹爪力度能力或参数不匹配')
                 self.check_gripper_start(report['initial_gripper_state'], grip)
                 variants = (
-                    grasp_variants(
+                    pose_symmetry.grasp_variants(
                         base_object,
                         profile,
-                        controller_pose(arm['pose'])[:3, :3],
+                        grasp_geometry.controller_pose(arm['pose'])[:3, :3],
                     )
                     if mode == '5d'
                     else [(profile, {})]
@@ -473,7 +509,7 @@ class GraspProfilesMixin:
                     trial = dict(azimuth)
                     attempts.append(trial)
                     try:
-                        candidate = plan_grasp(
+                        candidate = grasp_geometry.plan_grasp(
                             arm['pose'],
                             base_object,
                             resolved,
@@ -482,7 +518,9 @@ class GraspProfilesMixin:
                                 'tcp_offset_m'
                             ],
                         )
-                        blockers = workspace_blockers(candidate, effective)
+                        blockers = grasp_geometry.workspace_blockers(
+                            candidate, effective
+                        )
                         if blockers:
                             raise ValueError('；'.join(blockers))
                         candidate['flange_T_grip_tcp'] = tool[
@@ -557,8 +595,10 @@ class GraspProfilesMixin:
                     'joint_travel_deg',
                     float(
                         np.rad2deg(
-                            rotation_error(
-                                controller_pose(arm['pose'])[:3, :3],
+                            grasp_geometry.rotation_error(
+                                grasp_geometry.controller_pose(
+                                    arm['pose']
+                                )[:3, :3],
                                 plan['target_rotation'],
                             )
                         )
@@ -602,7 +642,9 @@ class GraspProfilesMixin:
             grasp_name=entry['name'],
             grasp_selection_mode=value['selection_mode'],
             grasp_candidates=results,
-            grasp_library_revision=revision(value),
-            effective_parameters=effective_parameters(config, entry),
+            grasp_library_revision=objects_grasp_library.revision(value),
+            effective_parameters=objects_grasp_library.effective_parameters(
+                config, entry
+            ),
         )
         return plan, profile, effective

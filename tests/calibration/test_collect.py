@@ -1,9 +1,9 @@
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -35,7 +35,7 @@ class CollectionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = pathlib.Path(self.tmp.name)
         self.reference = sample('fit')
         self.write(self.reference)
         self.plan = {
@@ -84,11 +84,11 @@ class CollectionTests(unittest.TestCase):
         )
 
     def test_duplicate_skips_camera_and_does_not_append_validation(self):
-        with patch.object(
-            collect.Robot, 'query', side_effect=self.mock_robot(.001)
-        ), patch.object(
+        with mock.patch.object(
+            collect.capture.Robot, 'query', side_effect=self.mock_robot(.001)
+        ), mock.patch.object(
             collect, 'pause_preview'
-        ) as preview, patch.object(collect, 'run_capture') as capture:
+        ) as preview, mock.patch.object(collect, 'run_capture') as capture:
             result = collect.collect_once(self.root, settle_seconds=0)
         self.assertEqual(result['state'], 'duplicate')
         preview.assert_not_called()
@@ -104,11 +104,13 @@ class CollectionTests(unittest.TestCase):
         def capture(*args):
             return self.write(new), copy.deepcopy(new)
 
-        with patch.object(
-            collect.Robot, 'query', side_effect=self.mock_robot(.03)
-        ), patch.object(
+        with mock.patch.object(
+            collect.capture.Robot, 'query', side_effect=self.mock_robot(.03)
+        ), mock.patch.object(
             collect, 'pause_preview', return_value='idle'
-        ), patch.object(collect, 'run_capture', side_effect=capture) as call:
+        ), mock.patch.object(
+            collect, 'run_capture', side_effect=capture
+        ) as call:
             result = collect.collect_once(self.root, settle_seconds=0)
         call.assert_called_once()
         self.assertEqual(result['state'], 'captured')
@@ -122,11 +124,11 @@ class CollectionTests(unittest.TestCase):
         def capture(*args):
             return self.write(new), copy.deepcopy(new)
 
-        with patch.object(
-            collect.Robot, 'query', side_effect=self.mock_robot(.05)
-        ), patch.object(
+        with mock.patch.object(
+            collect.capture.Robot, 'query', side_effect=self.mock_robot(.05)
+        ), mock.patch.object(
             collect, 'pause_preview', return_value='idle'
-        ), patch.object(collect, 'run_capture', side_effect=capture):
+        ), mock.patch.object(collect, 'run_capture', side_effect=capture):
             result = collect.collect_once(self.root, settle_seconds=0)
         self.assertEqual(result['state'], 'rejected')
         self.assertEqual(
@@ -151,11 +153,13 @@ class CollectionTests(unittest.TestCase):
         def capture(*args):
             return self.write(new), copy.deepcopy(new)
 
-        with patch.object(
-            collect.Robot, 'query', side_effect=self.mock_robot(.03)
-        ), patch.object(
+        with mock.patch.object(
+            collect.capture.Robot, 'query', side_effect=self.mock_robot(.03)
+        ), mock.patch.object(
             collect, 'pause_preview', return_value='idle'
-        ), patch.object(collect, 'run_capture', side_effect=capture) as call:
+        ), mock.patch.object(
+            collect, 'run_capture', side_effect=capture
+        ) as call:
             result = collect.collect_once(self.root, settle_seconds=0)
         call.assert_called_once()
         self.assertEqual(result['state'], 'rejected')
@@ -183,9 +187,9 @@ class CollectionTests(unittest.TestCase):
             validation_candidate_ids=['v1'], validation_target_count=1
         )
         collect.atomic_json(self.root / 'dataset_split.json', self.plan)
-        with patch.object(collect, 'Robot') as robot, patch.object(
-            collect, 'run_capture'
-        ) as capture:
+        with mock.patch.object(
+            collect.capture, 'Robot'
+        ) as robot, mock.patch.object(collect, 'run_capture') as capture:
             result = collect.collect_once(self.root)
         robot.assert_not_called()
         capture.assert_not_called()

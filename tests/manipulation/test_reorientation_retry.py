@@ -2,27 +2,27 @@
 
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import numpy as np
 import yaml
 
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import controller_pose
-from tests.manipulation.test_reorientation import fixture
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from tests.manipulation import test_reorientation
 
 
 class ReorientationRetryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         self.config, self.settings, self.held, self.vertices, self.arm = (
-            fixture()
+            test_reorientation.fixture()
         )
         self.config['tool_file'] = 'tool.yaml'
         self.config['ik_checker'] = 'checker'
@@ -42,18 +42,20 @@ class ReorientationRetryTests(unittest.TestCase):
         (
             self.root / 'config/grasp/reorientation.json'
         ).write_text(json.dumps(self.settings))
-        tracker = SimpleNamespace(
+        tracker = types.SimpleNamespace(
             models_root=self.root,
             state={'object_id': 'sample', 'model_sha256': 'mesh1'},
         )
-        self.service = GraspController(self.root, tracker, self.path)
+        self.service = grasp_control.GraspController(
+            self.root, tracker, self.path
+        )
         self.service.held_object = copy.deepcopy(self.held)
         self.mesh = {
             'model_sha256': 'mesh1', 'vertices': self.vertices.tolist()
         }
 
     def robot(self, failure=None):
-        robot = Mock()
+        robot = mock.Mock()
         counter = 0
 
         def query(command):
@@ -104,17 +106,17 @@ class ReorientationRetryTests(unittest.TestCase):
         self.arm['pose'][3:] = [2800, 200, 300]
         self.arm['err'] = [4099]
         report = {}
-        with patch(
-            'saydo.manipulation.reorientation_control.model_geometry',
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.mesh,
-        ), patch('saydo.manipulation.reorientation_control.time.sleep'):
+        ), mock.patch('saydo.manipulation.reorientation_control.time.sleep'):
             self.assertTrue(
                 self.service.retain_reorientation_hold(
                     self.held, self.config, report
                 )
             )
         actual = (
-            controller_pose(self.arm['pose'])
+            grasp_geometry.controller_pose(self.arm['pose'])
             @ np.linalg.inv(self.held['object_T_tcp'])
         )
         np.testing.assert_allclose(
@@ -155,10 +157,12 @@ class ReorientationRetryTests(unittest.TestCase):
                     if failure == 'model'
                     else self.mesh
                 )
-                with patch(
-                    'saydo.manipulation.reorientation_control.model_geometry',
+                with mock.patch(
+                    'saydo.manipulation.reorientation_geometry.model_geometry',
                     return_value=mesh,
-                ), patch('saydo.manipulation.reorientation_control.time.sleep'):
+                ), mock.patch(
+                    'saydo.manipulation.reorientation_control.time.sleep'
+                ):
                     self.assertFalse(
                         self.service.retain_reorientation_hold(
                             self.held, self.config, report
@@ -178,7 +182,7 @@ class ReorientationRetryTests(unittest.TestCase):
                 self.service.cancelled.clear()
                 self.service.actuated = False
                 robot = self.robot()
-                self.service.reorientation_hardware = Mock(
+                self.service.reorientation_hardware = mock.Mock(
                     return_value=(
                         copy.deepcopy(self.arm),
                         {'flange_T_grip_tcp': np.eye(4).tolist()},
@@ -192,18 +196,19 @@ class ReorientationRetryTests(unittest.TestCase):
                         self.service.cancelled.set()
                     raise RuntimeError('motion failed')
 
-                self.service.execute_reorient = Mock(side_effect=fail)
-                with patch(
-                    'saydo.manipulation.reorientation_control.RobotClient',
+                self.service.execute_reorient = mock.Mock(side_effect=fail)
+                with mock.patch(
+                    'saydo.robot.grasp_robot.RobotClient',
                     return_value=robot,
-                ), patch(
-                    'saydo.manipulation.reorientation_control.model_geometry',
+                ), mock.patch(
+                    'saydo.manipulation.reorientation_geometry.model_geometry',
                     return_value=self.mesh,
-                ), patch(
-                    'saydo.manipulation.reorientation_control.endpoint_reachab'
-                    'ility',
+                ), mock.patch(
+                    'saydo.robot.motion_validation.check_waypoints',
                     return_value=(True, {}),
-                ), patch('saydo.manipulation.reorientation_control.time.sleep'):
+                ), mock.patch(
+                    'saydo.manipulation.reorientation_control.time.sleep'
+                ):
                     self.service.run_reorient(self.held, np.eye(3).tolist())
                 self.assertEqual(
                     self.service.status['state'],
@@ -228,7 +233,7 @@ class ReorientationRetryTests(unittest.TestCase):
                         for k in ['hold_id', 'object_id', 'model_sha256']
                     },
                 }
-                with patch(
+                with mock.patch(
                     'saydo.manipulation.reorientation_control.threading.Thread'
                 ) as thread:
                     self.service.start_reorient(request)
@@ -245,7 +250,7 @@ class ReorientationRetryTests(unittest.TestCase):
     def test_stop_failure_clears_hold_and_prevents_retry(self):
         robot = self.robot()
         robot.stop.side_effect = RuntimeError('stop failed')
-        self.service.reorientation_hardware = Mock(
+        self.service.reorientation_hardware = mock.Mock(
             return_value=(self.arm, {'flange_T_grip_tcp': np.eye(4).tolist()})
         )
 
@@ -253,15 +258,15 @@ class ReorientationRetryTests(unittest.TestCase):
             self.service.actuated = True
             raise RuntimeError('motion failed')
 
-        self.service.execute_reorient = Mock(side_effect=fail)
-        with patch(
-            'saydo.manipulation.reorientation_control.RobotClient',
+        self.service.execute_reorient = mock.Mock(side_effect=fail)
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient',
             return_value=robot,
-        ), patch(
-            'saydo.manipulation.reorientation_control.model_geometry',
+        ), mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.mesh,
-        ), patch(
-            'saydo.manipulation.reorientation_control.endpoint_reachability',
+        ), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             return_value=(True, {}),
         ):
             self.service.run_reorient(self.held, np.eye(3).tolist())
@@ -288,13 +293,13 @@ class ReorientationRetryTests(unittest.TestCase):
         path = self.failed_report()
         self.service.held_object = None
         robot = self.robot()
-        with patch(
-            'saydo.manipulation.reorientation_control.RobotClient',
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient',
             return_value=robot,
-        ) as client, patch(
-            'saydo.manipulation.reorientation_control.model_geometry',
+        ) as client, mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.mesh,
-        ), patch('saydo.manipulation.reorientation_control.time.sleep'):
+        ), mock.patch('saydo.manipulation.reorientation_control.time.sleep'):
             self.assertTrue(self.service.restore_reorientation_report(path))
             self.assertFalse(client.call_args.kwargs['writes'])
             self.assertEqual(self.service.held_object['hold_id'], 'hold1')
@@ -309,9 +314,7 @@ class ReorientationRetryTests(unittest.TestCase):
     def test_recovery_rejects_wrong_model_or_non_reorientation_report(self):
         path = self.failed_report()
         self.service.held_object = None
-        with patch(
-            'saydo.manipulation.reorientation_control.RobotClient'
-        ) as client:
+        with mock.patch('saydo.robot.grasp_robot.RobotClient') as client:
             self.service.tracker.state['object_id'] = 'different'
             self.assertFalse(self.service.restore_reorientation_report(path))
             self.service.tracker.state['object_id'] = 'sample'

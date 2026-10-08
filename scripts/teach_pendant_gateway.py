@@ -4,7 +4,7 @@ Run locally: python3 scripts/teach_pendant_gateway.py ; stop with Ctrl-C. No con
 """
 
 import http.client
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.server
 import signal
 import socket
 import subprocess
@@ -34,7 +34,7 @@ PATCHES = {
 }
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.forward(False)
 
@@ -100,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(('127.0.0.1', WEB_PORT), Handler)
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', WEB_PORT), Handler)
     command = [
         'ssh',
         '-N',

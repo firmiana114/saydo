@@ -2,17 +2,17 @@
 
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import numpy as np
 
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import plan_grasp, return_joint_target
-from saydo.robot.grasp_robot import RobotClient
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from saydo.robot import grasp_robot
 from tests.manipulation import test_grasp
 
 
@@ -22,14 +22,14 @@ class ReturnGraspTests(unittest.TestCase):
             with self.subTest(
                 failure=failure
             ), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = pathlib.Path(directory)
                 config = test_grasp.GraspTests().config()
                 config['return_after_lift'] = {
                     'joint_deg': [1, 2, 3, 4, 5, 6, 7]
                 }
                 cfg = root / 'config.json'
                 cfg.write_text(json.dumps(config))
-                service = GraspController(root, None, cfg)
+                service = grasp_control.GraspController(root, None, cfg)
                 arm = {
                     'joint': [0] * 7,
                     'pose': [0, 0, 200000, 0, 0, 0],
@@ -37,7 +37,7 @@ class ReturnGraspTests(unittest.TestCase):
                 }
                 obj = np.eye(4)
                 obj[:3, 3] = [.1, 0, .2]
-                plan = plan_grasp(
+                plan = grasp_geometry.plan_grasp(
                     arm['pose'], obj, config['grasp_profile'], config
                 )
                 self.assertNotIn('return_joint_raw', plan)
@@ -52,7 +52,7 @@ class ReturnGraspTests(unittest.TestCase):
                 )
                 calls = []
                 closed = [False]
-                robot = Mock()
+                robot = mock.Mock()
 
                 def query(command):
                     if command == 'get_current_arm_state':
@@ -107,7 +107,7 @@ class ReturnGraspTests(unittest.TestCase):
                     'Automatic return after grasp is removed'
                 )
                 service.robot = robot
-                with patch.object(service, 'verify_motion_targets'):
+                with mock.patch.object(service, 'verify_motion_targets'):
                     if failure:
                         with self.assertRaises(ValueError):
                             service.execute(plan, config, {})
@@ -142,10 +142,10 @@ class ReturnGraspTests(unittest.TestCase):
                 )
 
     def test_movej_transport_requires_matching_ack_and_completion(self):
-        robot = RobotClient('test', writes=True)
+        robot = grasp_robot.RobotClient('test', writes=True)
         cancel = threading.Event()
         for accepted in (True, False):
-            connection = Mock()
+            connection = mock.Mock()
             connection.recv.return_value = (
                 json.dumps({'command': 'movej', 'receive_state': accepted})
                 + '\n'
@@ -157,7 +157,7 @@ class ReturnGraspTests(unittest.TestCase):
                 )
                 + '\n'
             ).encode()
-            with patch(
+            with mock.patch(
                 'saydo.robot.grasp_robot.socket.create_connection'
             ) as connect:
                 connect.return_value.__enter__.return_value = connection
@@ -178,9 +178,11 @@ class ReturnGraspTests(unittest.TestCase):
                     },
                 )
         with self.assertRaises(ValueError):
-            RobotClient('test').move_joints([0] * 7, 10, cancel, lambda: None)
+            grasp_robot.RobotClient('test').move_joints(
+                [0] * 7, 10, cancel, lambda: None
+            )
         cancel.set()
-        with patch(
+        with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection'
         ) as connect:
             with self.assertRaisesRegex(RuntimeError, '取消'):
@@ -194,8 +196,8 @@ class ReturnGraspTests(unittest.TestCase):
         for joints in ([0] * 6, [0] * 6 + [float('nan')], [0] * 6 + [400]):
             config['return_after_lift'] = {'joint_deg': joints}
             with self.assertRaises(ValueError):
-                return_joint_target(config)
-            plan = plan_grasp(
+                grasp_geometry.return_joint_target(config)
+            plan = grasp_geometry.plan_grasp(
                 [0, 0, 200000, 0, 0, 0], obj, config['grasp_profile'], config
             )
             self.assertNotIn('return_joint_raw', plan)
@@ -203,11 +205,11 @@ class ReturnGraspTests(unittest.TestCase):
     def test_movel_controller_rejection_or_failed_completion_is_not_ignored(
         self
     ):
-        robot = RobotClient('test', writes=True)
+        robot = grasp_robot.RobotClient('test', writes=True)
         for accepted, completed in (
             (False, False), (True, False), (True, True)
         ):
-            connection = Mock()
+            connection = mock.Mock()
             connection.recv.return_value = (
                 json.dumps({'command': 'movel', 'receive_state': accepted})
                 + '\n'
@@ -219,7 +221,7 @@ class ReturnGraspTests(unittest.TestCase):
                 )
                 + '\n'
             ).encode()
-            with patch(
+            with mock.patch(
                 'saydo.robot.grasp_robot.socket.create_connection'
             ) as connect:
                 connect.return_value.__enter__.return_value = connection
@@ -238,13 +240,13 @@ class ReturnGraspTests(unittest.TestCase):
                 )
 
     def test_movej_p_transport_and_validation(self):
-        robot = RobotClient('test', writes=True)
+        robot = grasp_robot.RobotClient('test', writes=True)
         pose = [100000, 200000, 300000, 400, 500, 600]
         for accepted, completed in (
             (False, False), (True, False), (True, True)
         ):
             with self.subTest(accepted=accepted, completed=completed):
-                connection = Mock()
+                connection = mock.Mock()
                 connection.recv.return_value = (
                     json.dumps(
                         {'command': 'movej_p', 'receive_state': accepted}
@@ -258,7 +260,7 @@ class ReturnGraspTests(unittest.TestCase):
                     )
                     + '\n'
                 ).encode()
-                with patch(
+                with mock.patch(
                     'saydo.robot.grasp_robot.socket.create_connection'
                 ) as connect:
                     connect.return_value.__enter__.return_value = connection
@@ -281,7 +283,7 @@ class ReturnGraspTests(unittest.TestCase):
                             'trajectory_connect': 0,
                         },
                     )
-        with patch(
+        with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection'
         ) as connect:
             cancel = threading.Event()

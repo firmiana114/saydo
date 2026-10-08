@@ -4,7 +4,7 @@ import asyncio
 import json
 import ssl
 import httpx
-from saydo.task_runner.llm_diagnostics import RequestDiagnostics
+from saydo.task_runner import llm_diagnostics
 
 
 class LLMError(RuntimeError):
@@ -65,8 +65,8 @@ class LLMClient:
             'include': ['reasoning.encrypted_content'],
             **extra,
         }
-        encoded = RequestDiagnostics.encode(payload)
-        diagnostics = RequestDiagnostics(
+        encoded = llm_diagnostics.RequestDiagnostics.encode(payload)
+        diagnostics = llm_diagnostics.RequestDiagnostics(
             payload,
             encoded,
             self.config.llm_timeout,

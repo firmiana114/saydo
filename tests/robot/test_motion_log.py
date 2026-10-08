@@ -3,17 +3,17 @@
 import json
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
-from saydo.robot.grasp_robot import RobotClient
+from saydo.robot import grasp_robot
 
 
 class MotionLogTests(unittest.TestCase):
     def run_motion(self, replies):
-        robot = RobotClient('test', writes=True)
-        connection = Mock()
+        robot = grasp_robot.RobotClient('test', writes=True)
+        connection = mock.Mock()
         connection.recv.side_effect = replies
-        with patch(
+        with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection'
         ) as connect:
             connect.return_value.__enter__.return_value = connection
@@ -70,12 +70,12 @@ class MotionLogTests(unittest.TestCase):
             self.assertEqual(record['error_type'], type(error).__name__)
 
     def test_timeout_and_cancel_keep_diagnostics(self):
-        robot = RobotClient('test', writes=True)
+        robot = grasp_robot.RobotClient('test', writes=True)
         robot.motion_stage = '前往预抓点'
-        with patch(
+        with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection'
         ) as connect:
-            connect.return_value.__enter__.return_value = Mock()
+            connect.return_value.__enter__.return_value = mock.Mock()
             with self.assertRaises(TimeoutError):
                 robot.move_joint_pose(
                     [0] * 6, 20, threading.Event(), lambda: None, timeout=0

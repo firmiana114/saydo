@@ -1,22 +1,22 @@
 """Object orientation with position search and endpoint checks for controller-planned joint motion and sampled path checks."""
 
 import hashlib
-from functools import lru_cache
-from pathlib import Path
+import functools
+import pathlib
 import subprocess
 import itertools
 import time
 
 import numpy as np
 
-from saydo.geometry.grasp_geometry import transform, controller_pose, pose_values, minimum_table_clearance
-from saydo.objects.object_catalog import select_object
-from saydo.robot.motion_validation import check_waypoints as endpoint_reachability
-from saydo.geometry.pose_symmetry import object_bounds, orientation_variants
-from saydo.geometry.rotation_steps import checked_step, interpolate, fractions
+from saydo.geometry import grasp_geometry
+from saydo.objects import object_catalog
+from saydo.robot import motion_validation
+from saydo.geometry import pose_symmetry
+from saydo.geometry import rotation_steps
 
 
-@lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=8)
 def _mesh_geometry(path, modified_ns, size):
     import trimesh
     mesh = trimesh.load(path, force='mesh', process=False)
@@ -38,13 +38,15 @@ def _mesh_geometry(path, modified_ns, size):
     return {
         'vertices': vertices.tolist(),
         'faces': faces.tolist(),
-        'model_sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+        'model_sha256': hashlib.sha256(
+            pathlib.Path(path).read_bytes()
+        ).hexdigest(),
     }
 
 
 def model_geometry(models_root, object_id):
-    item = select_object(models_root, object_id)
-    path = Path(item['mesh'])
+    item = object_catalog.select_object(models_root, object_id)
+    path = pathlib.Path(item['mesh'])
     stat = path.stat()
     return {
         **_mesh_geometry(str(path), stat.st_mtime_ns, stat.st_size),
@@ -62,7 +64,7 @@ def checked_rotation(value):
         raise ValueError('目标朝向必须为 3×3 旋转矩阵')
     matrix = np.eye(4)
     matrix[:3, :3] = rotation
-    return transform(matrix)[:3, :3]
+    return grasp_geometry.transform(matrix)[:3, :3]
 
 
 def rotation_from_rpy_deg(value):
@@ -131,13 +133,13 @@ def pose_waypoint(name, matrix):
         'method': 'joint_pose',
         'position_m': matrix[:3, 3].tolist(),
         'controller_pose': np.rint(
-            pose_values(matrix) * np.array([1e6] * 3 + [1e3] * 3)
+            grasp_geometry.pose_values(matrix) * np.array([1e6] * 3 + [1e3] * 3)
         ).astype(int).tolist(),
     }
 
 
 def validate_object_pose(tcp, held, vertices, config, adaptive):
-    attachment = transform(held['object_T_tcp'])
+    attachment = grasp_geometry.transform(held['object_T_tcp'])
     points = np.asarray(vertices, dtype=float)
     if (
         points.ndim != 2
@@ -147,7 +149,9 @@ def validate_object_pose(tcp, held, vertices, config, adaptive):
     ):
         raise ValueError('物品模型顶点无效')
     obj = tcp @ np.linalg.inv(attachment)
-    lower, upper = object_bounds(obj, points, held.get('pose_mode', '6d'))
+    lower, upper = pose_symmetry.object_bounds(
+        obj, points, held.get('pose_mode', '6d')
+    )
     if not adaptive:
         low, high = (
             np.asarray(config['workspace_min_m']),
@@ -157,7 +161,13 @@ def validate_object_pose(tcp, held, vertices, config, adaptive):
         if (
             np.any(xyz < low)
             or np.any(xyz > high)
-            or xyz[2] < config['table_z_m'] + minimum_table_clearance(config)
+            or (
+                xyz[2]
+                < (
+                    config['table_z_m']
+                    + grasp_geometry.minimum_table_clearance(config)
+                )
+            )
         ):
             raise ValueError('固定模式工具端点超出工作区或离桌距离不足')
         if np.any(lower < low - 1e-8) or np.any(upper > high + 1e-8):
@@ -169,22 +179,24 @@ def validate_object_pose(tcp, held, vertices, config, adaptive):
 def reorientation_waypoints(
     held, vertices, rotation, current_raw, config, settings, adaptive=False
 ):
-    attachment = transform(held['object_T_tcp'])
-    current = controller_pose(current_raw)
+    attachment = grasp_geometry.transform(held['object_T_tcp'])
+    current = grasp_geometry.controller_pose(current_raw)
     target_tcp = current.copy()
     target_tcp[:3, :3] = checked_rotation(rotation) @ attachment[:3, :3]
     if adaptive and target_tcp[2, 3] <= config['table_z_m'] + .10:
         raise ValueError('自适应姿态的最终末端高度必须高于桌面 10 厘米')
     validate_object_pose(current, held, vertices, config, adaptive)
     validate_object_pose(target_tcp, held, vertices, config, adaptive)
-    step = checked_step(settings.get('max_rotation_step_deg', 15.))
+    step = rotation_steps.checked_step(
+        settings.get('max_rotation_step_deg', 15.)
+    )
     waypoints = []
-    parts = fractions(current[:3, :3], target_tcp[:3, :3], step)
+    parts = rotation_steps.fractions(current[:3, :3], target_tcp[:3, :3], step)
     if len(parts) > 64:
         raise ValueError('调姿方案超过64段，请增大步长或拆分明确的目标')
     for index, fraction in enumerate(parts, 1):
         pose = current.copy()
-        pose[:3, :3] = interpolate(
+        pose[:3, :3] = rotation_steps.interpolate(
             current[:3, :3], target_tcp[:3, :3], fraction
         )
         validate_object_pose(pose, held, vertices, config, adaptive)
@@ -264,7 +276,7 @@ def position_offsets(current, minimum_z, step):
 def adaptive_candidate(
     held, vertices, rotation, arm, config, settings, offset, adaptive=False
 ):
-    current = controller_pose(arm['pose'])
+    current = grasp_geometry.controller_pose(arm['pose'])
     shifted = current.copy()
     shifted[:3, 3] += offset
     shifted_raw = pose_waypoint('translate', shifted)['controller_pose']
@@ -282,7 +294,10 @@ def adaptive_candidate(
     distance = float(np.linalg.norm(offset))
     if distance > 1e-9:
         plan['waypoints'].insert(
-            0, pose_waypoint('translate', controller_pose(shifted_raw))
+            0,
+            pose_waypoint(
+                'translate', grasp_geometry.controller_pose(shifted_raw)
+            ),
         )
     plan['validation_points'] = plan['waypoints']
     plan.update(
@@ -334,7 +349,7 @@ def plan_reorientation(
     attempts = diagnostics if diagnostics is not None else []
     attempted = 0
     deadline = time.monotonic() + settings['planning_timeout_s']
-    current = controller_pose(arm['pose'])
+    current = grasp_geometry.controller_pose(arm['pose'])
     # Include feedback tolerance and one controller position unit so final
     # measured Z can be strictly above 10 cm.
     minimum_z = (
@@ -346,7 +361,7 @@ def plan_reorientation(
         if position_mode == 'adaptive'
         else [np.zeros(3)]
     )
-    rotations = orientation_variants(rotation, held, current)
+    rotations = pose_symmetry.orientation_variants(rotation, held, current)
     single_fixed = (
         position_mode == 'fixed' and held.get('pose_mode', '6d') != '5d'
     )

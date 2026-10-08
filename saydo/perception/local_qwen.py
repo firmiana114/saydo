@@ -4,7 +4,7 @@ import base64
 import json
 import math
 import os
-from pathlib import Path
+import pathlib
 import select
 import subprocess
 import threading
@@ -17,7 +17,7 @@ ROOT = paths.ROOT
 
 
 def read_qwen_settings(directory):
-    p = Path(directory) / 'qwen_detection.json'
+    p = pathlib.Path(directory) / 'qwen_detection.json'
     if not p.exists():
         return None
     if p.is_symlink() or p.stat().st_size > 16384:
@@ -112,7 +112,7 @@ class LocalQwenDetector:
     name = 'Qwen3-VL-4B NF4'
 
     def __init__(self, root=ROOT):
-        self.root = Path(root)
+        self.root = pathlib.Path(root)
         self.process = None
         self.ready = None
         self.lock = threading.RLock()
@@ -160,8 +160,8 @@ class LocalQwenDetector:
             if not all(
                 (
                     isinstance(config[k], str)
-                    and Path(config[k]).is_absolute()
-                    and Path(config[k]).exists()
+                    and pathlib.Path(config[k]).is_absolute()
+                    and pathlib.Path(config[k]).exists()
                 )
                 for k in ('python', 'model_dir')
             ):
@@ -188,7 +188,7 @@ class LocalQwenDetector:
                 self.process = subprocess.Popen(
                     [
                         config['python'],
-                        str(Path(__file__).with_name('qwen_worker.py')),
+                        str(pathlib.Path(__file__).with_name('qwen_worker.py')),
                         str(p),
                     ],
                     stdin=subprocess.PIPE,

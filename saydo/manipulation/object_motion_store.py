@@ -1,9 +1,9 @@
 """Immutable, single-use plans scoped to one controller process/session."""
 
-from contextlib import closing
+import contextlib
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import re
 import sqlite3
 import time
@@ -19,9 +19,9 @@ def fingerprint(value):
 class ObjectPlanStore:
     def __init__(self, root):
         self.session_id = uuid.uuid4().hex
-        self.path = Path(root) / 'work/grasp/object_motion_plans.sqlite'
+        self.path = pathlib.Path(root) / 'work/grasp/object_motion_plans.sqlite'
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self.connect()) as db, db:
+        with contextlib.closing(self.connect()) as db, db:
             db.execute(
                 'CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, '
                 'session TEXT, body TEXT, digest TEXT, state TEXT, request_id '
@@ -39,7 +39,7 @@ class ObjectPlanStore:
             'created_at': time.time(),
             'expires_at': time.time() + 300,
         }
-        with closing(self.connect()) as db, db:
+        with contextlib.closing(self.connect()) as db, db:
             db.execute(
                 'INSERT INTO plans VALUES (?,?,?,?,?,NULL)',
                 (
@@ -58,7 +58,7 @@ class ObjectPlanStore:
             or not re.fullmatch('[a-f0-9]{32}', plan_id)
         ):
             raise ValueError('方案编号无效')
-        with closing(self.connect()) as db:
+        with contextlib.closing(self.connect()) as db:
             row = db.execute(
                 'SELECT session,body,digest,state,request_id FROM plans WHERE '
                 'id=?',
@@ -79,7 +79,7 @@ class ObjectPlanStore:
 
     def claim(self, plan_id, request_id):
         plan = self.get(plan_id)
-        with closing(self.connect()) as db, db:
+        with contextlib.closing(self.connect()) as db, db:
             changed = db.execute(
                 "UPDATE plans SET state='executing',request_id=? WHERE id=? "
                 "AND state='ready' AND session=?",
@@ -92,7 +92,7 @@ class ObjectPlanStore:
         return plan
 
     def finish(self, plan_id, state):
-        with closing(self.connect()) as db, db:
+        with contextlib.closing(self.connect()) as db, db:
             db.execute(
                 'UPDATE plans SET state=? WHERE id=? AND session=?',
                 (state, plan_id, self.session_id),

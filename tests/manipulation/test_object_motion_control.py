@@ -1,25 +1,25 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import controller_pose
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
 from tests.manipulation import test_grasp
-from tests.manipulation.test_object_motion import fixture
+from tests.manipulation import test_object_motion
 
 
 class ObjectControlTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.held, self.vertices, self.arm, base = fixture()
+        self.root = pathlib.Path(self.temp.name)
+        self.held, self.vertices, self.arm, base = test_object_motion.fixture()
         self.config = test_grasp.GraspTests().config()
         self.config.update(
             base,
@@ -37,12 +37,14 @@ class ObjectControlTests(unittest.TestCase):
         self.held['model_sha256'] = hashlib.sha256(
             mesh.read_bytes()
         ).hexdigest()
-        self.tracker = SimpleNamespace(
+        self.tracker = types.SimpleNamespace(
             models_root=self.root,
             state={'object_id': 'sample', 'camera_frame_at': time.time()},
             generation=1,
         )
-        self.service = GraspController(self.root, self.tracker, self.path)
+        self.service = grasp_control.GraspController(
+            self.root, self.tracker, self.path
+        )
         self.service.held_object = copy.deepcopy(self.held)
         self.geometry = {
             'object_id': 'sample',
@@ -50,7 +52,7 @@ class ObjectControlTests(unittest.TestCase):
             'pose_mode': '6d',
             'vertices': self.vertices.tolist(),
         }
-        self.robot = Mock()
+        self.robot = mock.Mock()
         self.opened = False
         self.fail = None
         self.joint_targets = {}
@@ -114,7 +116,7 @@ class ObjectControlTests(unittest.TestCase):
                 self.root / 'checker',
             )
 
-        self.service.motion_context = Mock(side_effect=context)
+        self.service.motion_context = mock.Mock(side_effect=context)
 
         def verify(plan, config, report, arm, points, timeout=3):
             solutions = []
@@ -125,14 +127,14 @@ class ObjectControlTests(unittest.TestCase):
                 solutions.append([v / 1000 for v in raw])
             return {'verified': True, 'joint_solutions_deg': solutions}
 
-        self.service.verify_motion_targets = Mock(side_effect=verify)
-        self.service.retain_reorientation_hold = Mock(return_value=True)
-        self.patch1 = patch(
-            'saydo.manipulation.object_motion_control.check_waypoints',
+        self.service.verify_motion_targets = mock.Mock(side_effect=verify)
+        self.service.retain_reorientation_hold = mock.Mock(return_value=True)
+        self.patch1 = mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             return_value=(True, {'verified': True}),
         )
-        self.patch2 = patch(
-            'saydo.manipulation.object_motion_control.select_object',
+        self.patch2 = mock.patch(
+            'saydo.objects.object_catalog.select_object',
             return_value={'mesh': str(mesh), 'pose_mode': '6d'},
         )
         self.patch1.start()
@@ -191,7 +193,7 @@ class ObjectControlTests(unittest.TestCase):
         args = self.args()
         args.update(goal=None, retreat_vector_base_m=[0, 0, .05])
         plan = self.planned(args, True)
-        before = controller_pose(self.arm['pose'])
+        before = grasp_geometry.controller_pose(self.arm['pose'])
         status = self.execute(plan, 'release-001')
         self.assertEqual(status['state'], 'completed', status.get('error'))
         self.assertIsNone(self.service.held_object)
@@ -199,7 +201,7 @@ class ObjectControlTests(unittest.TestCase):
             [x[0] for x in self.calls], ['movel', 'movel', 'open', 'movel']
         )
         np.testing.assert_allclose(
-            controller_pose(self.arm['pose'])[:3, 3],
+            grasp_geometry.controller_pose(self.arm['pose'])[:3, 3],
             before[:3, 3] + [0, 0, .05],
             atol=1e-6,
         )
@@ -345,7 +347,7 @@ class ObjectControlTests(unittest.TestCase):
         generation = [1]
         reference = np.eye(4)
         reference[0, 3] = .1
-        self.tracker.grasp_observation = Mock(
+        self.tracker.grasp_observation = mock.Mock(
             side_effect=lambda: {
                 'object_id': 'rack',
                 'pose_mode': '6d',
@@ -356,7 +358,7 @@ class ObjectControlTests(unittest.TestCase):
                 'pose_mode_revision': 'rack-revision',
             }
         )
-        self.service.calibration = Mock(
+        self.service.calibration = mock.Mock(
             return_value=(
                 {'flange_T_color_optical_camera': np.eye(4).tolist()}, {}
             )
@@ -381,12 +383,12 @@ class ObjectControlTests(unittest.TestCase):
         self.service.held_object.update(scene_id='scene', instance_id='tube')
         frame = np.eye(4)
         frame[:3, 3] = [.4, -.1, .3]
-        self.service.scene_reference = Mock(
+        self.service.scene_reference = mock.Mock(
             return_value=(frame, {'name': 'scene_object', 'scene_id': 'scene'})
         )
-        self.service.validate_scene = Mock()
-        self.service.update_scene_instance = Mock()
-        self.tracker.grasp_observation = Mock(
+        self.service.validate_scene = mock.Mock()
+        self.service.update_scene_instance = mock.Mock()
+        self.tracker.grasp_observation = mock.Mock(
             side_effect=AssertionError('must not track reference again')
         )
         args = self.args(
@@ -429,7 +431,9 @@ class ObjectControlTests(unittest.TestCase):
         frame, context, arm = self.service.resolve_motion_frame(
             goal, held, config, self.arm, tool
         )
-        np.testing.assert_allclose(frame, controller_pose(self.arm['pose']))
+        np.testing.assert_allclose(
+            frame, grasp_geometry.controller_pose(self.arm['pose'])
+        )
         with self.assertRaisesRegex(ValueError, '5D'):
             self.service.resolve_motion_frame(
                 {'reference_frame': 'held_object'},
@@ -438,7 +442,7 @@ class ObjectControlTests(unittest.TestCase):
                 self.arm,
                 tool,
             )
-        self.service.calibration = Mock(
+        self.service.calibration = mock.Mock(
             return_value=(
                 {'flange_T_color_optical_camera': np.eye(4).tolist()}, tool
             )
@@ -446,7 +450,9 @@ class ObjectControlTests(unittest.TestCase):
         frame, _, _ = self.service.resolve_motion_frame(
             {'reference_frame': 'camera'}, held, config, self.arm, tool
         )
-        np.testing.assert_allclose(frame, controller_pose(self.arm['pose']))
+        np.testing.assert_allclose(
+            frame, grasp_geometry.controller_pose(self.arm['pose'])
+        )
         self.tracker.state['camera_frame_at'] = 0
         with self.assertRaisesRegex(ValueError, '新鲜'):
             self.service.resolve_motion_frame(

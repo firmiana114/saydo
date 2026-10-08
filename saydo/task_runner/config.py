@@ -1,11 +1,11 @@
 """Machine-local configuration; dotenv values are data, never shell code."""
 
-from dataclasses import dataclass, field
-from pathlib import Path
+import dataclasses
+import pathlib
 import json
 import os
 import re
-from urllib.parse import urlsplit
+import urllib.parse
 
 from saydo import paths
 
@@ -15,7 +15,7 @@ UI_REASONING_EFFORTS = ('low', 'medium', 'high')
 
 
 def read_env(path):
-    path = Path(path)
+    path = pathlib.Path(path)
     if path.stat().st_mode & 0o077:
         raise ValueError('.env 必须仅当前用户可读写（chmod 600）')
     values = {}
@@ -37,22 +37,22 @@ def read_env(path):
     return values
 
 
-@dataclass
+@dataclasses.dataclass
 class Config:
-    api_key: str = field(repr=False)
+    api_key: str = dataclasses.field(repr=False)
     responses_url: str = 'https://trendengine.best/v1/responses'
     model: str = 'gpt-6-sol'
     fallback_model: str = ''
     reasoning_effort: str = 'medium'
     llm_proxy: str | None = None
     robot_url: str = 'http://127.0.0.1:8089'
-    token_file: Path = field(
+    token_file: pathlib.Path = dataclasses.field(
         default_factory=(
-            lambda: Path.home() / '.local/share/saydo-mcp/robot-backend-token'
+            lambda: pathlib.Path.home() / '.local/share/saydo-mcp/robot-backend-token'
         )
     )
     mode: str = 'execute'
-    state_dir: Path = ROOT / 'work/task_runner'
+    state_dir: pathlib.Path = ROOT / 'work/task_runner'
     max_turns: int = 20
     # Backend/orchestration budget; bounded model waiting is excluded.
     run_timeout: float = 600
@@ -77,21 +77,21 @@ class Config:
             reasoning_effort=get('LLM_REASONING_EFFORT', cls.reasoning_effort),
             llm_proxy=get('LLM_PROXY', '') or None,
             robot_url=get('ROBOT_URL', cls.robot_url),
-            token_file=Path(
+            token_file=pathlib.Path(
                 get(
                     'ROBOT_TOKEN_FILE',
                     str(
-                        Path.home()
+                        pathlib.Path.home()
                         / '.local/share/saydo-mcp/robot-backend-token'
                     ),
                 )
             ).expanduser(),
             mode=get('RUNNER_MODE', cls.mode),
-            state_dir=Path(
+            state_dir=pathlib.Path(
                 get('RUNNER_STATE_DIR', str(cls.state_dir))
             ).expanduser(),
         )
-        url = urlsplit(config.responses_url)
+        url = urllib.parse.urlsplit(config.responses_url)
         if (
             url.scheme != 'https'
             or not url.hostname
@@ -110,7 +110,7 @@ class Config:
         ):
             raise ValueError('缺少模型密钥或执行模式无效')
         if config.llm_proxy:
-            proxy = urlsplit(config.llm_proxy)
+            proxy = urllib.parse.urlsplit(config.llm_proxy)
             if (
                 proxy.scheme not in ('http', 'https')
                 or not proxy.hostname

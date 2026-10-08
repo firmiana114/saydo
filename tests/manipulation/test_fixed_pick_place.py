@@ -1,12 +1,12 @@
 import copy
 import json
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
-from saydo.manipulation.fixed_pick_place import checked_request, placement_goals, joint_targets
+from saydo.manipulation import fixed_pick_place as manipulation_fixed_pick_place
 from tests.manipulation import test_object_motion_control as control
 from tests.workbench import test_agent_api as api_base
-from saydo.workbench.agent_api import AgentError
+from saydo.workbench import agent_api
 
 
 def fixtures():
@@ -60,11 +60,11 @@ def fixtures():
 class GeometryTests(unittest.TestCase):
     def test_slots_are_ordered_nearest_to_the_source_object_first(self):
         scene, req, geometry = fixtures()
-        checked_request(req)
+        manipulation_fixed_pick_place.checked_request(req)
         # The tube lies at x=0.30; slot A01 is at x=0.35 and A02 at x=0.375 in
         # Base.
         for listed in (['A01', 'A02'], ['A02', 'A01']):
-            _, _, goals = placement_goals(
+            _, _, goals = manipulation_fixed_pick_place.placement_goals(
                 scene, {**req, 'free_slots': listed}, geometry
             )
             self.assertEqual([x[0] for x in goals], ['A01', 'A02'])
@@ -74,14 +74,19 @@ class GeometryTests(unittest.TestCase):
         beyond = copy.deepcopy(scene)
         beyond['instances'][0]['base_T_object'][0][3] = .42
         self.assertEqual(
-            [x[0] for x in placement_goals(beyond, req, geometry)[2]],
+            [
+                x[0]
+                for x in manipulation_fixed_pick_place.placement_goals(
+                    beyond, req, geometry
+                )[2]
+            ],
             ['A02', 'A01'],
         )
         # Height is ignored and an exact tie falls back to the slot name.
         level = copy.deepcopy(scene)
         level['instances'][0]['base_T_object'][0][3] = .3625
         level['instances'][0]['base_T_object'][2][3] = .5
-        tie = placement_goals(
+        tie = manipulation_fixed_pick_place.placement_goals(
             level, {**req, 'free_slots': ['A02', 'A01']}, geometry
         )[2]
         self.assertEqual([x[0] for x in tie], ['A01', 'A02'])
@@ -89,7 +94,9 @@ class GeometryTests(unittest.TestCase):
 
     def test_bottom_reference_and_support_height(self):
         scene, req, geometry = fixtures()
-        _, _, goals = placement_goals(scene, req, geometry)
+        _, _, goals = manipulation_fixed_pick_place.placement_goals(
+            scene, req, geometry
+        )
         for _, goal, _, _ in goals:
             self.assertEqual(goal['reference_point_object_m'], [0, 0, -.075])
             self.assertAlmostEqual(goal['target_position_m'][2], .015)
@@ -123,7 +130,9 @@ class GeometryTests(unittest.TestCase):
         variants.append((small, req))
         for value, request in variants:
             with self.assertRaises(ValueError):
-                placement_goals(value, request, geometry)
+                manipulation_fixed_pick_place.placement_goals(
+                    value, request, geometry
+                )
         for change in [
             {'free_slots': []},
             {'free_slots': [{}]},
@@ -132,7 +141,7 @@ class GeometryTests(unittest.TestCase):
             {'release_gap_m': .01},
         ]:
             with self.assertRaises(ValueError):
-                checked_request({**req, **change})
+                manipulation_fixed_pick_place.checked_request({**req, **change})
 
     def test_waypoint_joint_mapping_uses_own_endpoint_not_retreat(self):
         points = [
@@ -142,7 +151,9 @@ class GeometryTests(unittest.TestCase):
             {'name': 'release_retreat_sample_1'},
         ]
         q = [[i] * 7 for i in range(4)]
-        result = joint_targets(points, q, [{'name': 'grasp'}, {'name': 'lift'}])
+        result = manipulation_fixed_pick_place.joint_targets(
+            points, q, [{'name': 'grasp'}, {'name': 'lift'}]
+        )
         self.assertEqual(result['grasp'], [0] * 7)
         self.assertEqual(result['lift'], [2000] * 7)
 
@@ -152,13 +163,13 @@ class PlanningTests(unittest.TestCase):
         control.ObjectControlTests.setUp(self)
         self.service.held_object = None
         self.scene, self.request, self.geom = fixtures()
-        self.service.validate_scene = Mock(return_value=self.scene)
-        self.service.fixed_binding_check = Mock()
-        self.service.scene_observation = Mock(return_value={})
-        self.service.stationary_scene_arm = Mock(
+        self.service.validate_scene = mock.Mock(return_value=self.scene)
+        self.service.fixed_binding_check = mock.Mock()
+        self.service.scene_observation = mock.Mock(return_value={})
+        self.service.stationary_scene_arm = mock.Mock(
             return_value=copy.deepcopy(self.arm)
         )
-        self.service.arm_state = Mock(return_value=copy.deepcopy(self.arm))
+        self.service.arm_state = mock.Mock(return_value=copy.deepcopy(self.arm))
         source = self.scene['instances'][0]
         self.grasp = {
             'object_id': 'sample',
@@ -190,7 +201,7 @@ class PlanningTests(unittest.TestCase):
                 },
             ],
         }
-        self.service.prepare_grasp_plan = Mock(
+        self.service.prepare_grasp_plan = mock.Mock(
             return_value=(self.grasp, self.config)
         )
 
@@ -206,13 +217,13 @@ class PlanningTests(unittest.TestCase):
         )
 
     def test_full_plan_includes_grasp_and_release_before_any_write(self):
-        with patch(
-            'saydo.manipulation.fixed_pick_place.model_geometry',
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.geom,
-        ), patch(
-            'saydo.manipulation.fixed_pick_place.RobotClient'
-        ) as robot, patch(
-            'saydo.manipulation.fixed_pick_place.check_waypoints',
+        ), mock.patch(
+            'saydo.robot.grasp_robot.RobotClient'
+        ) as robot, mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             side_effect=self.check,
         ) as check:
             plan = self.service.plan_fixed_pick_place(self.request, {})
@@ -243,13 +254,13 @@ class PlanningTests(unittest.TestCase):
                 return False, {'reason': 'descent failure'}
             return self.check(checker, tool, arm, points, timeout)
 
-        store = Mock()
-        self.service.object_plan_store = Mock(return_value=store)
-        with patch(
-            'saydo.manipulation.fixed_pick_place.model_geometry',
+        store = mock.Mock()
+        self.service.object_plan_store = mock.Mock(return_value=store)
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.geom,
-        ), patch('saydo.manipulation.fixed_pick_place.RobotClient'), patch(
-            'saydo.manipulation.fixed_pick_place.check_waypoints',
+        ), mock.patch('saydo.robot.grasp_robot.RobotClient'), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             side_effect=reject,
         ):
             with self.assertRaisesRegex(ValueError, '全程'):
@@ -261,33 +272,33 @@ class PlanningTests(unittest.TestCase):
         self.service.stationary_scene_arm.return_value = {
             **self.arm, 'joint': [1000] * 7
         }
-        self.service.execute = Mock()
+        self.service.execute = mock.Mock()
         plan = {
             'effective_config': self.config,
             'grasp': self.grasp,
             'current_arm': self.arm,
         }
-        with patch('saydo.manipulation.fixed_pick_place.RobotClient'):
+        with mock.patch('saydo.robot.grasp_robot.RobotClient'):
             with self.assertRaisesRegex(ValueError, '起点'):
                 self.service.execute_fixed_pick_place(plan, {}, 'id')
         self.service.execute.assert_not_called()
         self.service.prepare_grasp_plan.assert_not_called()
 
     def test_execution_uses_frozen_targets_and_rejects_changed_attachment(self):
-        with patch(
-            'saydo.manipulation.fixed_pick_place.model_geometry',
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.geom,
-        ), patch('saydo.manipulation.fixed_pick_place.RobotClient'), patch(
-            'saydo.manipulation.fixed_pick_place.check_waypoints',
+        ), mock.patch('saydo.robot.grasp_robot.RobotClient'), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
             side_effect=self.check,
         ):
             plan = self.service.plan_fixed_pick_place(self.request, {})
-        self.service.verify_motion_targets = Mock(
+        self.service.verify_motion_targets = mock.Mock(
             side_effect=lambda p, c, r, a, points: {
                 'joint_solutions_deg': [[0] * 7 for _ in points]
             }
         )
-        self.service.update_scene_instance = Mock()
+        self.service.update_scene_instance = mock.Mock()
         order = []
 
         def grasp(p, c, r):
@@ -309,12 +320,12 @@ class PlanningTests(unittest.TestCase):
             self.assertIn('tool_response', p['hold'])
             self.assertGreater(p['max_execution_duration_s'], 90)
 
-        self.service.execute = Mock(side_effect=grasp)
-        self.service.run_object_execution = Mock(side_effect=release)
-        with patch(
-            'saydo.manipulation.fixed_pick_place.model_geometry',
+        self.service.execute = mock.Mock(side_effect=grasp)
+        self.service.run_object_execution = mock.Mock(side_effect=release)
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.geom,
-        ), patch('saydo.manipulation.fixed_pick_place.RobotClient'):
+        ), mock.patch('saydo.robot.grasp_robot.RobotClient'):
             self.service.execute_fixed_pick_place(plan, {}, 'test')
         self.assertEqual(order, ['grasp', 'release'])
 
@@ -324,10 +335,10 @@ class PlanningTests(unittest.TestCase):
 
         self.service.execute.side_effect = changed
         self.service.run_object_execution.reset_mock()
-        with patch(
-            'saydo.manipulation.fixed_pick_place.model_geometry',
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.geom,
-        ), patch('saydo.manipulation.fixed_pick_place.RobotClient'):
+        ), mock.patch('saydo.robot.grasp_robot.RobotClient'):
             with self.assertRaisesRegex(ValueError, '夹持关系'):
                 self.service.execute_fixed_pick_place(plan, {}, 'test')
         self.service.run_object_execution.assert_not_called()
@@ -347,7 +358,7 @@ class GraspSegmentVerificationTests(unittest.TestCase):
             'release_descent_1_sample_0',
         ]
         self.points = [{'name': n, 'controller_pose': [0] * 6} for n in names]
-        self.service.arm_state = Mock(return_value=copy.deepcopy(self.arm))
+        self.service.arm_state = mock.Mock(return_value=copy.deepcopy(self.arm))
         self.seen = []
 
         def solve(plan, config, report, arm, points):
@@ -362,7 +373,7 @@ class GraspSegmentVerificationTests(unittest.TestCase):
                 ]
             }
 
-        self.service.verify_motion_targets = Mock(side_effect=solve)
+        self.service.verify_motion_targets = mock.Mock(side_effect=solve)
         self.plan = {
             'fixed_joint_targets': {
                 'pregrasp': [1000] * 7, 'grasp': [3000] * 7, 'lift': [4000] * 7
@@ -451,8 +462,10 @@ class SampledJointSegmentTests(unittest.TestCase):
             state['joint'] = list(values)
 
         self.robot.move_joints.side_effect = joints
-        self.service.arm_state = Mock(side_effect=lambda: copy.deepcopy(state))
-        watchdog = Mock()
+        self.service.arm_state = mock.Mock(
+            side_effect=lambda: copy.deepcopy(state)
+        )
+        watchdog = mock.Mock()
         report = {}
         last = self.service.follow_joint_samples(
             [[1, 0, 0, 0, 0, 0, 0], [2.0004, 0, 0, 0, 0, 0, 0]],
@@ -479,17 +492,19 @@ class SampledJointSegmentTests(unittest.TestCase):
         self.robot.move_joints.side_effect = lambda values, *rest: sent.append(
             list(values)
         )
-        self.service.arm_state = Mock(return_value={'joint': [0] * 7})
+        self.service.arm_state = mock.Mock(return_value={'joint': [0] * 7})
         with self.assertRaisesRegex(ValueError, '未到达所选关节解'):
             self.service.follow_joint_samples(
-                [[1] * 7, [2] * 7], 25, Mock(), {}, 'lift'
+                [[1] * 7, [2] * 7], 25, mock.Mock(), {}, 'lift'
             )
         self.assertEqual(len(sent), 1)
         for bad in ([[1] * 6], [[float('nan')] * 7], []):
             with self.subTest(bad=bad), self.assertRaisesRegex(
                 ValueError, '缺少已验证的关节解'
             ):
-                self.service.follow_joint_samples(bad, 25, Mock(), {}, 'lift')
+                self.service.follow_joint_samples(
+                    bad, 25, mock.Mock(), {}, 'lift'
+                )
         self.assertEqual(len(sent), 1)
 
     def test_fixed_release_uses_sampled_joint_moves_and_completes_with_different_planned_joints(
@@ -505,7 +520,7 @@ class SampledJointSegmentTests(unittest.TestCase):
             + [plan['retreat_waypoint']['name']]
         )
         plan['fixed_joint_targets'] = {name: [777000] * 7 for name in names}
-        before = control.controller_pose(self.arm['pose'])
+        before = control.grasp_geometry.controller_pose(self.arm['pose'])
         self.service.status.update(busy=True)
         self.service.run_object_execution(plan, 'fixed-release', nested=True)
         self.assertEqual(
@@ -522,7 +537,7 @@ class SampledJointSegmentTests(unittest.TestCase):
         self.assertEqual(set(kinds) - {'open'}, {'movej'})
         self.assertIsNone(self.service.held_object)
         np.testing.assert_allclose(
-            control.controller_pose(self.arm['pose'])[:3, 3],
+            control.grasp_geometry.controller_pose(self.arm['pose'])[:3, 3],
             before[:3, 3] + [0, 0, .05],
             atol=1e-6,
         )
@@ -538,7 +553,7 @@ class SampledJointSegmentTests(unittest.TestCase):
         self.service.robot = self.robot
         self.service.actuated = True
         hold = copy.deepcopy(self.service.held_object)
-        self.service.motion_context = Mock(
+        self.service.motion_context = mock.Mock(
             side_effect=KeyError('tool_response')
         )
         self.service.status.update(busy=True)
@@ -562,16 +577,18 @@ class SampledJointSegmentTests(unittest.TestCase):
 
     def test_fixed_release_budget_and_joint_change_note(self):
         from saydo.manipulation import fixed_pick_place
-        from saydo.robot.motion_validation import note_joint_change
+        from saydo.robot import motion_validation
         self.assertGreater(fixed_pick_place.FIXED_RELEASE_BUDGET_S, 90)
         report = {}
         self.assertAlmostEqual(
-            note_joint_change(report, 'lift', 'basis', [1000] * 7, [1400] * 7),
+            motion_validation.note_joint_change(
+                report, 'lift', 'basis', [1000] * 7, [1400] * 7
+            ),
             .4,
         )
         self.assertEqual(report, {})
         self.assertAlmostEqual(
-            note_joint_change(
+            motion_validation.note_joint_change(
                 report,
                 'lift',
                 'basis',
@@ -592,7 +609,7 @@ class ApiTests(unittest.TestCase):
 
     def setUp(self):
         api_base.AgentAPITests.setUp(self)
-        self.grasp.validate_scene = Mock()
+        self.grasp.validate_scene = mock.Mock()
 
         def run(args, request_id, plan):
             if plan is None:
@@ -619,7 +636,7 @@ class ApiTests(unittest.TestCase):
         plan = self.wait()['result']['fixed_pick_place_plan']
         args = {'plan_id': plan['plan_id']}
         self.grasp.mode = 'preview'
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.request(
                 'execute_fixed_pick_place', task_id='exec-001', arguments=args
             )
@@ -643,11 +660,11 @@ class ApiTests(unittest.TestCase):
 
     def test_cancel_planning_is_id_scoped_and_never_stops_hardware(self):
         self.api.active = 'planning-id'
-        self.api.get_task = Mock(
+        self.api.get_task = mock.Mock(
             return_value={'operation': 'plan_fixed_pick_place'}
         )
         self.grasp.actuated = False
-        self.grasp.robot = Mock()
+        self.grasp.robot = mock.Mock()
         self.assertFalse(
             self.api.post(
                 '/api/agent/cancel-planning', {'task_id': 'other'}
@@ -662,7 +679,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(self.grasp.cancelled.is_set())
         self.grasp.robot.stop.assert_not_called()
         self.grasp.actuated = True
-        with self.assertRaises(AgentError):
+        with self.assertRaises(agent_api.AgentError):
             self.api.post(
                 '/api/agent/cancel-planning', {'task_id': 'planning-id'}
             )

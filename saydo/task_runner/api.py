@@ -3,22 +3,22 @@
 import argparse
 import asyncio
 import fcntl
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.server
 import json
-from pathlib import Path
+import pathlib
 import signal
 import threading
-from urllib.parse import urlsplit
-from saydo.task_runner.config import Config, ROOT, UI_MODELS, UI_REASONING_EFFORTS
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
+import urllib.parse
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store as task_runner_store
 
 # 任务页面与页面脚本所在的目录。
-WEB = Path(__file__).resolve().with_name('web')
+WEB = pathlib.Path(__file__).resolve().with_name('web')
 
 
 def make_handler(runner, store, loop, host, port):
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
@@ -45,7 +45,9 @@ def make_handler(runner, store, loop, host, port):
                 pass
 
         def trusted(self):
-            parsed = urlsplit('http://' + self.headers.get('Host', ''))
+            parsed = urllib.parse.urlsplit(
+                'http://' + self.headers.get('Host', '')
+            )
             # SSH forwards may expose a different local port, but not an
             # arbitrary hostname.
             return (
@@ -89,8 +91,10 @@ def make_handler(runner, store, loop, host, port):
                             'fallback_model': runner.config.fallback_model,
                             'reasoning_effort': runner.config.reasoning_effort,
                             'llm_options': {
-                                'models': UI_MODELS,
-                                'reasoning_efforts': UI_REASONING_EFFORTS,
+                                'models': task_runner_config.UI_MODELS,
+                                'reasoning_efforts': (
+                                    task_runner_config.UI_REASONING_EFFORTS
+                                ),
                             },
                             'stopping': runner.stopping,
                             'blocked_by_uncertainty': runner.uncertain,
@@ -178,13 +182,13 @@ def make_handler(runner, store, loop, host, port):
             except (ValueError, KeyError):
                 return self.reply(400, {'error': '请求参数无效或任务不存在'})
             except Exception as error:
-                from saydo.task_runner.robot_adapter import Blocked
+                from saydo.task_runner import robot_adapter
                 return self.reply(
-                    409 if isinstance(error, Blocked) else 503,
+                    409 if isinstance(error, robot_adapter.Blocked) else 503,
                     {
                         'error': (
                             str(error)
-                            if isinstance(error, Blocked)
+                            if isinstance(error, robot_adapter.Blocked)
                             else '请求未确认；请查询原任务，不要重复提交'
                         )
                     },
@@ -195,20 +199,22 @@ def make_handler(runner, store, loop, host, port):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--env', type=Path, default=ROOT / '.env')
+    parser.add_argument(
+        '--env', type=pathlib.Path, default=task_runner_config.ROOT / '.env'
+    )
     parser.add_argument('--port', type=int, default=8091)
     args = parser.parse_args()
-    config = Config.load(args.env)
+    config = task_runner_config.Config.load(args.env)
     config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = (config.state_dir / 'runner.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    store = Store(
+    store = task_runner_store.Store(
         config.state_dir,
         secrets=(config.api_key, config.token_file.read_text().strip()),
     )
     loop = asyncio.new_event_loop()
-    runner = Runner(config, store)
-    server = ThreadingHTTPServer(
+    runner = task_runner_runner.Runner(config, store)
+    server = http.server.ThreadingHTTPServer(
         ('127.0.0.1', args.port),
         make_handler(runner, store, loop, '127.0.0.1', args.port),
     )

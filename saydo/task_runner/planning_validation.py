@@ -1,7 +1,7 @@
 """Correctable argument errors are restricted to planners that cannot move hardware."""
 
 import math
-from saydo.contracts.motion_contract import checked_goal, identity, vector
+from saydo.contracts import motion_contract
 
 READONLY_PLANNING = frozenset(
     (
@@ -29,17 +29,19 @@ def goal_error_detail(error):
 
 def validate_planning_arguments(name, args):
     if name in ('plan_held_object_motion', 'plan_release'):
-        identity(args)
-        checked_goal(args['goal'], release=name == 'plan_release')
+        motion_contract.identity(args)
+        motion_contract.checked_goal(
+            args['goal'], release=name == 'plan_release'
+        )
         if name == 'plan_release':
-            retreat = vector(
+            retreat = motion_contract.vector(
                 args['retreat_vector_base_m'], 'retreat_vector_base_m', .3
             )
             if math.sqrt(sum(v * v for v in retreat)) > .3:
                 raise ValueError('retreat_vector_base_m长度不得超过0.3米')
     elif name == 'preview_reorient':
-        identity(args)
-        checked_goal(
+        motion_contract.identity(args)
+        motion_contract.checked_goal(
             {
                 'target_rpy_deg': args['target_rpy_deg'],
                 'position_mode': args['position_mode'],

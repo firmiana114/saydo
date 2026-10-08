@@ -1,10 +1,10 @@
 import asyncio
 import copy
 import unittest
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked, compact
-from saydo.task_runner.tool_registry import schemas, validate
-from tests.task_runner.test_adapter import Backend
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import tool_registry
+from tests.task_runner import test_adapter
 import json
 
 TARGETS = [
@@ -27,9 +27,10 @@ class SceneAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_then_grasp_preserves_identity_and_does_not_switch_tracking(
         self
     ):
-        backend = Backend()
-        adapter = RobotAdapter(
-            Config(api_key='test', mode='execute', poll_interval=.001), backend
+        backend = test_adapter.Backend()
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='test', mode='execute', poll_interval=.001),
+            backend,
         )
         cancel = asyncio.Event()
         scene = {
@@ -94,9 +95,9 @@ class SceneAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_uncaptured_and_failed_capture_cannot_use_old_scene(self):
-        backend = Backend()
-        adapter = RobotAdapter(
-            Config(api_key='test', poll_interval=.001), backend
+        backend = test_adapter.Backend()
+        adapter = robot_adapter.RobotAdapter(
+            config.Config(api_key='test', poll_interval=.001), backend
         )
         cancel = asyncio.Event()
         args = {
@@ -137,18 +138,19 @@ class SceneAdapterTests(unittest.IsolatedAsyncioTestCase):
                 for i in range(120)
             ]
         }
-        self.assertEqual(len(compact(data)['features']), 120)
-        names = {d['name'] for d in schemas('execute')}
+        self.assertEqual(len(robot_adapter.compact(data)['features']), 120)
+        names = {d['name'] for d in tool_registry.schemas('execute')}
         self.assertIn('capture_scene_snapshot', names)
         self.assertNotIn(
-            'capture_scene_snapshot', {d['name'] for d in schemas('read_only')}
+            'capture_scene_snapshot',
+            {d['name'] for d in tool_registry.schemas('read_only')},
         )
         args = {
             'targets': TARGETS,
             'environment_static': True,
             'progress_message': '先定位所有目标',
         }
-        name, _ = validate(
+        name, _ = tool_registry.validate(
             {
                 'type': 'function_call',
                 'name': 'capture_scene_snapshot',

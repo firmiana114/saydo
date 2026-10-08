@@ -1,6 +1,6 @@
 """Exercise the exact SDK-independent native search with a branching fixture."""
 
-from pathlib import Path
+import pathlib
 import shutil
 import subprocess
 import tempfile
@@ -15,7 +15,7 @@ class BeamSearchTests(unittest.TestCase):
             raise unittest.SkipTest('C++ compiler unavailable')
         cls.folder = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.folder.cleanup)
-        root = Path(cls.folder.name)
+        root = pathlib.Path(cls.folder.name)
         source = root / 'test.cpp'
         cls.binary = root / 'test'
         source.write_text(r'''
@@ -45,7 +45,7 @@ int main(){
                 '-std=c++17',
                 '-O2',
                 '-I',
-                str(Path(__file__).resolve().parents[2]),
+                str(pathlib.Path(__file__).resolve().parents[2]),
                 str(source),
                 '-o',
                 str(cls.binary),

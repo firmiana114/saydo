@@ -1,8 +1,8 @@
 import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.server
 import threading
 import unittest
-from saydo.workbench.task_runner_proxy import TaskRunnerProxy
+from saydo.workbench import task_runner_proxy
 
 
 class ProxyTests(unittest.TestCase):
@@ -10,7 +10,7 @@ class ProxyTests(unittest.TestCase):
         self.calls = []
         calls = self.calls
 
-        class Handler(BaseHTTPRequestHandler):
+        class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
@@ -33,10 +33,10 @@ class ProxyTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(b'{"ok":true}')
 
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
-        self.proxy = TaskRunnerProxy(self.server.server_port)
+        self.proxy = task_runner_proxy.TaskRunnerProxy(self.server.server_port)
 
     def tearDown(self):
         self.server.shutdown()

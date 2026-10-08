@@ -3,11 +3,11 @@
 
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import sys
 
 # 本文件位于 <根目录>/scripts/，按路径直接运行，不依赖 saydo 包。
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 runtime = ROOT / 'work/foundationpose_runtime'
 sys.path[:0] = [
     str(runtime),

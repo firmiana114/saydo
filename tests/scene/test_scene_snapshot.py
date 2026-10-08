@@ -1,21 +1,21 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import threading
 import time
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import controller_pose
-from saydo.scene.scene_snapshot import SceneStore, arm_still
-from saydo.scene.scene_features import object_features
-from saydo.objects.object_catalog import select_object
-from saydo.contracts.scene_contract import checked_targets
-from saydo.contracts.motion_contract import checked_goal
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from saydo.scene import scene_snapshot
+from saydo.scene import scene_features
+from saydo.objects import object_catalog
+from saydo.contracts import scene_contract
+from saydo.contracts import motion_contract
 from tests.manipulation import test_grasp
 
 TARGETS = [
@@ -38,7 +38,7 @@ class SceneTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         self.models = self.root / 'models'
         for ident in ('source', 'reference'):
             folder = self.models / ident
@@ -59,7 +59,7 @@ class SceneTests(unittest.TestCase):
             'joint': [0] * 7, 'pose': [100000, 0, 300000, 0, 0, 0], 'err': [0]
         }
         camera = {'serial': 'fixture'}
-        self.tracker = SimpleNamespace(
+        self.tracker = types.SimpleNamespace(
             lock=threading.RLock(),
             models_root=self.models,
             generation=1,
@@ -74,8 +74,10 @@ class SceneTests(unittest.TestCase):
                 'depth': np.ones((360, 640)),
             },
         )
-        self.service = GraspController(self.root, self.tracker, self.path)
-        self.robot = Mock()
+        self.service = grasp_control.GraspController(
+            self.root, self.tracker, self.path
+        )
+        self.robot = mock.Mock()
         self.robot.query.side_effect = lambda name: {
             'get_current_arm_state': {'arm_state': copy.deepcopy(self.arm)},
             'get_current_tool_frame': {'frame_name': 'grip_tcp'},
@@ -87,15 +89,15 @@ class SceneTests(unittest.TestCase):
                 'tool_response_raw': {'frame_name': 'grip_tcp'}
             },
         }
-        self.service.calibration = Mock(
+        self.service.calibration = mock.Mock(
             return_value=(
                 {'flange_T_color_optical_camera': np.eye(4).tolist()}, self.tool
             )
         )
-        self.service.stationary_scene_arm = Mock(
+        self.service.stationary_scene_arm = mock.Mock(
             side_effect=lambda: copy.deepcopy(self.arm)
         )
-        self.service.paired_observation = Mock(
+        self.service.paired_observation = mock.Mock(
             side_effect=lambda o: (copy.deepcopy(self.arm), o)
         )
         self.frames = []
@@ -105,7 +107,7 @@ class SceneTests(unittest.TestCase):
             self.frames.append(frame)
             result = []
             for i, t in enumerate(targets):
-                info = select_object(self.models, t['object_id'])
+                info = object_catalog.select_object(self.models, t['object_id'])
                 pose = np.eye(4)
                 pose[0, 3] = i * .1
                 pose[2, 3] = .2
@@ -116,23 +118,25 @@ class SceneTests(unittest.TestCase):
                         'camera_T_object': pose.tolist(),
                         'quality': {'good': True},
                         'model_sha256': hashlib.sha256(
-                            Path(info['mesh']).read_bytes()
+                            pathlib.Path(info['mesh']).read_bytes()
                         ).hexdigest(),
                         'pose_mode': '6d',
                         'pose_mode_revision': info['pose_mode_revision'],
-                        **object_features(self.models, t['object_id']),
+                        **scene_features.object_features(
+                            self.models, t['object_id']
+                        ),
                     }
                 )
             check()
             return result
 
-        self.tracker.localize_frozen_scene = Mock(side_effect=localize)
+        self.tracker.localize_frozen_scene = mock.Mock(side_effect=localize)
 
     def capture(self):
-        with patch(
-            'saydo.scene.scene_control.RobotClient', return_value=self.robot
-        ) as client, patch(
-            'saydo.scene.scene_control.check_camera_observation'
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=self.robot
+        ) as client, mock.patch(
+            'saydo.perception.camera_checks.check_camera_observation'
         ):
             self.service.start_scene_capture(TARGETS, True, 'scene-test')
             self.service.thread.join(4)
@@ -156,8 +160,8 @@ class SceneTests(unittest.TestCase):
         )
         self.assertEqual(obs['base_T_object'], before)
         self.assertEqual(obs['base_T_object'][0][3], .1)
-        self.service.run = Mock()
-        self.tracker.grasp_observation = Mock(
+        self.service.run = mock.Mock()
+        self.tracker.grasp_observation = mock.Mock(
             side_effect=AssertionError('must not reobserve')
         )
         self.service.start(
@@ -204,7 +208,7 @@ class SceneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '模型'):
             self.service.validate_scene(ident)
         with self.assertRaisesRegex(ValueError, '重启'):
-            SceneStore(self.root).require(ident)
+            scene_snapshot.SceneStore(self.root).require(ident)
         scene['expires_at'] = 0
         self.service.scenes().save(scene)
         with self.assertRaisesRegex(ValueError, '30分钟'):
@@ -227,7 +231,7 @@ class SceneTests(unittest.TestCase):
             )
         )
         scene = self.capture()
-        goal = checked_goal(
+        goal = motion_contract.checked_goal(
             {
                 'reference_frame': 'scene_object',
                 'scene_id': scene['scene_id'],
@@ -258,7 +262,7 @@ class SceneTests(unittest.TestCase):
     def test_target_validation_and_capture_while_holding(self):
         for rows in ([], TARGETS * 2, [{**TARGETS[0], 'box': [0, 0, 641, 20]}]):
             with self.assertRaises(ValueError):
-                checked_targets(rows)
+                scene_contract.checked_targets(rows)
         self.service.held_object = {'hold_id': 'held'}
         with self.assertRaisesRegex(ValueError, '抓取前'):
             self.service.start_scene_capture(TARGETS, True, 'held-test')
@@ -279,7 +283,7 @@ class SceneTests(unittest.TestCase):
             ],
         }
         (self.models / 'reference/features.json').write_text(json.dumps(data))
-        features = object_features(self.models, 'reference')
+        features = scene_features.object_features(self.models, 'reference')
         self.assertEqual(len(features['features']), 1)
         self.assertFalse(features['features'][0]['physical_fit_verified'])
         self.assertIn('ambiguity', features['feature_notes'][0])

@@ -1,26 +1,26 @@
 import io
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest import mock
 import urllib.error
 
-from saydo.agent.client import BackendError, RobotBackend
+from saydo.agent import client
 
 
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.token = Path(self.directory.name) / 'token'
+        self.token = pathlib.Path(self.directory.name) / 'token'
         self.token.write_text('a' * 40)
         self.token.chmod(0o600)
-        self.client = RobotBackend('http://127.0.0.1:8089', self.token)
+        self.client = client.RobotBackend('http://127.0.0.1:8089', self.token)
 
     def test_uncertain_submission_returns_same_task_id_without_retry(self):
-        self.client.opener.open = Mock(side_effect=TimeoutError('timeout'))
-        with self.assertRaises(BackendError) as context:
+        self.client.opener.open = mock.Mock(side_effect=TimeoutError('timeout'))
+        with self.assertRaises(client.BackendError) as context:
             self.client.action('grasp', 'request-001', {'object_id': 'bottle'})
         self.assertEqual(context.exception.payload['code'], 'REQUEST_UNCERTAIN')
         self.assertEqual(context.exception.payload['task_id'], 'request-001')
@@ -28,7 +28,7 @@ class ClientTests(unittest.TestCase):
 
     def test_authentication_error_is_structured_and_not_retried(self):
         payload = {'error': {'code': 'UNAUTHORIZED', 'message': 'bad token'}}
-        self.client.opener.open = Mock(
+        self.client.opener.open = mock.Mock(
             side_effect=urllib.error.HTTPError(
                 'http://127.0.0.1:8089',
                 401,
@@ -37,18 +37,18 @@ class ClientTests(unittest.TestCase):
                 io.BytesIO(json.dumps(payload).encode()),
             )
         )
-        with self.assertRaises(BackendError) as context:
+        with self.assertRaises(client.BackendError) as context:
             self.client.request('/api/agent/status')
         self.assertEqual(context.exception.payload['code'], 'UNAUTHORIZED')
         self.client.opener.open.assert_called_once()
 
     def test_credentials_are_header_only_and_response_is_decoded(self):
-        response = Mock()
+        response = mock.Mock()
         response.read.return_value = b'{"ok":true}'
-        context = Mock()
-        context.__enter__ = Mock(return_value=response)
-        context.__exit__ = Mock(return_value=False)
-        self.client.opener.open = Mock(return_value=context)
+        context = mock.Mock()
+        context.__enter__ = mock.Mock(return_value=response)
+        context.__exit__ = mock.Mock(return_value=False)
+        self.client.opener.open = mock.Mock(return_value=context)
         self.assertTrue(self.client.request('/api/agent/status')['ok'])
         request = self.client.opener.open.call_args.args[0]
         self.assertEqual(
@@ -63,7 +63,7 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.request('/api/agent/status')
         with self.assertRaises(ValueError):
-            RobotBackend('http://name:password@host', self.token)
+            client.RobotBackend('http://name:password@host', self.token)
 
 
 if __name__ == '__main__':

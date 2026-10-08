@@ -3,9 +3,9 @@
 import argparse
 import fcntl
 import json
-from saydo.task_runner.config import Config, ROOT
-from saydo.task_runner.store import Store
-from saydo.agent.client import RobotBackend, BackendError
+from saydo.task_runner import config as task_runner_config
+from saydo.task_runner import store as task_runner_store
+from saydo.agent import client
 
 
 def reconcile(store, backend, run_id, confirmed_not_submitted=False):
@@ -29,7 +29,7 @@ def reconcile(store, backend, run_id, confirmed_not_submitted=False):
             continue
         try:
             task = backend.request('/api/agent/tasks/' + call['request_id'])
-        except BackendError as error:
+        except client.BackendError as error:
             if (
                 error.payload.get('code') != 'TASK_NOT_FOUND'
                 or not confirmed_not_submitted
@@ -63,18 +63,20 @@ def reconcile(store, backend, run_id, confirmed_not_submitted=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--env', default=ROOT / '.env')
+    parser.add_argument('--env', default=task_runner_config.ROOT / '.env')
     parser.add_argument('--run-id', required=True)
     parser.add_argument(
         '--confirm-scene-inspected', action='store_true', required=True
     )
     parser.add_argument('--confirm-request-not-submitted', action='store_true')
     args = parser.parse_args()
-    config = Config.load(args.env)
+    config = task_runner_config.Config.load(args.env)
     with (config.state_dir / 'runner.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        store = Store(config.state_dir, secrets=(config.api_key,))
-        backend = RobotBackend(config.robot_url, config.token_file)
+        store = task_runner_store.Store(
+            config.state_dir, secrets=(config.api_key,)
+        )
+        backend = client.RobotBackend(config.robot_url, config.token_file)
         print(
             json.dumps(
                 reconcile(

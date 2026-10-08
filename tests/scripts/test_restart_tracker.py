@@ -1,10 +1,10 @@
 """Restart helper decisions, without touching any process, port or device."""
 
 import os
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 
 from scripts import restart_tracker as restart
 
@@ -14,7 +14,7 @@ REAL_ACQUIRE_LOCK = restart.acquire_lock
 
 class RestartTrackerTests(unittest.TestCase):
     def setUp(self):
-        patcher = patch.object(restart, 'acquire_lock')
+        patcher = mock.patch.object(restart, 'acquire_lock')
         self.lock = patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -69,22 +69,22 @@ class RestartTrackerTests(unittest.TestCase):
         self.assertNotIn('r2', reasons[1])
 
     def test_blocked_restart_stops_nothing_and_force_skips_the_check(self):
-        with patch.object(
+        with mock.patch.object(
             restart, 'current_pid', return_value=123
-        ), patch.object(
+        ), mock.patch.object(
             restart, 'check_idle', return_value=['存在夹持记录']
-        ) as check, patch.object(restart, 'stop') as stop, patch.object(
-            restart, 'start'
-        ) as start:
+        ) as check, mock.patch.object(
+            restart, 'stop'
+        ) as stop, mock.patch.object(restart, 'start') as start:
             self.assertEqual(restart.main([]), 1)
             stop.assert_not_called()
             start.assert_not_called()
-            start.return_value = (object(), Path('log'))
-            with patch.object(
+            start.return_value = (object(), pathlib.Path('log'))
+            with mock.patch.object(
                 restart,
                 'wait_ready',
                 return_value={'model_ready': True, 'error': None},
-            ), patch.object(restart, 'ROOT', Path('.')):
+            ), mock.patch.object(restart, 'ROOT', pathlib.Path('.')):
                 self.assertEqual(
                     restart.main(['--force', '--', '--detector', 'ssdlite']), 0
                 )
@@ -93,11 +93,11 @@ class RestartTrackerTests(unittest.TestCase):
             start.assert_called_once_with(['--detector', 'ssdlite'])
 
     def test_unreadable_status_refuses_restart_without_force(self):
-        with patch.object(
+        with mock.patch.object(
             restart, 'current_pid', return_value=123
-        ), patch.object(
+        ), mock.patch.object(
             restart, 'check_idle', side_effect=OSError('refused')
-        ), patch.object(restart, 'stop') as stop, patch.object(
+        ), mock.patch.object(restart, 'stop') as stop, mock.patch.object(
             restart, 'start'
         ) as start:
             self.assertEqual(restart.main([]), 1)
@@ -106,9 +106,9 @@ class RestartTrackerTests(unittest.TestCase):
 
     def test_concurrent_restart_is_refused_before_touching_the_service(self):
         self.lock.side_effect = RuntimeError('另一次重启正在进行')
-        with patch.object(
+        with mock.patch.object(
             restart, 'current_pid'
-        ) as pid, patch.object(restart, 'stop') as stop, patch.object(
+        ) as pid, mock.patch.object(restart, 'stop') as stop, mock.patch.object(
             restart, 'start'
         ) as start:
             self.assertEqual(restart.main(['--force']), 1)
@@ -117,8 +117,8 @@ class RestartTrackerTests(unittest.TestCase):
         start.assert_not_called()
 
     def test_second_lock_holder_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            restart, 'LIVE', Path(directory) / 'live'
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            restart, 'LIVE', pathlib.Path(directory) / 'live'
         ):
             first = REAL_ACQUIRE_LOCK()
             with self.assertRaisesRegex(RuntimeError, '另一次重启正在进行'):
@@ -127,12 +127,12 @@ class RestartTrackerTests(unittest.TestCase):
             REAL_ACQUIRE_LOCK().close()
 
     @unittest.skipUnless(
-        Path('/proc/self/cmdline').exists(), 'requires Linux /proc'
+        pathlib.Path('/proc/self/cmdline').exists(), 'requires Linux /proc'
     )
     def test_stop_refuses_a_process_that_is_not_the_tracker(self):
-        with patch.object(restart.os, 'kill') as kill, self.assertRaisesRegex(
-            RuntimeError, '不是跟踪服务'
-        ):
+        with mock.patch.object(
+            restart.os, 'kill'
+        ) as kill, self.assertRaisesRegex(RuntimeError, '不是跟踪服务'):
             restart.stop(os.getpid())
         kill.assert_not_called()
 

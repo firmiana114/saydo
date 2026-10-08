@@ -3,7 +3,7 @@
 import base64
 import json
 import os
-from pathlib import Path
+import pathlib
 import re
 import subprocess
 import time
@@ -11,7 +11,7 @@ import uuid
 import urllib.error
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFIG = ROOT / 'config/cameras/global.json'
 NOTE = (
     '未进行相机到基座标定；仅用于全局外观观察。不能据此生成机器人基座坐标、'
@@ -69,7 +69,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def load_config(path):
-    value = json.loads(Path(path).read_text())
+    value = json.loads(pathlib.Path(path).read_text())
     serial, excluded = value.get('serial'), value.get('eye_in_hand_serial')
     if (
         not all(
@@ -86,12 +86,12 @@ def load_config(path):
     for key in ('python', 'sdk_path'):
         if (
             not isinstance(value.get(key), str)
-            or not Path(value[key]).is_absolute()
+            or not pathlib.Path(value[key]).is_absolute()
         ):
             raise ValueError('相机运行环境须使用绝对路径：' + key)
     if (
-        not Path(value['python']).is_file()
-        or not Path(value['sdk_path']).is_dir()
+        not pathlib.Path(value['python']).is_file()
+        or not pathlib.Path(value['sdk_path']).is_dir()
     ):
         raise ValueError('不固定的全局相机运行环境不存在')
     return value
@@ -105,7 +105,7 @@ def observe_global(config_path=CONFIG):
         result = subprocess.run(
             [
                 config['python'],
-                str(Path(__file__).resolve()),
+                str(pathlib.Path(__file__).resolve()),
                 '--capture',
                 config['serial'],
                 '--model',

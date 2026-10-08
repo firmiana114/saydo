@@ -1,16 +1,16 @@
 import asyncio
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
-from saydo.task_runner.config import Config
-from saydo.task_runner.llm_client import ModelUnavailable, LLMError
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from saydo.task_runner.robot_adapter import Blocked
+from unittest import mock
+from saydo.task_runner import config
+from saydo.task_runner import llm_client
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store as task_runner_store
+from saydo.task_runner import robot_adapter
 
 
 def call(name, args=None, ident='call-1'):
@@ -48,8 +48,8 @@ def end(outcome='answered', evidence=None):
 
 
 def mock_global_camera(test):
-    mock = patch(
-        'saydo.task_runner.robot_adapter.observe_global',
+    camera_patch = mock.patch(
+        'saydo.agent.global_camera.observe_global',
         side_effect=lambda: {
             'image_base64': 'AA==',
             'mime_type': 'image/png',
@@ -58,8 +58,8 @@ def mock_global_camera(test):
             'camera_serial': 'fixed-camera',
         },
     )
-    mock.start()
-    test.addCleanup(mock.stop)
+    camera_patch.start()
+    test.addCleanup(camera_patch.stop)
 
 
 class FakeLLM:
@@ -113,7 +113,7 @@ class FakeAdapter:
 
     def check_idle(self, state):
         if state['grasp'].get('busy'):
-            raise Blocked('busy')
+            raise robot_adapter.Blocked('busy')
 
     async def execute(self, name, args, request_id, cancelled, progress):
         if name == 'observe_global':
@@ -164,21 +164,25 @@ class FakeAdapter:
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.config = Config(
+        self.config = config.Config(
             api_key='test-secret',
             mode='execute',
-            state_dir=Path(self.temp.name),
+            state_dir=pathlib.Path(self.temp.name),
             model='gpt-6-luna',
             fallback_model='gpt-5.6-luna',
         )
-        self.store = Store(self.temp.name, secrets=('test-secret',))
+        self.store = task_runner_store.Store(
+            self.temp.name, secrets=('test-secret',)
+        )
         self.adapter = FakeAdapter()
 
     async def asyncTearDown(self):
         self.temp.cleanup()
 
     def make(self, llm):
-        return Runner(self.config, self.store, llm, lambda: self.adapter)
+        return task_runner_runner.Runner(
+            self.config, self.store, llm, lambda: self.adapter
+        )
 
     async def execute(self, llm):
         runner = self.make(llm)
@@ -211,7 +215,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fallback_only_on_initial_model_unavailable(self):
         llm = FakeLLM(
-            ModelUnavailable('unavailable'),
+            llm_client.ModelUnavailable('unavailable'),
             call('get_status'),
             end('answered', ['call-1']),
         )
@@ -222,13 +226,15 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_no_model_switch_after_task_has_started(self):
-        llm = FakeLLM(call('get_status'), ModelUnavailable('unavailable'))
+        llm = FakeLLM(
+            call('get_status'), llm_client.ModelUnavailable('unavailable')
+        )
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'failed')
         self.assertEqual(llm.models, ['gpt-6-luna', 'gpt-6-luna'])
 
     async def test_auth_or_network_failure_does_not_fallback(self):
-        llm = FakeLLM(LLMError('error'))
+        llm = FakeLLM(llm_client.LLMError('error'))
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'failed')
         self.assertEqual(llm.models, ['gpt-6-luna'])
@@ -246,7 +252,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_stop_blocks_new_run(self):
         async def failed():
-            raise Blocked('stop unconfirmed', uncertain=True)
+            raise robot_adapter.Blocked('stop unconfirmed', uncertain=True)
 
         self.adapter.stop = failed
         llm = FakeLLM('wait')
@@ -256,14 +262,14 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         await runner.cancel(ident)
         await runner.worker
         self.assertEqual(self.store.get(ident)['state'], 'blocked')
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             runner.submit('再试一次')
 
     async def test_one_active_run(self):
         llm = FakeLLM('wait')
         runner = self.make(llm)
         ident = runner.submit('查询')
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             runner.submit('其他任务')
         await llm.started.wait()
         await runner.cancel(ident)
@@ -309,22 +315,25 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['state'], 'blocked')
 
     async def test_grasp_failure_never_runs_place(self):
-        self.adapter.fail = Blocked('failed grasp')
+        self.adapter.fail = robot_adapter.Blocked('failed grasp')
         llm = FakeLLM(call('grasp', {'object_id': 'b'}), call('place'))
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'blocked')
         self.assertEqual(len(llm.histories), 1)
 
     async def test_unknown_action_latches_across_restart(self):
-        self.adapter.fail = Blocked('unknown', uncertain=True)
+        self.adapter.fail = robot_adapter.Blocked('unknown', uncertain=True)
         result, _ = await self.execute(
             FakeLLM(call('grasp', {'object_id': 'b'}))
         )
         self.assertTrue(result['outcome_unknown'])
-        restarted = Runner(
-            self.config, Store(self.temp.name), FakeLLM(), lambda: self.adapter
+        restarted = task_runner_runner.Runner(
+            self.config,
+            task_runner_store.Store(self.temp.name),
+            FakeLLM(),
+            lambda: self.adapter,
         )
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             restarted.submit('继续')
 
     async def test_image_is_image_and_not_base64_text_or_journal(self):
@@ -382,7 +391,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_llm_timeout_does_not_mark_motion_unknown_or_send_stop(self):
         self.config.run_timeout = .02
         result, runner = await self.execute(
-            FakeLLM(LLMError('模型请求已尝试5次，达到上限'))
+            FakeLLM(llm_client.LLMError('模型请求已尝试5次，达到上限'))
         )
         self.assertFalse(runner.uncertain)
         self.assertEqual(self.adapter.stops, 0)
@@ -391,7 +400,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_fallback_never_switches_from_terra(self):
         self.config.model = 'gpt-6-sol'
         self.config.fallback_model = ''
-        llm = FakeLLM(ModelUnavailable('unavailable'))
+        llm = FakeLLM(llm_client.ModelUnavailable('unavailable'))
         result, _ = await self.execute(llm)
         self.assertEqual(llm.models, ['gpt-6-sol'])
         self.assertEqual(result['state'], 'failed')
@@ -415,8 +424,8 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.recent()[0]['state'], 'cancelled')
 
     async def test_unready_pose_is_returned_to_model_without_motion_retry(self):
-        from saydo.agent.client import BackendError
-        self.adapter.fail = BackendError(
+        from saydo.agent import client
+        self.adapter.fail = client.BackendError(
             {'code': 'POSE_NOT_READY', 'message': '请等待跟踪'}
         )
         llm = FakeLLM(call('get_object_pose'), end('answered', ['call-1']))
@@ -511,7 +520,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
     ):
         result, _ = await self.execute(
             FakeLLM(
-                ModelUnavailable('no'),
+                llm_client.ModelUnavailable('no'),
                 call('get_status'),
                 end('answered', ['call-1']),
             )
@@ -532,7 +541,9 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(first_end, next_start)
 
     async def test_failed_llm_is_timed_and_final_is_last(self):
-        result, _ = await self.execute(FakeLLM(LLMError('unavailable')))
+        result, _ = await self.execute(
+            FakeLLM(llm_client.LLMError('unavailable'))
+        )
         timing = next(e for e in result['events'] if e['event'] == 'llm')
         self.assertEqual(timing['outcome'], 'failed')
         self.assertGreaterEqual(timing['seconds'], 0)
@@ -554,7 +565,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['events'][-1]['event'], 'final')
 
     async def test_failed_tool_is_logged_before_final(self):
-        self.adapter.fail = Blocked('设备不就绪')
+        self.adapter.fail = robot_adapter.Blocked('设备不就绪')
         result, _ = await self.execute(
             FakeLLM(call('grasp', {'object_id': 'b'}))
         )
@@ -603,10 +614,12 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 class StoreTests(unittest.TestCase):
     def test_restart_never_replays_and_redacts_secret(self):
         with tempfile.TemporaryDirectory() as directory:
-            store = Store(directory, secrets=('secret-value',))
+            store = task_runner_store.Store(
+                directory, secrets=('secret-value',)
+            )
             run = store.create('secret-value', 'gpt-6-luna', 'execute')
             store.prepare(run['run_id'], 'c', 'grasp', {'object_id': 'b'}, 1)
-            restarted = Store(directory)
+            restarted = task_runner_store.Store(directory)
             saved = restarted.get(run['run_id'])
             self.assertEqual(saved['state'], 'interrupted')
             self.assertTrue(saved['outcome_unknown'])
@@ -615,9 +628,9 @@ class StoreTests(unittest.TestCase):
 
     def test_read_only_restart_does_not_latch_motion_uncertainty(self):
         with tempfile.TemporaryDirectory() as directory:
-            store = Store(directory)
+            store = task_runner_store.Store(directory)
             run = store.create('观察', 'gpt-6-luna', 'read_only')
             store.prepare(run['run_id'], 'c', 'get_status', {}, 1)
-            saved = Store(directory).get(run['run_id'])
+            saved = task_runner_store.Store(directory).get(run['run_id'])
             self.assertEqual(saved['state'], 'interrupted')
             self.assertFalse(saved['outcome_unknown'])

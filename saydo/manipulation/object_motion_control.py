@@ -4,24 +4,24 @@ import copy
 import fcntl
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import threading
 import time
 import traceback
 import uuid
 
 import numpy as np
-from saydo.geometry.grasp_geometry import controller_pose, transform, rotation_error, object_in_base
-from saydo.objects.grasp_library import held_clearance_config
-from saydo.robot.grasp_robot import RobotClient
-from saydo.robot.motion_validation import check_waypoints, wait_for_pose, note_joint_change
-from saydo.objects.object_catalog import select_object
-from saydo.scene.scene_features import object_features
-from saydo.manipulation.object_motion_geometry import plan_object_motion, segment_samples, validate_tcp, object_error
-from saydo.manipulation.object_motion_store import ObjectPlanStore
-from saydo.manipulation.placement_geometry import check_tcp_workspace
-from saydo.manipulation.reorientation_geometry import model_geometry
-from saydo.contracts.motion_contract import checked_goal, identity, vector
+from saydo.geometry import grasp_geometry
+from saydo.objects import grasp_library
+from saydo.robot import grasp_robot
+from saydo.robot import motion_validation
+from saydo.objects import object_catalog
+from saydo.scene import scene_features
+from saydo.manipulation import object_motion_geometry
+from saydo.manipulation import object_motion_store
+from saydo.manipulation import placement_geometry
+from saydo.manipulation import reorientation_geometry
+from saydo.contracts import motion_contract
 
 
 def public_object_plan(plan):
@@ -51,11 +51,13 @@ def public_object_plan(plan):
 class ObjectMotionMixin:
     def object_plan_store(self):
         if not hasattr(self, '_object_plan_store'):
-            self._object_plan_store = ObjectPlanStore(self.root)
+            self._object_plan_store = object_motion_store.ObjectPlanStore(
+                self.root
+            )
         return self._object_plan_store
 
     def require_motion_hold(self, args):
-        identity(args)
+        motion_contract.identity(args)
         held = copy.deepcopy(self.held_object)
         if (
             held is None
@@ -68,17 +70,19 @@ class ObjectMotionMixin:
             )
         ):
             raise ValueError('物品、夹持关系或版本已变化，请读取状态后重新规划')
-        transform(held['object_T_tcp'])
+        grasp_geometry.transform(held['object_T_tcp'])
         return held
 
     def object_geometry_info(self, object_id):
-        geometry = model_geometry(self.tracker.models_root, object_id)
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, object_id
+        )
         v = np.asarray(geometry['vertices'])
         lo = v.min(axis=0)
         hi = v.max(axis=0)
         metadata = None
         path = (
-            Path(self.tracker.models_root)
+            pathlib.Path(self.tracker.models_root)
             / geometry['object_id']
             / 'dimensions.json'
         )
@@ -116,7 +120,9 @@ class ObjectMotionMixin:
                 )
             }
             | {
-                **object_features(self.tracker.models_root, object_id),
+                **scene_features.object_features(
+                    self.tracker.models_root, object_id
+                ),
                 'coordinate_frame': 'object_model',
                 'bounds_object_m': [lo.tolist(), hi.tolist()],
                 'declared_model_dimensions': metadata,
@@ -134,8 +140,8 @@ class ObjectMotionMixin:
         )
 
     def start_object_plan(self, args, release=False, request_id=None):
-        goal = checked_goal(args.get('goal'), release)
-        retreat = vector(
+        goal = motion_contract.checked_goal(args.get('goal'), release)
+        retreat = motion_contract.vector(
             args.get('retreat_vector_base_m', [0, 0, 0]),
             'retreat_vector_base_m',
             .3,
@@ -228,10 +234,10 @@ class ObjectMotionMixin:
 
     def motion_context(self, held, writes=False):
         config = json.loads(self.config_path.read_text())
-        config = held_clearance_config(config, held)
+        config = grasp_library.held_clearance_config(config, held)
         if held.get('scene_id'):
             self.validate_scene(held['scene_id'], config)
-        self.robot = RobotClient(
+        self.robot = grasp_robot.RobotClient(
             config['robot_ip'], config['robot_port'], writes=writes
         )
         arm, tool = self.reorientation_hardware(held, config)
@@ -243,7 +249,9 @@ class ObjectMotionMixin:
             != source['sha256']
         ):
             raise ValueError('工具原始读回记录哈希变化')
-        geometry = model_geometry(self.tracker.models_root, held['object_id'])
+        geometry = reorientation_geometry.model_geometry(
+            self.tracker.models_root, held['object_id']
+        )
         if (
             geometry['model_sha256'] != held['model_sha256']
             or geometry.get('pose_mode', '6d') != held.get('pose_mode', '6d')
@@ -268,15 +276,15 @@ class ObjectMotionMixin:
                 raise ValueError('参考快照必须与当前夹持来源一致')
             frame, context = self.scene_reference(goal)
         elif name == 'tcp':
-            frame = controller_pose(arm['pose'])
+            frame = grasp_geometry.controller_pose(arm['pose'])
         elif name == 'held_object':
             if held.get('pose_mode') == '5d':
                 raise ValueError(
                     '5D物品横向轴不可观测，请使用base/camera/tcp坐标系'
                 )
             frame = (
-                controller_pose(arm['pose'])
-                @ np.linalg.inv(transform(held['object_T_tcp']))
+                grasp_geometry.controller_pose(arm['pose'])
+                @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
             )
         elif name in ('camera', 'tracked_object'):
             handeye, _ = self.calibration(config)
@@ -294,8 +302,8 @@ class ObjectMotionMixin:
                         '不能重复作为外部跟踪参考'
                     )
                 arm, observation = self.paired_observation(observation)
-                frame = object_in_base(
-                    controller_pose(arm['pose']),
+                frame = grasp_geometry.object_in_base(
+                    grasp_geometry.controller_pose(arm['pose']),
                     tool['flange_T_grip_tcp'],
                     handeye['flange_T_color_optical_camera'],
                     observation['pose'],
@@ -314,9 +322,13 @@ class ObjectMotionMixin:
                 ):
                     raise ValueError('没有新鲜相机坐标观测')
                 frame = (
-                    controller_pose(arm['pose'])
-                    @ np.linalg.inv(transform(tool['flange_T_grip_tcp']))
-                    @ transform(handeye['flange_T_color_optical_camera'])
+                    grasp_geometry.controller_pose(arm['pose'])
+                    @ np.linalg.inv(
+                        grasp_geometry.transform(tool['flange_T_grip_tcp'])
+                    )
+                    @ grasp_geometry.transform(
+                        handeye['flange_T_color_optical_camera']
+                    )
                 )
                 context['captured_at'] = self.tracker.state['camera_frame_at']
         context['base_T_reference'] = frame.tolist()
@@ -362,14 +374,14 @@ class ObjectMotionMixin:
                     configuration_binding=binding,
                     flange_T_grip_tcp=tool['flange_T_grip_tcp'],
                 )
-                plan = plan_object_motion(
+                plan = object_motion_geometry.plan_object_motion(
                     held,
                     geometry['vertices'],
                     arm,
                     config,
                     goal,
                     frame,
-                    lambda points, timeout: check_waypoints(
+                    lambda points, timeout: motion_validation.check_waypoints(
                         checker, tool, arm, points, timeout
                     ),
                     self.check_cancel,
@@ -435,7 +447,7 @@ class ObjectMotionMixin:
             raise ValueError('夹持变换或工具绑定已变化')
         if self.motion_binding(config) != plan['configuration_binding']:
             raise ValueError('工具、标定或运动配置已变化，请重新规划')
-        current = select_object(
+        current = object_catalog.select_object(
             self.tracker.models_root, plan['hold']['object_id']
         )
         if (
@@ -447,13 +459,15 @@ class ObjectMotionMixin:
         ):
             raise ValueError('物品位姿模式或模型设置版本已变化')
         if (
-            hashlib.sha256(Path(current['mesh']).read_bytes()).hexdigest()
+            hashlib.sha256(
+                pathlib.Path(current['mesh']).read_bytes()
+            ).hexdigest()
             != plan['model_sha256']
         ):
             raise ValueError('物品模型已变化')
 
     def verify_object_target(self, actual, plan):
-        error = object_error(
+        error = object_motion_geometry.object_error(
             actual,
             plan['base_T_object_target'],
             plan['reference_point_object_m'],
@@ -493,8 +507,10 @@ class ObjectMotionMixin:
             )
             self.robot.motion_log = report.setdefault('motion_events', [])
             self.check_object_plan_binding(plan, config)
-            expected = controller_pose(plan['current_arm']['pose'])
-            actual = controller_pose(arm['pose'])
+            expected = grasp_geometry.controller_pose(
+                plan['current_arm']['pose']
+            )
+            actual = grasp_geometry.controller_pose(arm['pose'])
             if (
                 (
                     np.max(
@@ -507,7 +523,9 @@ class ObjectMotionMixin:
                 )
                 or np.linalg.norm(actual[:3, 3] - expected[:3, 3]) > .002
                 or (
-                    rotation_error(actual[:3, :3], expected[:3, :3])
+                    grasp_geometry.rotation_error(
+                        actual[:3, :3], expected[:3, :3]
+                    )
                     > np.deg2rad(2)
                 )
             ):
@@ -516,11 +534,15 @@ class ObjectMotionMixin:
                 frame, context, arm = self.resolve_motion_frame(
                     plan['goal'], held, config, arm, tool
                 )
-                previous = transform(plan['reference_frame_pose'])
+                previous = grasp_geometry.transform(
+                    plan['reference_frame_pose']
+                )
                 if (
                     np.linalg.norm(frame[:3, 3] - previous[:3, 3]) > .002
                     or (
-                        rotation_error(frame[:3, :3], previous[:3, :3])
+                        grasp_geometry.rotation_error(
+                            frame[:3, :3], previous[:3, :3]
+                        )
                         > np.deg2rad(2)
                     )
                 ):
@@ -532,7 +554,7 @@ class ObjectMotionMixin:
                     )
                 ):
                     raise ValueError('参考物品模型或观测版本已变化')
-            actual = controller_pose(arm['pose'])
+            actual = grasp_geometry.controller_pose(arm['pose'])
             if (
                 (
                     np.max(
@@ -545,13 +567,17 @@ class ObjectMotionMixin:
                 )
                 or np.linalg.norm(actual[:3, 3] - expected[:3, 3]) > .002
                 or (
-                    rotation_error(actual[:3, :3], expected[:3, :3])
+                    grasp_geometry.rotation_error(
+                        actual[:3, :3], expected[:3, :3]
+                    )
                     > np.deg2rad(2)
                 )
             ):
                 raise ValueError('参考坐标查询期间机械臂离开方案起点')
             previous_feedback = copy.deepcopy(arm)
-            attachment_inv = np.linalg.inv(transform(held['object_T_tcp']))
+            attachment_inv = np.linalg.inv(
+                grasp_geometry.transform(held['object_T_tcp'])
+            )
             deadline = time.monotonic() + plan['max_execution_duration_s']
 
             def read_state(released=False):
@@ -566,23 +592,27 @@ class ObjectMotionMixin:
                 if self.motion_binding(config) != plan['configuration_binding']:
                     raise ValueError('执行期间配置变化，停止后续动作')
                 a = self.arm_state()
-                tcp = controller_pose(a['pose'])
-                check_tcp_workspace(tcp, config)
+                tcp = grasp_geometry.controller_pose(a['pose'])
+                placement_geometry.check_tcp_workspace(tcp, config)
                 if released:
                     self.check_placement_open(config, require_open=True)
                 else:
                     self.check_reorient_contact(held, config)
                     # Workspace and model/table checks apply to observed motion
                     # too.
-                    validate_tcp(tcp, held, geometry['vertices'], config)
+                    object_motion_geometry.validate_tcp(
+                        tcp, held, geometry['vertices'], config
+                    )
                 return a
 
             def move(target, released=False):
                 nonlocal previous_feedback
                 report['active_stage'] = target['name']
                 start = read_state(released)
-                before = controller_pose(start['pose'])
-                previous = controller_pose(previous_feedback['pose'])
+                before = grasp_geometry.controller_pose(start['pose'])
+                previous = grasp_geometry.controller_pose(
+                    previous_feedback['pose']
+                )
                 if (
                     (
                         np.max(
@@ -595,14 +625,16 @@ class ObjectMotionMixin:
                     )
                     or np.linalg.norm(before[:3, 3] - previous[:3, 3]) > .002
                     or (
-                        rotation_error(before[:3, :3], previous[:3, :3])
+                        grasp_geometry.rotation_error(
+                            before[:3, :3], previous[:3, :3]
+                        )
                         > np.deg2rad(2)
                     )
                 ):
                     raise ValueError('机械臂离开本段规划起点')
-                end = controller_pose(target['controller_pose'])
-                points = segment_samples(
-                    controller_pose(start['pose']),
+                end = grasp_geometry.controller_pose(target['controller_pose'])
+                points = object_motion_geometry.segment_samples(
+                    grasp_geometry.controller_pose(start['pose']),
                     end,
                     None if released else held,
                     geometry['vertices'],
@@ -619,9 +651,11 @@ class ObjectMotionMixin:
                     for future in plan['waypoints'][
                         report['active_waypoint_index']:
                     ]:
-                        future_pose = controller_pose(future['controller_pose'])
+                        future_pose = grasp_geometry.controller_pose(
+                            future['controller_pose']
+                        )
                         points.extend(
-                            segment_samples(
+                            object_motion_geometry.segment_samples(
                                 last,
                                 future_pose,
                                 held,
@@ -634,9 +668,11 @@ class ObjectMotionMixin:
                         last = future_pose
                     if plan.get('retreat_waypoint'):
                         future = plan['retreat_waypoint']
-                        future_pose = controller_pose(future['controller_pose'])
+                        future_pose = grasp_geometry.controller_pose(
+                            future['controller_pose']
+                        )
                         points.extend(
-                            segment_samples(
+                            object_motion_geometry.segment_samples(
                                 last,
                                 future_pose,
                                 None,
@@ -657,7 +693,7 @@ class ObjectMotionMixin:
                 # redundancy the controller resolves on its own; the planned set
                 # is a diagnostic reference.
                 if fixed is not None:
-                    note_joint_change(
+                    motion_validation.note_joint_change(
                         report,
                         target['name'],
                         'resolved_remaining_path_vs_plan',
@@ -680,11 +716,11 @@ class ObjectMotionMixin:
                     state='object_motion_executing',
                     message='执行方案：' + target['name'],
                 )
-                start_pose = controller_pose(start['pose'])
+                start_pose = grasp_geometry.controller_pose(start['pose'])
 
                 def observed():
                     feedback = read_state(released)
-                    pose = controller_pose(feedback['pose'])
+                    pose = grasp_geometry.controller_pose(feedback['pose'])
                     if target['method'] == 'linear':
                         delta = end[:3, 3] - start_pose[:3, 3]
                         fraction = np.clip(
@@ -714,14 +750,16 @@ class ObjectMotionMixin:
                                     )
                                 )
                                 or (
-                                    rotation_error(
+                                    grasp_geometry.rotation_error(
                                         start_pose[:3, :3], end[:3, :3]
                                     )
                                     < 1e-6
                                 )
                             )
                             and (
-                                rotation_error(pose[:3, :3], end[:3, :3])
+                                grasp_geometry.rotation_error(
+                                    pose[:3, :3], end[:3, :3]
+                                )
                                 > np.deg2rad(plan['orientation_tolerance_deg'])
                             )
                         ):
@@ -781,7 +819,7 @@ class ObjectMotionMixin:
                     )
                 record = {'stage': target['name']}
                 report.setdefault('arrival_checks', []).append(record)
-                reached = wait_for_pose(
+                reached = motion_validation.wait_for_pose(
                     observed,
                     target['controller_pose'],
                     self.check_cancel,
@@ -808,28 +846,32 @@ class ObjectMotionMixin:
             for index, target in enumerate(plan['waypoints'], 1):
                 report['active_waypoint_index'] = index
                 arm = move(target)
-            from saydo.manipulation.reorientation_geometry import pose_waypoint
+            from saydo.manipulation import reorientation_geometry
             final_tcp = (
-                transform(plan['base_T_object_target'])
-                @ transform(held['object_T_tcp'])
+                grasp_geometry.transform(plan['base_T_object_target'])
+                @ grasp_geometry.transform(held['object_T_tcp'])
             )
             final_check = {'stage': 'verify_object_target'}
             report.setdefault('arrival_checks', []).append(final_check)
-            arm = wait_for_pose(
+            arm = motion_validation.wait_for_pose(
                 read_state,
-                pose_waypoint('target', final_tcp)['controller_pose'],
+                reorientation_geometry.pose_waypoint(
+                    'target', final_tcp
+                )['controller_pose'],
                 self.check_cancel,
                 final_check,
                 plan['position_tolerance_m'],
                 np.deg2rad(plan['orientation_tolerance_deg']),
             )
             previous_feedback = copy.deepcopy(arm)
-            actual_object = controller_pose(arm['pose']) @ attachment_inv
+            actual_object = (
+                grasp_geometry.controller_pose(arm['pose']) @ attachment_inv
+            )
             errors = self.verify_object_target(actual_object, plan)
             if (
                 plan['goal']['position_mode'] == 'adaptive'
                 and (
-                    controller_pose(arm['pose'])[2, 3]
+                    grasp_geometry.controller_pose(arm['pose'])[2, 3]
                     <= config['table_z_m'] + .10
                 )
             ):
@@ -889,13 +931,15 @@ class ObjectMotionMixin:
                 if plan['retreat_waypoint'] is not None:
                     # Correct only the explicitly planned relative retreat, then
                     # revalidate.
-                    from saydo.manipulation.reorientation_geometry import pose_waypoint
+                    from saydo.manipulation import reorientation_geometry
                     if plan.get('fixed_joint_targets'):
                         target = plan['retreat_waypoint']
                     else:
-                        retreat = controller_pose(arm['pose'])
+                        retreat = grasp_geometry.controller_pose(arm['pose'])
                         retreat[:3, 3] += plan['retreat_vector_base_m']
-                        target = pose_waypoint('release_retreat', retreat)
+                        target = reorientation_geometry.pose_waypoint(
+                            'release_retreat', retreat
+                        )
                         target['method'] = 'linear'
                     move(target, True)
                 result['retreat_confirmed'] = True

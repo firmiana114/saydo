@@ -1,9 +1,9 @@
 import sys
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
-from saydo.perception.batched_refiner import BatchedRefiner, batch_score_features
+from saydo.perception import batched_refiner
 
 
 class BatchingTests(unittest.TestCase):
@@ -29,11 +29,11 @@ class BatchingTests(unittest.TestCase):
             batch.rgbAs = batch.rgbAs * 2
             return batch
 
-        scorer = SimpleNamespace(
-            model=SimpleNamespace(extract_feat=lambda a, b: a + b),
-            dataset=SimpleNamespace(transform_batch=transform),
+        scorer = types.SimpleNamespace(
+            model=types.SimpleNamespace(extract_feat=lambda a, b: a + b),
+            dataset=types.SimpleNamespace(transform_batch=transform),
         )
-        batch_score_features(scorer, 32)
+        batched_refiner.batch_score_features(scorer, 32)
         poses = torch.arange(77).reshape(-1, 1)
         rgb = poses.float() + 1
         result = scorer.dataset.transform_batch(
@@ -45,15 +45,15 @@ class BatchingTests(unittest.TestCase):
         self.assertIsNone(result.unused)
 
     def test_refiner_keeps_every_candidate_in_order(self):
-        backend = Mock()
+        backend = mock.Mock()
         backend.predict.side_effect = lambda **kw: (kw['ob_in_cams'] + 1, None)
-        torch = SimpleNamespace(
+        torch = types.SimpleNamespace(
             cat=lambda xs, dim: np.concatenate(xs, axis=dim),
-            cuda=SimpleNamespace(empty_cache=lambda: None),
+            cuda=types.SimpleNamespace(empty_cache=lambda: None),
         )
         poses = np.arange(77).reshape(-1, 1)
-        with patch.dict(sys.modules, {'torch': torch}):
-            result, _ = BatchedRefiner(backend, 32).predict(
+        with mock.patch.dict(sys.modules, {'torch': torch}):
+            result, _ = batched_refiner.BatchedRefiner(backend, 32).predict(
                 ob_in_cams=poses, iteration=5
             )
         np.testing.assert_array_equal(result, poses + 1)
@@ -72,18 +72,20 @@ class BatchingTests(unittest.TestCase):
         )
 
     def test_score_feature_batching_keeps_full_pair_order(self):
-        original = Mock(side_effect=lambda a, b: a + b)
-        scorer = SimpleNamespace(
-            model=SimpleNamespace(extract_feat=original, att_cross=object()),
-            dataset=SimpleNamespace(transform_batch=Mock()),
+        original = mock.Mock(side_effect=lambda a, b: a + b)
+        scorer = types.SimpleNamespace(
+            model=types.SimpleNamespace(
+                extract_feat=original, att_cross=object()
+            ),
+            dataset=types.SimpleNamespace(transform_batch=mock.Mock()),
         )
         attention = scorer.model.att_cross
-        batch_score_features(scorer, 32)
-        torch = SimpleNamespace(
+        batched_refiner.batch_score_features(scorer, 32)
+        torch = types.SimpleNamespace(
             cat=lambda xs, dim: np.concatenate(xs, axis=dim)
         )
         a = np.arange(77).reshape(-1, 1)
-        with patch.dict(sys.modules, {'torch': torch}):
+        with mock.patch.dict(sys.modules, {'torch': torch}):
             result = scorer.model.extract_feat(a, a * 2)
         np.testing.assert_array_equal(result, a * 3)
         self.assertIs(scorer.model.att_cross, attention)

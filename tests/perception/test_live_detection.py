@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torchvision.models.detection.anchor_utils import DefaultBoxGenerator
 
-from saydo.perception.live_detection import predict_detection
+from saydo.perception import live_detection
 
 
 class AnchorProbe(torch.nn.Module):
@@ -36,7 +36,7 @@ class DetectionDeviceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'same device'):
                 probe.generator._grid_default_boxes([[2, 2]] * 6, [320, 320])
             for _ in range(3):
-                result = predict_detection(
+                result = live_detection.predict_detection(
                     probe, np.zeros((32, 32, 3), np.uint8)
                 )
                 self.assertTrue(result['boxes'].is_cuda)

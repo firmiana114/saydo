@@ -2,14 +2,14 @@
 """D435i/web adapter on official FoundationPose register/track_one; button-triggered grasp control."""
 
 import argparse
-from collections import deque
+import collections
 import datetime
 import fcntl
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.server
 import json
 import logging
-from pathlib import Path
+import pathlib
 import signal
 import socket
 import sys
@@ -22,54 +22,56 @@ import urllib.parse
 import cv2
 import numpy as np
 
-from saydo.perception.live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
-from saydo.objects.object_catalog import scan_objects, select_object, inferred_class, save_pose_mode, save_detection_prompt
-from saydo.perception.llm_detection import LLMBoxDetector, DetectionCancelled, MODEL, EFFORT, MAX_FRAME_AGE_S
-from saydo.perception.local_grounding import LocalGroundingDetector
-from saydo.perception.local_qwen import LocalQwenDetector
-from saydo.geometry.pose_symmetry import canonical_pose, object_rotation_error, pose_fields
-from saydo.manipulation.grasp_control import GraspController
-from saydo.workbench.live_events import EventLog
-from saydo.perception.camera_checks import select_camera
-from saydo.workbench.agent_api import AgentAPI, AgentError
-from saydo.workbench.task_runner_proxy import TaskRunnerProxy
+from saydo.perception import live_checks
+from saydo.objects import object_catalog
+from saydo.perception import llm_detection
+from saydo.perception import local_grounding
+from saydo.perception import local_qwen
+from saydo.geometry import pose_symmetry
+from saydo.manipulation import grasp_control
+from saydo.workbench import live_events
+from saydo.perception import camera_checks
+from saydo.workbench import agent_api as workbench_agent_api
+from saydo.workbench import task_runner_proxy
 
 from saydo import paths
 
 ROOT = paths.ROOT
 # 工作台页面与页面脚本所在的目录。
-WEB = Path(__file__).resolve().with_name('web')
+WEB = pathlib.Path(__file__).resolve().with_name('web')
 
 
 class Tracker:
     def __init__(self, args):
         self.args = args
-        self.models_root = Path(
+        self.models_root = pathlib.Path(
             getattr(args, 'models_root', ROOT / 'work/object_models')
         )
         self.object_info = next(
             (
                 row
-                for row in scan_objects(self.models_root)
+                for row in object_catalog.scan_objects(self.models_root)
                 if row['mesh'] == str(args.mesh.resolve())
             ),
             {
                 'id': None,
                 'name': args.mesh.parent.name,
                 'mesh': str(args.mesh),
-                'detector_class': inferred_class(str(args.mesh)),
+                'detector_class': object_catalog.inferred_class(str(args.mesh)),
             },
         )
         if getattr(args, 'detector_class', None):
             self.object_info['detector_class'] = args.detector_class
         self.detector_backend = getattr(args, 'detector', 'qwen')
         self.llm_detector = (
-            LLMBoxDetector() if self.detector_backend == 'llm' else None
+            llm_detection.LLMBoxDetector()
+            if self.detector_backend == 'llm'
+            else None
         )
         self.local_detector = (
-            LocalQwenDetector(ROOT)
+            local_qwen.LocalQwenDetector(ROOT)
             if self.detector_backend == 'qwen'
-            else LocalGroundingDetector(ROOT)
+            else local_grounding.LocalGroundingDetector(ROOT)
         )
         self.scene_job = None
         self.pending_object = None
@@ -77,8 +79,10 @@ class Tracker:
         self.stop = threading.Event()
         self.latest = self.frozen = self.command = None
         # LLM: sampled RGB-D buffer, bounded to about 484 MB.
-        self.history = deque(maxlen=300 if self.llm_detector else 180)
-        self.pose_history = deque(maxlen=60)
+        self.history = collections.deque(
+            maxlen=300 if self.llm_detector else 180
+        )
+        self.pose_history = collections.deque(maxlen=60)
         self.jpeg = None
         self.generation = 0
         self.retry_at = 0.
@@ -102,7 +106,7 @@ class Tracker:
             / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         )
         self.output.mkdir(parents=True)
-        self.events = EventLog(self.output / 'events.jsonl')
+        self.events = live_events.EventLog(self.output / 'events.jsonl')
         self.last_heartbeat = 0.
         self.state['output'] = str(self.output)
         self.state.update(
@@ -126,13 +130,15 @@ class Tracker:
                 )
                 else None
             ),
-            detection_model=MODEL if self.llm_detector else None,
-            detection_effort=EFFORT if self.llm_detector else None,
+            detection_model=llm_detection.MODEL if self.llm_detector else None,
+            detection_effort=(
+                llm_detection.EFFORT if self.llm_detector else None
+            ),
             effective_detection_prompt=self.object_info.get(
                 'effective_detection_prompt', self.object_info['name']
             ),
         )
-        self.grasp = GraspController(
+        self.grasp = grasp_control.GraspController(
             ROOT,
             self,
             getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'),
@@ -198,7 +204,7 @@ class Tracker:
                 }
                 for d in rs.context().query_devices()
             ]
-            identity = select_camera(devices, self.args.serial)
+            identity = camera_checks.select_camera(devices, self.args.serial)
             cfg = rs.config()
             cfg.enable_device(identity['serial'])
             cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 15)
@@ -393,7 +399,7 @@ class Tracker:
             }
 
     def initialize(self, value):
-        box = checked_box(value['box'], 640, 360)
+        box = live_checks.checked_box(value['box'], 640, 360)
         with self.lock:
             if (
                 self.state['state'] != 'selecting'
@@ -462,7 +468,7 @@ class Tracker:
             )
             if (
                 new_frame
-                and recovery_due(
+                and live_checks.recovery_due(
                     self.state['state'],
                     self.args.auto_recover,
                     time.monotonic(),
@@ -483,7 +489,10 @@ class Tracker:
                 raise ValueError('候选画面已失效，请重新识别')
             if (
                 self.llm_detector
-                and time.time() - self.frozen['time'] > MAX_FRAME_AGE_S
+                and (
+                    time.time() - self.frozen['time']
+                    > llm_detection.MAX_FRAME_AGE_S
+                )
             ):
                 raise ValueError('候选画面已超过30秒，请重新识别')
             index = value['index']
@@ -511,7 +520,7 @@ class Tracker:
             self.event('paused')
 
     def switch_object(self, object_id):
-        info = select_object(self.models_root, object_id)
+        info = object_catalog.select_object(self.models_root, object_id)
         with self.lock:
             if self.grasp.snapshot()['busy']:
                 raise ValueError('抓取任务处理中，不能切换物品')
@@ -545,7 +554,7 @@ class Tracker:
                 raise ValueError('任务进行中，请结束任务后修改识别提示词')
             if self.state['state'] == 'switching':
                 raise ValueError('模型正在切换，请加载完成后再保存')
-            row = save_detection_prompt(
+            row = object_catalog.save_detection_prompt(
                 self.models_root,
                 value['id'],
                 value['prompt'],
@@ -593,7 +602,7 @@ class Tracker:
             directory.mkdir(parents=True, exist_ok=True)
             with (directory / 'robot.lock').open('a') as device_lock:
                 fcntl.flock(device_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                row = save_pose_mode(
+                row = object_catalog.save_pose_mode(
                     self.models_root,
                     value['id'],
                     value['pose_mode'],
@@ -668,7 +677,9 @@ class Tracker:
             rotations = np.array([r['pose'] for r in rows])[:, :3, :3]
             mode = s.get('pose_mode', '6d')
             angles = [
-                object_rotation_error(rotation, rotations[-1], mode)
+                pose_symmetry.object_rotation_error(
+                    rotation, rotations[-1], mode
+                )
                 for rotation in rotations
             ]
             if np.max(angles) > np.deg2rad(15):
@@ -796,7 +807,7 @@ class Tracker:
                         else 0
                     ),
                 }
-                target = catchup_frame(
+                target = live_checks.catchup_frame(
                     history, frame['sequence'], frame['time'], stride
                 )
             if time.perf_counter() - started > budget:
@@ -824,13 +835,13 @@ class Tracker:
         try:
             import torch
             torch.set_num_threads(2)
-            from saydo.perception.live_detection import predict_detection
+            from saydo.perception import live_detection
             import trimesh
             import nvdiffrast.torch as dr
             from estimater import FoundationPose
             from learning.training.predict_score import ScorePredictor
             from learning.training.predict_pose_refine import PoseRefinePredictor
-            from saydo.perception.batched_refiner import BatchedRefiner, batch_score_features, AutocastSam
+            from saydo.perception import batched_refiner
             from segment_anything import SamPredictor, sam_model_registry
             from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
             from Utils import draw_posed_3d_box, draw_xyz_axis, project_3d_to_2d, nvdiffrast_render
@@ -848,8 +859,8 @@ class Tracker:
             refiner = PoseRefinePredictor()
             scorer = ScorePredictor()
             if self.detector_backend == 'qwen':
-                refiner = BatchedRefiner(refiner)
-                scorer = batch_score_features(scorer)
+                refiner = batched_refiner.BatchedRefiner(refiner)
+                scorer = batched_refiner.batch_score_features(scorer)
             estimator = FoundationPose(
                 model_pts=mesh.vertices,
                 model_normals=mesh.vertex_normals,
@@ -868,7 +879,7 @@ class Tracker:
                 ).to('cuda')
             )
             if self.detector_backend == 'qwen':
-                sam = AutocastSam(sam)
+                sam = batched_refiner.AutocastSam(sam)
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
             detector = (
@@ -986,7 +997,7 @@ class Tracker:
                                     state='ready',
                                     model_ready=True,
                                     model_sha256=hashlib.sha256(
-                                        Path(info['mesh']).read_bytes()
+                                        pathlib.Path(info['mesh']).read_bytes()
                                     ).hexdigest(),
                                     model=info['mesh'],
                                     object_id=info['id'],
@@ -1035,7 +1046,7 @@ class Tracker:
                                     'generation': switch_generation,
                                     'object': info,
                                     'mesh_sha256': hashlib.sha256(
-                                        Path(info['mesh']).read_bytes()
+                                        pathlib.Path(info['mesh']).read_bytes()
                                     ).hexdigest(),
                                 }
                                 with (
@@ -1072,7 +1083,7 @@ class Tracker:
                         self.scene_job = None
                     if scene_job is not None:
                         try:
-                            from saydo.scene.scene_perception import localize_scene
+                            from saydo.scene import scene_perception
 
                             def scene_check():
                                 if (
@@ -1081,17 +1092,19 @@ class Tracker:
                                 ):
                                     raise ValueError('场景采集已取消')
 
-                            scene_job['result'] = localize_scene(
-                                scene_job['frame'],
-                                scene_job['targets'],
-                                self.models_root,
-                                estimator,
-                                sam,
-                                context,
-                                self.llm_detector,
-                                scene_check,
-                                scene_job['progress'],
-                                self.local_detector,
+                            scene_job['result'] = (
+                                scene_perception.localize_scene(
+                                    scene_job['frame'],
+                                    scene_job['targets'],
+                                    self.models_root,
+                                    estimator,
+                                    sam,
+                                    context,
+                                    self.llm_detector,
+                                    scene_check,
+                                    scene_job['progress'],
+                                    self.local_detector,
+                                )
                             )
                         except Exception as error:
                             scene_job['error'] = str(error)
@@ -1190,20 +1203,24 @@ class Tracker:
                                             lambda: self.stop.is_set() or generation != self.generation,
                                         )
                                     elif detector is not None:
-                                        prediction = predict_detection(
-                                            detector, rgb
+                                        prediction = (
+                                            live_detection.predict_detection(
+                                                detector, rgb
+                                            )
                                         )
-                                        candidates = bottle_candidates(
-                                            prediction[
-                                                'boxes'
-                                            ].detach().cpu().numpy(),
-                                            prediction[
-                                                'labels'
-                                            ].detach().cpu().numpy(),
-                                            prediction[
-                                                'scores'
-                                            ].detach().cpu().numpy(),
-                                            detector_label,
+                                        candidates = (
+                                            live_checks.bottle_candidates(
+                                                prediction[
+                                                    'boxes'
+                                                ].detach().cpu().numpy(),
+                                                prediction[
+                                                    'labels'
+                                                ].detach().cpu().numpy(),
+                                                prediction[
+                                                    'scores'
+                                                ].detach().cpu().numpy(),
+                                                detector_label,
+                                            )
                                         )
                                     else:
                                         raise ValueError(
@@ -1242,7 +1259,9 @@ class Tracker:
                                         )
                                         self.state['detection_method'] = (
                                             (
-                                                f'{MODEL}/{EFFORT} -> SAM -> '
+                                                f'{llm_detection.MODEL}/'
+                                                f'{llm_detection.EFFORT} -> '
+                                                f'SAM -> '
                                                 f'FoundationPose'
                                             )
                                             if self.llm_detector
@@ -1274,12 +1293,12 @@ class Tracker:
                                     generation != self.generation
                                     or self.stop.is_set()
                                 ):
-                                    raise DetectionCancelled()
+                                    raise llm_detection.DetectionCancelled()
                                 if (
                                     self.llm_detector
                                     and (
                                         time.time() - frame['time']
-                                        > MAX_FRAME_AGE_S
+                                        > llm_detection.MAX_FRAME_AGE_S
                                     )
                                 ):
                                     raise ValueError(
@@ -1380,7 +1399,7 @@ class Tracker:
                                         ),
                                         glctx=context,
                                     )
-                                    health = pose_health(
+                                    health = live_checks.pose_health(
                                         current_pose,
                                         rd[0].detach().cpu().numpy(),
                                         current_frame['depth'],
@@ -1448,7 +1467,7 @@ class Tracker:
                                 glctx=context,
                             )
                             rendered = rendered[0].detach().cpu().numpy()
-                            quality = pose_health(
+                            quality = live_checks.pose_health(
                                 pose, rendered, frame['depth'], previous, mask
                             )
                             last_health = quality
@@ -1563,7 +1582,7 @@ class Tracker:
                             if generation != self.generation:
                                 continue
                             mode = self.state.get('pose_mode', '6d')
-                            published = canonical_pose(pose, mode)
+                            published = pose_symmetry.canonical_pose(pose, mode)
                             self.state.update(
                                 state='lost' if lost else 'tracking',
                                 camera_T_object=(
@@ -1571,7 +1590,9 @@ class Tracker:
                                     if quality['good']
                                     else None
                                 ),
-                                pose_semantics=pose_fields(published, mode),
+                                pose_semantics=pose_symmetry.pose_fields(
+                                    published, mode
+                                ),
                                 quality=quality,
                                 inference_seconds=duration,
                                 pose_frame_at=frame['time'],
@@ -1646,7 +1667,7 @@ class Tracker:
                             self.last_heartbeat = time.monotonic()
                         previous = np.asarray(pose).copy()
                         last_sequence = frame['sequence']
-                    except DetectionCancelled:
+                    except llm_detection.DetectionCancelled:
                         continue
                     except Exception as error:
                         failure = self.event(
@@ -1691,11 +1712,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--mesh',
-        type=Path,
+        type=pathlib.Path,
         default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj',
     )
     parser.add_argument(
-        '--models-root', type=Path, default=ROOT / 'work/object_models'
+        '--models-root', type=pathlib.Path, default=ROOT / 'work/object_models'
     )
     parser.add_argument(
         '--detector',
@@ -1723,11 +1744,13 @@ def main():
         ),
     )
     parser.add_argument(
-        '--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json'
+        '--grasp-config',
+        type=pathlib.Path,
+        default=ROOT / 'config/grasp/trial.json',
     )
     parser.add_argument(
         '--resume-reorientation-report',
-        type=Path,
+        type=pathlib.Path,
         help=(
             'One-use read-only recovery of the latest failed reorientation; '
             'operator must confirm the same grasp was never released or moved'
@@ -1739,7 +1762,7 @@ def main():
     )
     parser.add_argument(
         '--agent-token-file',
-        type=Path,
+        type=pathlib.Path,
         help=(
             'Enable authenticated Agent routes using an owner-only bearer '
             'token file'
@@ -1800,13 +1823,13 @@ def main():
         pass
     tracker = Tracker(args)
     agent_api = (
-        AgentAPI(tracker, args.agent_token_file)
+        workbench_agent_api.AgentAPI(tracker, args.agent_token_file)
         if args.agent_token_file
         else None
     )
-    task_runner = TaskRunnerProxy()
+    task_runner = task_runner_proxy.TaskRunnerProxy()
 
-    class Handler(BaseHTTPRequestHandler):
+    class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *unused):
             pass
 
@@ -1868,7 +1891,7 @@ def main():
                             urllib.parse.urlsplit(self.path).query
                         )
                         self.reply(200, agent_api.get(path, params))
-                    except AgentError as error:
+                    except workbench_agent_api.AgentError as error:
                         self.reply(400, {'error': error.payload})
                     except (
                         ValueError, KeyError, TypeError, RuntimeError, OSError
@@ -1948,7 +1971,14 @@ def main():
             elif path == '/api/status':
                 self.reply(200, tracker.snapshot())
             elif path == '/api/objects':
-                self.reply(200, {'objects': scan_objects(tracker.models_root)})
+                self.reply(
+                    200,
+                    {
+                        'objects': object_catalog.scan_objects(
+                            tracker.models_root
+                        )
+                    },
+                )
             elif path == '/frame.jpg':
                 frame = tracker.image()
                 self.reply(200, frame, 'image/jpeg') if frame else self.reply(
@@ -2140,14 +2170,14 @@ def main():
                     self.reply(404, {'error': 'not found'})
                     return
                 self.reply(200, result)
-            except AgentError as error:
+            except workbench_agent_api.AgentError as error:
                 self.reply(400, {'error': error.payload})
             except (
                 ValueError, KeyError, TypeError, RuntimeError, OSError
             ) as error:
                 self.reply(400, {'error': str(error)})
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     threads = [
         threading.Thread(target=tracker.capture),
         threading.Thread(target=tracker.inference),

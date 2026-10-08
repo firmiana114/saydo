@@ -2,18 +2,19 @@
 
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
 from scipy.spatial.transform import Rotation
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import rotation_error, controller_pose
-from saydo.manipulation.reorientation_geometry import checked_rotation, reorientation_settings, reorientation_waypoints, plan_reorientation, endpoint_reachability
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import reorientation_geometry
+from saydo.robot import motion_validation
 from tests.manipulation import test_grasp
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def fixture():
@@ -68,7 +69,7 @@ class ReorientationTests(unittest.TestCase):
             np.full((3, 3), np.nan),
         ):
             with self.assertRaises(ValueError):
-                checked_rotation(r)
+                reorientation_geometry.checked_rotation(r)
         _, settings, _, _, _ = fixture()
         for key, value in [
             ('arm_speed_percent', True),
@@ -76,7 +77,9 @@ class ReorientationTests(unittest.TestCase):
             ('planning_timeout_s', 0),
         ]:
             with self.assertRaises(ValueError):
-                reorientation_settings({**settings, key: value})
+                reorientation_geometry.reorientation_settings(
+                    {**settings, key: value}
+                )
 
     def test_every_sample_and_target_keep_exact_raw_xyz(self):
         config, settings, held, vertices, arm = fixture()
@@ -85,16 +88,20 @@ class ReorientationTests(unittest.TestCase):
             rotation = Rotation.from_euler(
                 'xyz', degrees, degrees=True
             ).as_matrix()
-            plan = reorientation_waypoints(
+            plan = reorientation_geometry.reorientation_waypoints(
                 held, vertices, rotation, arm['pose'], config, settings
             )
             for w in plan['waypoints']:
                 self.assertEqual(w['controller_pose'][:3], arm['pose'][:3])
-            before = controller_pose(arm['pose'])
+            before = grasp_geometry.controller_pose(arm['pose'])
             for row in plan['waypoints']:
-                after = controller_pose(row['controller_pose'])
+                after = grasp_geometry.controller_pose(row['controller_pose'])
                 self.assertLessEqual(
-                    np.rad2deg(rotation_error(before[:3, :3], after[:3, :3])),
+                    np.rad2deg(
+                        grasp_geometry.rotation_error(
+                            before[:3, :3], after[:3, :3]
+                        )
+                    ),
                     15 + 1e-6,
                 )
                 before = after
@@ -120,15 +127,15 @@ class ReorientationTests(unittest.TestCase):
         arm['pose'] = [300000, 200000, 300000, 0, 0, 0]
         vertices = np.array([[0, 0, 0], [.12, 0, 0], [0, .01, 0]])
         target = Rotation.from_euler('y', 180, degrees=True).as_matrix()
-        checker = Mock(return_value=(True, {}))
-        plan = plan_reorientation(
+        checker = mock.Mock(return_value=(True, {}))
+        plan = reorientation_geometry.plan_reorientation(
             held, vertices, target, arm, config, settings, checker, lambda: None
         )
         self.assertFalse(plan['intermediate_path_checked'])
         self.assertGreater(len(checker.call_args.args[0]), 1)
         arm['pose'][2] = 80000
         with self.assertRaises(ValueError):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 held,
                 vertices,
                 target,
@@ -142,8 +149,8 @@ class ReorientationTests(unittest.TestCase):
 
     def test_reachability_and_cancellation(self):
         config, settings, held, vertices, arm = fixture()
-        checker = Mock(return_value=(True, {'ok': True}))
-        plan = plan_reorientation(
+        checker = mock.Mock(return_value=(True, {'ok': True}))
+        plan = reorientation_geometry.plan_reorientation(
             held,
             vertices,
             np.eye(3),
@@ -156,7 +163,7 @@ class ReorientationTests(unittest.TestCase):
         self.assertEqual(checker.call_args.args[0], plan['validation_points'])
         checker.return_value = (False, {})
         with self.assertRaisesRegex(ValueError, '不可达'):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 held,
                 vertices,
                 np.eye(3),
@@ -168,7 +175,7 @@ class ReorientationTests(unittest.TestCase):
             )
         checker.reset_mock()
         with self.assertRaisesRegex(RuntimeError, 'cancel'):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 held,
                 vertices,
                 np.eye(3),
@@ -176,7 +183,7 @@ class ReorientationTests(unittest.TestCase):
                 config,
                 settings,
                 checker,
-                Mock(side_effect=RuntimeError('cancel')),
+                mock.Mock(side_effect=RuntimeError('cancel')),
             )
         checker.assert_not_called()
 
@@ -184,26 +191,26 @@ class ReorientationTests(unittest.TestCase):
         config, settings, held, vertices, arm = fixture()
         config['workspace_max_m'][2] = .3
         with self.assertRaisesRegex(ValueError, '工作区'):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 held,
                 vertices,
                 np.eye(3),
                 arm,
                 config,
                 settings,
-                Mock(),
+                mock.Mock(),
                 lambda: None,
             )
         config['workspace_reviewed'] = False
         with self.assertRaisesRegex(ValueError, '核对'):
-            plan_reorientation(
+            reorientation_geometry.plan_reorientation(
                 held,
                 vertices,
                 np.eye(3),
                 arm,
                 config,
                 settings,
-                Mock(),
+                mock.Mock(),
                 lambda: None,
             )
 
@@ -218,24 +225,26 @@ class ReorientationTests(unittest.TestCase):
             ('IK 0 0 nan 0 0 0 0 0 0\n' * 2, 0, False),
             ('', 1, False),
         ]:
-            with patch(
+            with mock.patch(
                 'saydo.manipulation.reorientation_geometry.subprocess.run',
-                return_value=SimpleNamespace(
+                return_value=types.SimpleNamespace(
                     returncode=code, stdout=output, stderr=''
                 ),
             ):
                 self.assertEqual(
-                    endpoint_reachability('offline', tool, arm, points, 1)[0],
+                    motion_validation.check_waypoints(
+                        'offline', tool, arm, points, 1
+                    )[0],
                     valid,
                 )
 
     def test_no_hold_stale_request_and_busy_rejected(self):
         config, _, held, _, _ = fixture()
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
+            root = pathlib.Path(d)
             cfg = root / 'trial.json'
             cfg.write_text(json.dumps(config))
-            service = GraspController(root, None, cfg)
+            service = grasp_control.GraspController(root, None, cfg)
             request = {
                 'rotation': np.eye(3).tolist(),
                 'orientation_version': 0,
@@ -243,7 +252,7 @@ class ReorientationTests(unittest.TestCase):
                     k: held[k] for k in ['object_id', 'model_sha256', 'hold_id']
                 },
             }
-            with patch(
+            with mock.patch(
                 'saydo.manipulation.reorientation_control.threading.Thread'
             ) as thread:
                 with self.assertRaisesRegex(ValueError, '尚无'):
@@ -262,12 +271,12 @@ class ReorientationTests(unittest.TestCase):
     def test_attachment_and_current_rotation_are_kept_after_grasp_return(self):
         config, _, held, _, arm = fixture()
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
+            root = pathlib.Path(d)
             cfg = root / 'trial.json'
             cfg.write_text(json.dumps(config))
-            service = GraspController(root, None, cfg)
+            service = grasp_control.GraspController(root, None, cfg)
             service.status['gripper_contact'] = {'pos': [500]}
-            service.arm_state = Mock(return_value=arm)
+            service.arm_state = mock.Mock(return_value=arm)
             report = {}
             service.capture_attachment(
                 {**held, 'base_T_object': held['base_T_object_at_grasp']},
@@ -277,7 +286,7 @@ class ReorientationTests(unittest.TestCase):
             arm['pose'][3:] = [0, 0, 0]
             service.finish_attachment(report)
             expected = (
-                controller_pose(arm['pose'])
+                grasp_geometry.controller_pose(arm['pose'])
                 @ np.linalg.inv(report['held_object']['object_T_tcp'])
             )
             np.testing.assert_allclose(
@@ -292,22 +301,22 @@ class ReorientationTests(unittest.TestCase):
         config, settings, held, _, _ = fixture()
         held['current_object_rotation'] = np.eye(3).tolist()
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
+            root = pathlib.Path(d)
             cfg = root / 'trial.json'
             cfg.write_text(json.dumps(config))
-            service = GraspController(
-                root, SimpleNamespace(models_root=root), cfg
+            service = grasp_control.GraspController(
+                root, types.SimpleNamespace(models_root=root), cfg
             )
             service.held_object = held
             (root / 'config/grasp').mkdir(parents=True)
             (
                 root / 'config/grasp/reorientation.json'
             ).write_text(json.dumps(settings))
-            with patch(
-                'saydo.manipulation.reorientation_control.model_geometry',
+            with mock.patch(
+                'saydo.manipulation.reorientation_geometry.model_geometry',
                 return_value={},
-            ), patch(
-                'saydo.manipulation.reorientation_control.model_appearance',
+            ), mock.patch(
+                'saydo.manipulation.reorientation_visual.model_appearance',
                 return_value={},
             ):
                 model = service.reorientation_model('sample')
@@ -331,18 +340,20 @@ class ReorientationTests(unittest.TestCase):
                 failure=failure
             ), tempfile.TemporaryDirectory() as d:
                 config, settings, held, vertices, arm = fixture()
-                root = Path(d)
+                root = pathlib.Path(d)
                 cfg = root / 'trial.json'
                 cfg.write_text(json.dumps(config))
-                service = GraspController(root, None, cfg)
+                service = grasp_control.GraspController(root, None, cfg)
                 service.held_object = held
-                plan = reorientation_waypoints(
+                plan = reorientation_geometry.reorientation_waypoints(
                     held, vertices, np.eye(3), arm['pose'], config, settings
                 )
-                robot = service.robot = Mock()
-                service.check_reorient_contact = Mock()
-                service.verify_motion_targets = Mock()
-                service.arm_state = Mock(side_effect=lambda: copy.deepcopy(arm))
+                robot = service.robot = mock.Mock()
+                service.check_reorient_contact = mock.Mock()
+                service.verify_motion_targets = mock.Mock()
+                service.arm_state = mock.Mock(
+                    side_effect=lambda: copy.deepcopy(arm)
+                )
                 targets = {}
 
                 def verify(plan, config, report, current, points):
@@ -404,7 +415,7 @@ class ReorientationTests(unittest.TestCase):
         for mode in ['preview', 'execute']:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d:
                 config, settings, held, vertices, arm = fixture()
-                root = Path(d)
+                root = pathlib.Path(d)
                 (root / 'config/grasp').mkdir(parents=True)
                 config.update(
                     robot_ip='simulation', robot_port=1, ik_checker='checker'
@@ -415,35 +426,34 @@ class ReorientationTests(unittest.TestCase):
                     root / 'config/grasp/reorientation.json'
                 ).write_text(json.dumps(settings))
                 (root / 'checker').touch()
-                service = GraspController(
-                    root, SimpleNamespace(models_root=root), cfg
+                service = grasp_control.GraspController(
+                    root, types.SimpleNamespace(models_root=root), cfg
                 )
                 service.held_object = held
-                service.reorientation_hardware = Mock(
+                service.reorientation_hardware = mock.Mock(
                     return_value=(
                         arm, {'flange_T_grip_tcp': np.eye(4).tolist()}
                     )
                 )
-                robot = Mock()
-                service.arm_state = Mock(return_value=arm)
-                service.check_reorient_contact = Mock()
+                robot = mock.Mock()
+                service.arm_state = mock.Mock(return_value=arm)
+                service.check_reorient_contact = mock.Mock()
 
                 def fail(*args):
                     service.actuated = True
                     raise RuntimeError('simulated rejection')
 
-                service.execute_reorient = Mock(side_effect=fail)
-                with patch(
-                    'saydo.manipulation.reorientation_control.RobotClient',
+                service.execute_reorient = mock.Mock(side_effect=fail)
+                with mock.patch(
+                    'saydo.robot.grasp_robot.RobotClient',
                     return_value=robot,
-                ) as client, patch(
-                    'saydo.manipulation.reorientation_control.model_geometry',
+                ) as client, mock.patch(
+                    'saydo.manipulation.reorientation_geometry.model_geometry',
                     return_value={
                         'model_sha256': 'mesh1', 'vertices': vertices
                     },
-                ), patch(
-                    'saydo.manipulation.reorientation_control.endpoint_reachab'
-                    'ility',
+                ), mock.patch(
+                    'saydo.robot.motion_validation.check_waypoints',
                     return_value=(True, {}),
                 ):
                     service.run_reorient(

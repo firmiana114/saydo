@@ -1,27 +1,29 @@
-from tests.task_runner.test_runner import mock_global_camera
+from tests.task_runner import test_runner
 import asyncio
 import copy
 import tempfile
 import unittest
-from saydo.task_runner.config import Config
-from saydo.task_runner.robot_adapter import RobotAdapter, Blocked
-from saydo.task_runner.tool_registry import schemas, validate
-from tests.task_runner.test_adapter import Backend
-from tests.task_runner.test_runner import FakeLLM, call, end
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from saydo.contracts.motion_contract import DEFAULT_GOAL
+from saydo.task_runner import config
+from saydo.task_runner import robot_adapter
+from saydo.task_runner import tool_registry
+from tests.task_runner import test_adapter
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store as task_runner_store
+from saydo.contracts import motion_contract
 
 POSE = [[1, 0, 0, .3], [0, 1, 0, 0], [0, 0, 1, .3], [0, 0, 0, 1]]
 ARGS = {
     'object_id': 'b',
     'hold_id': 'h',
     'orientation_version': 0,
-    'goal': {**copy.deepcopy(DEFAULT_GOAL), 'target_position_m': [.3, 0, .3]},
+    'goal': {
+        **copy.deepcopy(motion_contract.DEFAULT_GOAL),
+        'target_position_m': [.3, 0, .3],
+    },
 }
 
 
-class ObjectBackend(Backend):
+class ObjectBackend(test_adapter.Backend):
     def __init__(self):
         super().__init__()
         self.plans = {}
@@ -111,12 +113,14 @@ class ObjectBackend(Backend):
 
 class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        mock_global_camera(self)
+        test_runner.mock_global_camera(self)
 
     def setUp(self):
-        self.config = Config(api_key='test', mode='execute', poll_interval=.001)
+        self.config = config.Config(
+            api_key='test', mode='execute', poll_interval=.001
+        )
         self.backend = ObjectBackend()
-        self.adapter = RobotAdapter(self.config, self.backend)
+        self.adapter = robot_adapter.RobotAdapter(self.config, self.backend)
 
     async def test_plan_then_execute_then_release_runner_evidence(self):
         release = {
@@ -126,15 +130,20 @@ class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
             'goal': None,
             'retreat_vector_base_m': [0, 0, .05],
         }
-        llm = FakeLLM(
-            call('plan_held_object_motion', ARGS, 'p1'),
-            call('execute_plan', {'plan_id': 'a' * 32}, 'e1'),
-            call('plan_release', release, 'p2'),
-            call('execute_plan', {'plan_id': 'b' * 32}, 'e2'),
-            end('succeeded', ['e1', 'e2']),
+        llm = test_runner.FakeLLM(
+            test_runner.call('plan_held_object_motion', ARGS, 'p1'),
+            test_runner.call('execute_plan', {'plan_id': 'a' * 32}, 'e1'),
+            test_runner.call('plan_release', release, 'p2'),
+            test_runner.call('execute_plan', {'plan_id': 'b' * 32}, 'e2'),
+            test_runner.end('succeeded', ['e1', 'e2']),
         )
         with tempfile.TemporaryDirectory() as d:
-            runner = Runner(self.config, Store(d), llm, lambda: self.adapter)
+            runner = task_runner_runner.Runner(
+                self.config,
+                task_runner_store.Store(d),
+                llm,
+                lambda: self.adapter,
+            )
             ident = runner.submit('持物移动到目标并松爪')
             await runner.worker
             result = runner.store.get(ident)
@@ -158,7 +167,7 @@ class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
             lambda _: None,
         )
         self.backend.bad = True
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'execute_plan',
                 {'plan_id': 'a' * 32},
@@ -177,7 +186,7 @@ class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
             lambda _: None,
         )
         self.assertFalse(planned['verified'])
-        with self.assertRaises(Blocked):
+        with self.assertRaises(robot_adapter.Blocked):
             await self.adapter.execute(
                 'execute_plan',
                 {'plan_id': 'a' * 32},
@@ -210,21 +219,21 @@ class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
     def test_restart_marks_unfinished_execution_unknown_and_reconcile_queries_original_id(
         self
     ):
-        from saydo.task_runner.reconcile import reconcile
+        from saydo.task_runner import reconcile
         with tempfile.TemporaryDirectory() as d:
-            store = Store(d)
+            store = task_runner_store.Store(d)
             run = store.create('移动后释放', 'terra', 'execute')
             record = store.prepare(
                 run['run_id'], 'e', 'execute_plan', {'plan_id': 'a' * 32}, 1
             )
-            store = Store(d)
+            store = task_runner_store.Store(d)
             self.assertTrue(store.get(run['run_id'])['outcome_unknown'])
             self.backend.result = {
                 'terminal': True,
                 'state': 'interrupted',
                 'outcome_unknown': True,
             }
-            reconcile(store, self.backend, run['run_id'])
+            reconcile.reconcile(store, self.backend, run['run_id'])
             self.assertIn(
                 ('/api/agent/tasks/' + record['request_id'], None),
                 self.backend.requests,
@@ -232,11 +241,16 @@ class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     def test_contract_fields_and_mode_visibility(self):
         self.assertNotIn(
-            'execute_plan', {x['name'] for x in schemas('preview')}
+            'execute_plan',
+            {x['name'] for x in tool_registry.schemas('preview')},
         )
-        self.assertIn('plan_release', {x['name'] for x in schemas('preview')})
+        self.assertIn(
+            'plan_release',
+            {x['name'] for x in tool_registry.schemas('preview')},
+        )
         self.assertNotIn(
-            'plan_release', {x['name'] for x in schemas('read_only')}
+            'plan_release',
+            {x['name'] for x in tool_registry.schemas('read_only')},
         )
         for goal in [
             {**ARGS['goal'], 'target_position_m': [True, 0, 0]},
@@ -244,8 +258,8 @@ class ObjectAdapterTests(unittest.IsolatedAsyncioTestCase):
             {**ARGS['goal'], 'unexpected': 1},
         ]:
             with self.assertRaises(ValueError):
-                validate(
-                    call(
+                tool_registry.validate(
+                    test_runner.call(
                         'plan_held_object_motion', {**ARGS, 'goal': goal}
                     )['output'][0],
                     'execute',

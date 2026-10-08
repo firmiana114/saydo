@@ -1,13 +1,13 @@
 """Bounded display-only material payload; never used for motion geometry."""
 
 import base64
-from functools import lru_cache
-from io import BytesIO
-from pathlib import Path
+import functools
+import io
+import pathlib
 
 import numpy as np
 
-from saydo.objects.object_catalog import select_object
+from saydo.objects import object_catalog
 
 
 def mesh_appearance(mesh):
@@ -46,7 +46,7 @@ def mesh_appearance(mesh):
         if image is not None and uv is not None:
             image = image.convert('RGBA')
             image.thumbnail((1024, 1024))
-            buffer = BytesIO()
+            buffer = io.BytesIO()
             image.save(buffer, format='PNG', optimize=True)
             entry['texture'] = (
                 'data:image/png;base64,'
@@ -83,14 +83,16 @@ def mesh_appearance(mesh):
     return result
 
 
-@lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=8)
 def _appearance(path, dependencies):
     import trimesh
     return mesh_appearance(trimesh.load(path, force='mesh', process=False))
 
 
 def model_appearance(models_root, object_id):
-    path = Path(select_object(models_root, object_id)['mesh'])
+    path = pathlib.Path(
+        object_catalog.select_object(models_root, object_id)['mesh']
+    )
     # Include sidecars so changing a texture/MTL refreshes the cached payload.
     extensions = {
         '.obj', '.glb', '.ply', '.mtl', '.png', '.jpg', '.jpeg', '.webp', '.bmp'

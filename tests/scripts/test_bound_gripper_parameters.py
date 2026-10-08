@@ -2,15 +2,15 @@
 
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
-from types import SimpleNamespace
+import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
-from scripts.bind_gripper_parameters import migrate
-from saydo.manipulation.grasp_control import GraspController
-from saydo.objects.grasp_library import GraspLibrary, object_gripper_defaults, effective_config, effective_parameters, revision
+from scripts import bind_gripper_parameters
+from saydo.manipulation import grasp_control
+from saydo.objects import grasp_library
 
 
 class BoundGripperTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class BoundGripperTests(unittest.TestCase):
             ('new_object', 75, 1000),
         ]:
             self.assertEqual(
-                object_gripper_defaults(oid),
+                grasp_library.object_gripper_defaults(oid),
                 {'force_target_raw': force, 'open_position': opening},
             )
 
@@ -47,7 +47,7 @@ class BoundGripperTests(unittest.TestCase):
             }
         }
         before = copy.deepcopy(config)
-        result = effective_config(config, entry)
+        result = grasp_library.effective_config(config, entry)
         self.assertEqual(
             result['gripper'],
             {
@@ -58,7 +58,7 @@ class BoundGripperTests(unittest.TestCase):
         )
         self.assertEqual(result['pregrasp_distance_m'], .08)
         self.assertEqual(config, before)
-        params = effective_parameters(config, entry)
+        params = grasp_library.effective_parameters(config, entry)
         self.assertEqual(params['gripper_parameters_source'], 'grasp_profile')
         self.assertEqual(params['lift_height_m'], .2)
         for values in [
@@ -69,10 +69,10 @@ class BoundGripperTests(unittest.TestCase):
             {'force_target_raw': True, 'open_position': 1000},
         ]:
             with self.assertRaises(ValueError):
-                effective_config(config, {'overrides': values})
+                grasp_library.effective_config(config, {'overrides': values})
 
     def library(self, root):
-        library = GraspLibrary(root)
+        library = grasp_library.GraspLibrary(root)
         for oid in [
             'ob_paper_cup_85mm',
             'mug_iphone_20260917',
@@ -103,27 +103,31 @@ class BoundGripperTests(unittest.TestCase):
                     },
                 ],
             }
-            library.write_object(oid, value, revision(library.object(oid)))
+            library.write_object(
+                oid, value, grasp_library.revision(library.object(oid))
+            )
         return library
 
     def test_bulk_migration_preserves_geometry_selection_and_history(self):
         with tempfile.TemporaryDirectory() as d:
-            library = self.library(Path(d))
+            library = self.library(pathlib.Path(d))
             original = {
                 p: p.read_bytes()
                 for p in library.models_root.glob('*/grasp_profiles.json')
             }
-            preview = migrate(library)
+            preview = bind_gripper_parameters.migrate(library)
             self.assertEqual(preview['files_to_write'], 4)
             for p, data in original.items():
                 self.assertEqual(p.read_bytes(), data)
-            with patch(
+            with mock.patch(
                 'saydo.robot.grasp_robot.socket.create_connection',
                 side_effect=AssertionError('no hardware'),
             ):
-                report = migrate(library, True)
+                report = bind_gripper_parameters.migrate(library, True)
             self.assertFalse(report['motion_sent'])
-            self.assertEqual(migrate(library)['files_to_write'], 0)
+            self.assertEqual(
+                bind_gripper_parameters.migrate(library)['files_to_write'], 0
+            )
             for p, data in original.items():
                 before = json.loads(data)['configuration']
                 after = library.object(p.parent.name)
@@ -134,7 +138,7 @@ class BoundGripperTests(unittest.TestCase):
                 for old, new in zip(before['grasps'], after['grasps']):
                     for key in ['id', 'name', 'profile', 'enabled', 'priority']:
                         self.assertEqual(new[key], old[key])
-                    for key, value in object_gripper_defaults(
+                    for key, value in grasp_library.object_gripper_defaults(
                         p.parent.name
                     ).items():
                         self.assertEqual(new['overrides'][key], value)
@@ -155,7 +159,7 @@ class BoundGripperTests(unittest.TestCase):
 
     def test_migration_preflight_rejects_bad_record_before_any_write(self):
         with tempfile.TemporaryDirectory() as d:
-            library = self.library(Path(d))
+            library = self.library(pathlib.Path(d))
             bad = library.object_path('transparent_test_tube_150mm')
             bad.write_text('{bad json')
             original = {
@@ -163,7 +167,7 @@ class BoundGripperTests(unittest.TestCase):
                 for p in library.models_root.glob('*/grasp_profiles.json')
             }
             with self.assertRaises(ValueError):
-                migrate(library, True)
+                bind_gripper_parameters.migrate(library, True)
             for p, data in original.items():
                 self.assertEqual(p.read_bytes(), data)
 
@@ -171,9 +175,9 @@ class BoundGripperTests(unittest.TestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
+            root = pathlib.Path(d)
             library = self.library(root)
-            migrate(library, True)
+            bind_gripper_parameters.migrate(library, True)
             cfg = root / 'trial.json'
             cfg.write_text(
                 json.dumps(
@@ -189,10 +193,10 @@ class BoundGripperTests(unittest.TestCase):
                     }
                 )
             )
-            tracker = SimpleNamespace(
+            tracker = types.SimpleNamespace(
                 state={'object_id': 'mug_iphone_20260917'}
             )
-            service = GraspController(root, tracker, cfg)
+            service = grasp_control.GraspController(root, tracker, cfg)
             result = service.snapshot()['grasp_configuration']
             self.assertEqual(
                 result['teaching_defaults'],
@@ -206,7 +210,7 @@ class BoundGripperTests(unittest.TestCase):
                     g['effective_parameters']['open_position'], 200
                 )
             value = library.object('mug_iphone_20260917')
-            before = revision(value)
+            before = grasp_library.revision(value)
             value['grasps'][0]['overrides'] = {}
             library.write_object('mug_iphone_20260917', value, before)
             self.assertIn(
@@ -220,18 +224,18 @@ class BoundGripperTests(unittest.TestCase):
         self
     ):
         with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
+            root = pathlib.Path(d)
             cfg = root / 'config.json'
             cfg.write_text('{}')
-            tracker = SimpleNamespace(
-                grasp_observation=Mock(
+            tracker = types.SimpleNamespace(
+                grasp_observation=mock.Mock(
                     return_value={
                         'object_id': 'ob_paper_cup_85mm', 'model_sha256': 'm'
                     }
                 )
             )
-            service = GraspController(root, tracker, cfg)
-            with patch('saydo.manipulation.grasp_control.RobotClient') as robot:
+            service = grasp_control.GraspController(root, tracker, cfg)
+            with mock.patch('saydo.robot.grasp_robot.RobotClient') as robot:
                 with self.assertRaisesRegex(ValueError, '物品已变化'):
                     service.teach(expected_object_id='mug')
                 for params in [

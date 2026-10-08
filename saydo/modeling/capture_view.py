@@ -7,7 +7,7 @@ import datetime
 import fcntl
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import sys
 import time
 import urllib.error
@@ -19,14 +19,14 @@ import numpy as np
 import pyrealsense2 as rs
 import yaml
 
-from saydo.modeling.geometry_checks import camera_pose, depth_millimeters, duplicate, validate_configs
-from saydo.modeling.depth_preview import export_previews
+from saydo.modeling import geometry_checks
+from saydo.modeling import depth_preview
 
 from saydo import paths
 
 ROOT = paths.ROOT
-from saydo.calibration.capture import Robot
-from saydo.calibration.geometry import pose_matrix, stationarity
+from saydo.calibration import capture
+from saydo.calibration import geometry
 
 
 def sha(path):
@@ -75,7 +75,7 @@ def run(args, session, report):
         key: yaml.safe_load(path.read_text()) for key, path in paths.items()
     }
     handeye, tool = configs['handeye'], configs['tool']
-    validate_configs(handeye, tool)
+    geometry_checks.validate_configs(handeye, tool)
     hashes = {key: sha(path) for key, path in paths.items()}
     for config in configs.values():
         source = (
@@ -102,7 +102,7 @@ def run(args, session, report):
                     'Hand-eye matrix differs from original accepted result'
                 )
     report['calibration_sha256'] = hashes
-    robot = Robot(args.robot_ip)
+    robot = capture.Robot(args.robot_ip)
 
     def frames():
         return {
@@ -118,7 +118,7 @@ def run(args, session, report):
             'Current tool pose/load differs from saved grip_tcp configuration'
         )
     if not np.allclose(
-        pose_matrix(actual_tool['pose']),
+        geometry.pose_matrix(actual_tool['pose']),
         tool['flange_T_grip_tcp'],
         rtol=0,
         atol=1e-9,
@@ -147,11 +147,11 @@ def run(args, session, report):
     for _ in range(3):
         observe()
         time.sleep(.15)
-    stationarity([row['reply']['arm_state'] for row in observations])
+    geometry.stationarity([row['reply']['arm_state'] for row in observations])
 
     def to_camera(observation):
-        return camera_pose(
-            pose_matrix(observation['reply']['arm_state']['pose']),
+        return geometry_checks.camera_pose(
+            geometry.pose_matrix(observation['reply']['arm_state']['pose']),
             tool['flange_T_grip_tcp'],
             handeye['flange_T_color_optical_camera'],
         )
@@ -162,7 +162,7 @@ def run(args, session, report):
         if saved['status'] == 'candidate':
             samples.append(saved)
     report['existing_view_count'] = len(samples)
-    match = duplicate(to_camera(observations[-1]), samples)
+    match = geometry_checks.duplicate(to_camera(observations[-1]), samples)
     if match:
         report.update(status='duplicate', duplicate_of=match)
         return
@@ -211,7 +211,7 @@ def run(args, session, report):
         for _ in range(2):
             time.sleep(.15)
             observe()
-        report['stationarity'] = stationarity(
+        report['stationarity'] = geometry.stationarity(
             [row['reply']['arm_state'] for row in observations]
         )
         color_native, depth_native = (
@@ -271,7 +271,7 @@ def run(args, session, report):
         if manifest and manifest['camera'] != camera:
             raise ValueError('Camera parameters changed during this session')
         report['camera'] = camera
-        depth_mm = depth_millimeters(raw, scale)
+        depth_mm = geometry_checks.depth_millimeters(raw, scale)
         valid = depth_mm > 0
         report['depth_quality'] = {
             'whole_image_valid_fraction': float(valid.mean()),
@@ -292,7 +292,7 @@ def run(args, session, report):
             )
         }
         pose = to_camera(before)
-        match = duplicate(pose, samples)
+        match = geometry_checks.duplicate(pose, samples)
         if match:
             report.update(status='duplicate', duplicate_of=match)
             return
@@ -300,7 +300,7 @@ def run(args, session, report):
             raise ValueError('Tool/work configuration changed during capture')
         if hashes != {key: sha(path) for key, path in paths.items()}:
             raise ValueError('Calibration files changed during capture')
-        report['base_T_grip_tcp'] = pose_matrix(
+        report['base_T_grip_tcp'] = geometry.pose_matrix(
             before['reply']['arm_state']['pose']
         ).tolist()
         report['base_T_flange'] = (
@@ -319,7 +319,9 @@ def run(args, session, report):
                 raise OSError('Image write failed: ' + name)
         depth_m = raw.astype(np.float32) * scale
         np.save(out / 'depth_m.npy', depth_m)
-        report['depth_visualization'] = export_previews(out, bgr, depth_m)
+        report['depth_visualization'] = depth_preview.export_previews(
+            out, bgr, depth_m
+        )
         np.savetxt(out / 'K.txt', K)
         np.savetxt(out / 'base_T_camera.txt', pose)
         report['files_sha256'] = {

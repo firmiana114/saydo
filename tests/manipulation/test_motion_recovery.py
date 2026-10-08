@@ -1,26 +1,26 @@
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+import types
+from unittest import mock
 import numpy as np
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import controller_pose, rotation_error
-from saydo.manipulation.object_motion_geometry import plan_object_motion
-from saydo.manipulation.reorientation_geometry import reorientation_waypoints
-from saydo.geometry.rotation_steps import checked_step
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import object_motion_geometry
+from saydo.manipulation import reorientation_geometry
+from saydo.geometry import rotation_steps
 from tests.manipulation import test_grasp
-from tests.manipulation.test_object_motion import fixture
+from tests.manipulation import test_object_motion
 
 
 class MotionRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        held, vertices, arm, config = fixture()
+        root = pathlib.Path(self.temp.name)
+        held, vertices, arm, config = test_object_motion.fixture()
         config = {**test_grasp.GraspTests().config(), **config}
         path = root / 'trial.json'
         path.write_text(json.dumps(config))
@@ -28,13 +28,15 @@ class MotionRecoveryTests(unittest.TestCase):
         self.held = held
         self.vertices = vertices
         self.arm = arm
-        self.c = GraspController(root, SimpleNamespace(models_root=root), path)
+        self.c = grasp_control.GraspController(
+            root, types.SimpleNamespace(models_root=root), path
+        )
         self.c.held_object = {**copy.deepcopy(held), 'orientation_version': 1}
         self.c.actuated = True
-        self.c.reorientation_hardware = Mock(return_value=(arm, {}))
-        self.c.check_reorient_contact = Mock(return_value={'speed': [0]})
-        self.c.motion_binding = Mock(return_value={'binding': 'same'})
-        self.c.robot = Mock()
+        self.c.reorientation_hardware = mock.Mock(return_value=(arm, {}))
+        self.c.check_reorient_contact = mock.Mock(return_value={'speed': [0]})
+        self.c.motion_binding = mock.Mock(return_value={'binding': 'same'})
+        self.c.robot = mock.Mock()
         self.mesh = {
             'model_sha256': held['model_sha256'],
             'pose_mode': '6d',
@@ -73,8 +75,8 @@ class MotionRecoveryTests(unittest.TestCase):
         }
 
     def assess(self):
-        with patch(
-            'saydo.manipulation.motion_recovery.model_geometry',
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
             return_value=self.mesh,
         ):
             return self.c.assess_motion_recovery(
@@ -90,7 +92,7 @@ class MotionRecoveryTests(unittest.TestCase):
         np.testing.assert_allclose(
             r['base_T_object_actual'],
             (
-                controller_pose(self.arm['pose'])
+                grasp_geometry.controller_pose(self.arm['pose'])
                 @ np.linalg.inv(self.held['object_T_tcp'])
             ),
         )
@@ -140,10 +142,10 @@ class MotionRecoveryTests(unittest.TestCase):
                     self.assertTrue(result['outcome_unknown'])
 
     def test_new_and_legacy_geometry_have_same_step_cap(self):
-        held, vertices, arm, config = fixture()
+        held, vertices, arm, config = test_object_motion.fixture()
         target = np.diag([1, -1, -1])
         for step in (15, 10, 5):
-            old = reorientation_waypoints(
+            old = reorientation_geometry.reorientation_waypoints(
                 held,
                 vertices,
                 target,
@@ -151,7 +153,7 @@ class MotionRecoveryTests(unittest.TestCase):
                 config,
                 {'max_rotation_step_deg': step},
             )
-            new = plan_object_motion(
+            new = object_motion_geometry.plan_object_motion(
                 held,
                 vertices,
                 arm,
@@ -162,16 +164,20 @@ class MotionRecoveryTests(unittest.TestCase):
                 lambda: None,
             )
             for plan in (old, new):
-                before = controller_pose(arm['pose'])
+                before = grasp_geometry.controller_pose(arm['pose'])
                 for row in plan['waypoints']:
-                    after = controller_pose(row['controller_pose'])
+                    after = grasp_geometry.controller_pose(
+                        row['controller_pose']
+                    )
                     self.assertLessEqual(
                         np.degrees(
-                            rotation_error(before[:3, :3], after[:3, :3])
+                            grasp_geometry.rotation_error(
+                                before[:3, :3], after[:3, :3]
+                            )
                         ),
                         step + 1e-6,
                     )
                     before = after
         for value in (True, 0, 16, 45, float('nan')):
             with self.assertRaises(ValueError):
-                checked_step(value)
+                rotation_steps.checked_step(value)

@@ -3,13 +3,13 @@
 import json
 import hashlib
 import os
-from pathlib import Path
+import pathlib
 import tempfile
 import time
 
-from saydo.geometry.pose_symmetry import checked_mode
-from saydo.perception.local_grounding import read_local_detection
-from saydo.perception.local_qwen import read_qwen_settings
+from saydo.geometry import pose_symmetry
+from saydo.perception import local_grounding
+from saydo.perception import local_qwen
 
 
 def tracking_revision(raw):
@@ -33,7 +33,7 @@ def inferred_class(name):
 
 
 def scan_objects(root):
-    root = Path(root).resolve()
+    root = pathlib.Path(root).resolve()
     result = []
     if not root.is_dir():
         return result
@@ -62,8 +62,10 @@ def scan_objects(root):
             if not isinstance(config, dict):
                 raise ValueError('tracking.json 必须为 JSON 对象')
             row['name'] = str(config.get('name', directory.name))
-            row['local_detection'] = read_local_detection(directory)
-            row['qwen_detection'] = read_qwen_settings(directory)
+            row['local_detection'] = local_grounding.read_local_detection(
+                directory
+            )
+            row['qwen_detection'] = local_qwen.read_qwen_settings(directory)
             detection_path = directory / 'detection.json'
             if detection_path.is_symlink():
                 raise ValueError('detection.json 不能是符号链接')
@@ -83,7 +85,9 @@ def scan_objects(root):
                 effective_detection_prompt=prompt or row['name'],
                 detection_prompt_revision=tracking_revision(detection_raw),
             )
-            row['pose_mode'] = checked_mode(config.get('pose_mode', '6d'))
+            row['pose_mode'] = pose_symmetry.checked_mode(
+                config.get('pose_mode', '6d')
+            )
             row['pose_mode_revision'] = tracking_revision(raw)
             row['detector_class'] = config.get(
                 'detector_class', row['detector_class']
@@ -135,9 +139,9 @@ def select_object(root, object_id):
 
 def save_pose_mode(root, object_id, mode, expected_revision):
     """Caller holds the device lock. Preserve all other per-model settings."""
-    mode = checked_mode(mode)
+    mode = pose_symmetry.checked_mode(mode)
     row = select_object(root, object_id)
-    path = Path(root) / row['id'] / 'tracking.json'
+    path = pathlib.Path(root) / row['id'] / 'tracking.json'
     raw = path.read_bytes() if path.exists() else None
     if expected_revision != tracking_revision(raw):
         raise ValueError('模型设置已变化，请重新打开模型选择')
@@ -150,7 +154,7 @@ def save_pose_mode(root, object_id, mode, expected_revision):
         with tempfile.NamedTemporaryFile(
             mode='w', dir=path.parent, prefix='.tracking-', delete=False
         ) as output:
-            temporary = Path(output.name)
+            temporary = pathlib.Path(output.name)
             os.fchmod(
                 output.fileno(),
                 path.stat().st_mode & 0o777 if raw is not None else 0o644,
@@ -180,7 +184,7 @@ def checked_detection_prompt(prompt):
 def save_detection_prompt(root, object_id, prompt, expected_revision):
     prompt = checked_detection_prompt(prompt)
     row = select_object(root, object_id)
-    path = Path(root) / row['id'] / 'detection.json'
+    path = pathlib.Path(root) / row['id'] / 'detection.json'
     raw = path.read_bytes() if path.exists() else None
     if expected_revision != tracking_revision(raw):
         raise ValueError('识别提示词已变化，请重新打开模型选择')
@@ -193,7 +197,7 @@ def save_detection_prompt(root, object_id, prompt, expected_revision):
         with tempfile.NamedTemporaryFile(
             mode='w', dir=path.parent, prefix='.detection-', delete=False
         ) as output:
-            temporary = Path(output.name)
+            temporary = pathlib.Path(output.name)
             output.write(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
             output.flush()
             os.fsync(output.fileno())

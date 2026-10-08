@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from saydo.modeling.geometry_checks import camera_pose, depth_millimeters, duplicate, rigid
+from saydo.modeling import geometry_checks
 
 
 class GeometryTests(unittest.TestCase):
@@ -19,7 +19,7 @@ class GeometryTests(unittest.TestCase):
         flange_T_tcp[2, 3] = .2225
         flange_T_camera = np.eye(4)
         flange_T_camera[:3, 3] = [.075, .063, .012]
-        actual = camera_pose(
+        actual = geometry_checks.camera_pose(
             base_T_flange @ flange_T_tcp, flange_T_tcp, flange_T_camera
         )
         np.testing.assert_allclose(
@@ -29,20 +29,20 @@ class GeometryTests(unittest.TestCase):
     def test_depth_scale_and_invalid_zero(self):
         raw = np.array([[0, 1234, 2000]], dtype=np.uint16)
         np.testing.assert_array_equal(
-            depth_millimeters(raw, .0001), [[0, 123, 200]]
+            geometry_checks.depth_millimeters(raw, .0001), [[0, 123, 200]]
         )
         with self.assertRaises(ValueError):
-            depth_millimeters(raw, 1.)
+            geometry_checks.depth_millimeters(raw, 1.)
 
     def test_duplicate_requires_both_small_translation_and_rotation(self):
         sample = {
             'sample_id': 'one',
             'base_T_color_optical_camera': np.eye(4).tolist(),
         }
-        self.assertIsNotNone(duplicate(np.eye(4), [sample]))
+        self.assertIsNotNone(geometry_checks.duplicate(np.eye(4), [sample]))
         moved = np.eye(4)
         moved[0, 3] = .011
-        self.assertIsNone(duplicate(moved, [sample]))
+        self.assertIsNone(geometry_checks.duplicate(moved, [sample]))
         rotated = np.array(
             [
                 [0., -1., 0., 0.],
@@ -51,12 +51,12 @@ class GeometryTests(unittest.TestCase):
                 [0., 0., 0., 1.],
             ]
         )
-        self.assertIsNone(duplicate(rotated, [sample]))
+        self.assertIsNone(geometry_checks.duplicate(rotated, [sample]))
 
     def test_reflection_and_nonfinite_rejected(self):
         for value in (np.diag([-1, 1, 1, 1]), np.full((4, 4), np.nan)):
             with self.assertRaises(ValueError):
-                rigid(value)
+                geometry_checks.rigid(value)
 
 
 if __name__ == '__main__':

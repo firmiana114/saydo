@@ -2,14 +2,14 @@ import asyncio
 import ssl
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest import mock
 import httpx
-from saydo.task_runner.config import Config
-from saydo.task_runner.llm_client import LLMClient, LLMError, ConnectionNotSent, ResponseTimeout, ResponseFailure
-from saydo.task_runner.llm_diagnostics import RequestDiagnostics
-from saydo.task_runner.runner import Runner
-from saydo.task_runner.store import Store
-from tests.task_runner.test_runner import FakeLLM, FakeAdapter, call, end
+from saydo.task_runner import config
+from saydo.task_runner import llm_client
+from saydo.task_runner import llm_diagnostics
+from saydo.task_runner import runner as task_runner_runner
+from saydo.task_runner import store
+from tests.task_runner import test_runner
 
 
 class RetryTests(unittest.IsolatedAsyncioTestCase):
@@ -30,17 +30,19 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
                     )
                     if len(requests) <= fail_count:
                         raise httpx.ConnectError('private detail')
-                    return httpx.Response(200, json=end())
+                    return httpx.Response(200, json=test_runner.end())
 
-                c = Config(api_key='secret', mode='read_only')
-                a = FakeAdapter()
-                runner = Runner(c, Store(folder), adapter_factory=lambda: a)
-                with patch(
+                c = config.Config(api_key='secret', mode='read_only')
+                a = test_runner.FakeAdapter()
+                runner = task_runner_runner.Runner(
+                    c, store.Store(folder), adapter_factory=lambda: a
+                )
+                with mock.patch(
                     'saydo.task_runner.llm_client.httpx.AsyncClient',
                     side_effect=lambda **kw: base(
                         transport=httpx.MockTransport(handle), **kw
                     ),
-                ), patch(
+                ), mock.patch(
                     'saydo.task_runner.runner.CONNECTION_RETRY_DELAYS',
                     (0, 0, 0, 0),
                 ):
@@ -78,15 +80,19 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_grasp_is_never_replayed(self):
         with tempfile.TemporaryDirectory() as folder:
-            llm = FakeLLM(
-                call('grasp', {'object_id': 'bottle'}, 'grasp-once'),
-                ResponseTimeout('response timeout'),
-                ResponseFailure('protocol failure'),
-                end('succeeded', ['grasp-once']),
+            llm = test_runner.FakeLLM(
+                test_runner.call(
+                    'grasp', {'object_id': 'bottle'}, 'grasp-once'
+                ),
+                llm_client.ResponseTimeout('response timeout'),
+                llm_client.ResponseFailure('protocol failure'),
+                test_runner.end('succeeded', ['grasp-once']),
             )
-            a = FakeAdapter()
-            r = Runner(Config(api_key='x'), Store(folder), llm, lambda: a)
-            with patch(
+            a = test_runner.FakeAdapter()
+            r = task_runner_runner.Runner(
+                config.Config(api_key='x'), store.Store(folder), llm, lambda: a
+            )
+            with mock.patch(
                 'saydo.task_runner.runner.CONNECTION_RETRY_DELAYS', (0, 0, 0, 0)
             ):
                 ident = r.submit('grasp')
@@ -101,15 +107,20 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(
                 cancel=cancel
             ), tempfile.TemporaryDirectory() as folder:
-                llm = FakeLLM(ConnectionNotSent('connect failed'), end())
-                a = FakeAdapter()
-                c = Config(
+                llm = test_runner.FakeLLM(
+                    llm_client.ConnectionNotSent('connect failed'),
+                    test_runner.end(),
+                )
+                a = test_runner.FakeAdapter()
+                c = config.Config(
                     api_key='x',
                     mode='read_only',
                     run_timeout=1 if cancel else .03,
                 )
-                r = Runner(c, Store(folder), llm, lambda: a)
-                with patch(
+                r = task_runner_runner.Runner(
+                    c, store.Store(folder), llm, lambda: a
+                )
+                with mock.patch(
                     'saydo.task_runner.runner.CONNECTION_RETRY_DELAYS',
                     (10, 10, 10, 10),
                 ):
@@ -163,12 +174,12 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
                     await trace('http11.receive_response_headers.started', {})
                     raise httpx.ReadTimeout('slow response')
 
-                r = Runner(
-                    Config(api_key='x', mode='read_only'),
-                    Store(folder),
-                    adapter_factory=FakeAdapter,
+                r = task_runner_runner.Runner(
+                    config.Config(api_key='x', mode='read_only'),
+                    store.Store(folder),
+                    adapter_factory=test_runner.FakeAdapter,
                 )
-                with patch(
+                with mock.patch(
                     'saydo.task_runner.llm_client.httpx.AsyncClient',
                     side_effect=lambda **kw: base(
                         transport=httpx.MockTransport(handle), **kw
@@ -189,19 +200,23 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
             'input': [],
             'tools': [],
         }
-        d = RequestDiagnostics(payload, b'{}', 90, True)
+        d = llm_diagnostics.RequestDiagnostics(payload, b'{}', 90, True)
         await d.trace('proxy.start_tls.started', {})
         error = httpx.ConnectError('cert')
         error.__cause__ = ssl.SSLCertVerificationError('private details')
-        self.assertFalse(LLMClient.can_retry_connection(error, d))
+        self.assertFalse(llm_client.LLMClient.can_retry_connection(error, d))
         self.assertTrue(
-            LLMClient.can_retry_connection(httpx.ConnectTimeout('connect'), d)
+            llm_client.LLMClient.can_retry_connection(
+                httpx.ConnectTimeout('connect'), d
+            )
         )
         await d.trace('proxy.start_tls.complete', {})
         await d.trace('http11.send_request_headers.started', {})
         d.data['phase'] = 'tls'
         self.assertFalse(
-            LLMClient.can_retry_connection(httpx.ConnectError('late'), d)
+            llm_client.LLMClient.can_retry_connection(
+                httpx.ConnectError('late'), d
+            )
         )
 
 
@@ -234,20 +249,20 @@ class ResponseRetryTests(unittest.IsolatedAsyncioTestCase):
                                 if phase == 'headers':
                                     raise error_type('slow')
                                 return httpx.Response(200, stream=Body())
-                            return httpx.Response(200, json=end())
+                            return httpx.Response(200, json=test_runner.end())
 
-                        a = FakeAdapter()
-                        r = Runner(
-                            Config(api_key='x', mode='read_only'),
-                            Store(folder),
+                        a = test_runner.FakeAdapter()
+                        r = task_runner_runner.Runner(
+                            config.Config(api_key='x', mode='read_only'),
+                            store.Store(folder),
                             adapter_factory=lambda: a,
                         )
-                        with patch(
+                        with mock.patch(
                             'saydo.task_runner.llm_client.httpx.AsyncClient',
                             side_effect=lambda **kw: base(
                                 transport=httpx.MockTransport(handle), **kw
                             ),
-                        ), patch(
+                        ), mock.patch(
                             'saydo.task_runner.runner.CONNECTION_RETRY_DELAYS',
                             (0, 0, 0, 0),
                         ):
@@ -273,19 +288,19 @@ class ResponseRetryTests(unittest.IsolatedAsyncioTestCase):
                         )
 
     async def test_model_wait_does_not_consume_backend_budget(self):
-        class Slow(FakeLLM):
+        class Slow(test_runner.FakeLLM):
             async def generate(self, *args, **kwargs):
                 await asyncio.sleep(.05)
                 return await super().generate(*args, **kwargs)
 
         with tempfile.TemporaryDirectory() as folder:
-            r = Runner(
-                Config(api_key='x', mode='read_only', run_timeout=.03),
-                Store(folder),
-                Slow(ResponseTimeout('slow'), end()),
-                FakeAdapter,
+            r = task_runner_runner.Runner(
+                config.Config(api_key='x', mode='read_only', run_timeout=.03),
+                store.Store(folder),
+                Slow(llm_client.ResponseTimeout('slow'), test_runner.end()),
+                test_runner.FakeAdapter,
             )
-            with patch(
+            with mock.patch(
                 'saydo.task_runner.runner.CONNECTION_RETRY_DELAYS',
                 (.05, 0, 0, 0),
             ):
@@ -294,15 +309,15 @@ class ResponseRetryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r.store.get(ident)['state'], 'succeeded')
 
     async def test_backend_budget_still_applies(self):
-        class SlowAdapter(FakeAdapter):
+        class SlowAdapter(test_runner.FakeAdapter):
             async def initial(self):
                 await asyncio.sleep(.1)
 
         with tempfile.TemporaryDirectory() as folder:
-            llm = FakeLLM(end())
-            r = Runner(
-                Config(api_key='x', run_timeout=.02),
-                Store(folder),
+            llm = test_runner.FakeLLM(test_runner.end())
+            r = task_runner_runner.Runner(
+                config.Config(api_key='x', run_timeout=.02),
+                store.Store(folder),
                 llm,
                 SlowAdapter,
             )

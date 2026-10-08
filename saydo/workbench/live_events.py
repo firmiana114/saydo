@@ -3,7 +3,7 @@
 import datetime
 import json
 import logging
-from logging.handlers import RotatingFileHandler
+import logging.handlers
 import time
 
 
@@ -11,7 +11,7 @@ class EventLog:
     def __init__(self, path):
         self.logger = logging.Logger(str(path), level=logging.INFO)
         self.logger.propagate = False
-        self.handler = RotatingFileHandler(
+        self.handler = logging.handlers.RotatingFileHandler(
             path,
             maxBytes=5 * 1024 * 1024,
             backupCount=3,

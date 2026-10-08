@@ -4,23 +4,23 @@ import copy
 import fcntl
 import hashlib
 import json
-from pathlib import Path
+import pathlib
 import threading
 import time
 import numpy as np
-from saydo.perception.camera_checks import check_camera_observation
-from saydo.geometry.grasp_geometry import controller_pose, transform
-from saydo.robot.grasp_robot import RobotClient
-from saydo.objects.object_catalog import select_object
-from saydo.scene.scene_snapshot import SceneStore, arm_still
-from saydo.scene.scene_features import object_features
-from saydo.contracts.scene_contract import checked_targets
+from saydo.perception import camera_checks
+from saydo.geometry import grasp_geometry
+from saydo.robot import grasp_robot
+from saydo.objects import object_catalog
+from saydo.scene import scene_snapshot as scene_scene_snapshot
+from saydo.scene import scene_features
+from saydo.contracts import scene_contract
 
 
 class SceneMixin:
     def scenes(self):
         if not hasattr(self, '_scenes'):
-            self._scenes = SceneStore(self.root)
+            self._scenes = scene_scene_snapshot.SceneStore(self.root)
         return self._scenes
 
     def scene_binding(self, config):
@@ -47,10 +47,14 @@ class SceneMixin:
         if self.scene_binding(config) != scene['binding']:
             raise ValueError('场景绑定的设备或手眼/TCP标定已变化')
         for row in scene['instances']:
-            info = select_object(self.tracker.models_root, row['object_id'])
+            info = object_catalog.select_object(
+                self.tracker.models_root, row['object_id']
+            )
             if (
                 (
-                    hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest()
+                    hashlib.sha256(
+                        pathlib.Path(info['mesh']).read_bytes()
+                    ).hexdigest()
                     != row['model_sha256']
                 )
                 or (
@@ -60,7 +64,7 @@ class SceneMixin:
             ):
                 raise ValueError('场景中的模型或位姿模式已变化')
             if (
-                object_features(
+                scene_features.object_features(
                     self.tracker.models_root, row['object_id']
                 )['feature_revision']
                 != row['feature_revision']
@@ -82,7 +86,7 @@ class SceneMixin:
             return scene
 
     def start_scene_capture(self, targets, environment_static, request_id):
-        targets = checked_targets(targets)
+        targets = scene_contract.checked_targets(targets)
         if environment_static is not True:
             raise ValueError('当前场景快照要求执行期间环境不变')
         with self.tracker.lock, self.lock:
@@ -124,7 +128,7 @@ class SceneMixin:
         a = self.arm_state()
         time.sleep(.15)
         b = self.arm_state()
-        arm_still(a, b)
+        scene_scene_snapshot.arm_still(a, b)
         return b
 
     def run_scene_capture(self, scene, request_id):
@@ -135,7 +139,7 @@ class SceneMixin:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 config = json.loads(self.config_path.read_text())
                 binding = self.scene_binding(config)
-                self.robot = RobotClient(
+                self.robot = grasp_robot.RobotClient(
                     config['robot_ip'], config['robot_port'], writes=False
                 )
                 handeye, tool = self.calibration(config)
@@ -166,11 +170,15 @@ class SceneMixin:
                     'K': np.asarray(frame['K']).tolist(),
                 }
                 arm, _ = self.paired_observation(observation)
-                check_camera_observation(handeye, observation)
+                camera_checks.check_camera_observation(handeye, observation)
                 base_camera = (
-                    controller_pose(arm['pose'])
-                    @ np.linalg.inv(transform(tool['flange_T_grip_tcp']))
-                    @ transform(handeye['flange_T_color_optical_camera'])
+                    grasp_geometry.controller_pose(arm['pose'])
+                    @ np.linalg.inv(
+                        grasp_geometry.transform(tool['flange_T_grip_tcp'])
+                    )
+                    @ grasp_geometry.transform(
+                        handeye['flange_T_color_optical_camera']
+                    )
                 )
                 scene.update(
                     binding=binding,
@@ -198,7 +206,7 @@ class SceneMixin:
                     self.check_cancel()
                     if time.monotonic() > deadline:
                         raise ValueError('场景采集超过180秒预算')
-                    arm_still(arm, self.arm_state())
+                    scene_scene_snapshot.arm_still(arm, self.arm_state())
 
                 rows = self.tracker.localize_frozen_scene(
                     frame,
@@ -231,7 +239,8 @@ class SceneMixin:
                 for row in rows:
                     row.update(
                         base_T_object=(
-                            base_camera @ transform(row['camera_T_object'])
+                            base_camera
+                            @ grasp_geometry.transform(row['camera_T_object'])
                         ).tolist(),
                         state='static',
                         static_pose_usable=True,
@@ -316,7 +325,7 @@ class SceneMixin:
             raise ValueError('参考实例已移动或不存在，不能沿用原静态位姿')
         if row['pose_mode'] == '5d':
             raise ValueError('5D实例的横向轴不可观测，不能用作完整参考坐标系')
-        frame = transform(row['base_T_object'])
+        frame = grasp_geometry.transform(row['base_T_object'])
         feature = goal['reference_feature_id']
         if feature is not None:
             found = next(
@@ -324,7 +333,7 @@ class SceneMixin:
             )
             if found is None:
                 raise ValueError('命名模型特征不存在')
-            frame = frame @ transform(found['object_T_feature'])
+            frame = frame @ grasp_geometry.transform(found['object_T_feature'])
         return (
             frame,
             {

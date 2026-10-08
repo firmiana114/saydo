@@ -3,15 +3,15 @@
 import copy
 import fcntl
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 
 import yaml
 
-from saydo.manipulation.grasp_control import GraspController
-from saydo.geometry.grasp_geometry import return_joint_target
+from saydo.manipulation import grasp_control
+from saydo.geometry import grasp_geometry
 from tests.manipulation import test_grasp
 
 
@@ -19,7 +19,7 @@ class OperatorControlsTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = pathlib.Path(self.temp.name)
         self.config = test_grasp.GraspTests().config()
         self.config.update(
             tool_file='tool.yaml',
@@ -34,10 +34,10 @@ class OperatorControlsTests(unittest.TestCase):
                 {'controller_readback': {'tool_response_raw': self.tool}}
             )
         )
-        self.service = GraspController(self.root, None, self.path)
+        self.service = grasp_control.GraspController(self.root, None, self.path)
 
     def robot(self, failure=None, initial_joints=None):
-        robot = Mock()
+        robot = mock.Mock()
         arm = {
             'joint': initial_joints if initial_joints is not None else [0] * 7,
             'pose': [0, 0, 200000, 0, 0, 0],
@@ -89,7 +89,7 @@ class OperatorControlsTests(unittest.TestCase):
         self
     ):
         original = self.path.read_text()
-        with patch('saydo.manipulation.grasp_control.RobotClient') as client:
+        with mock.patch('saydo.robot.grasp_robot.RobotClient') as client:
             for value in (300, 0, 1000):
                 result = self.service.set_open_position(value)
                 expected = copy.deepcopy(self.config)
@@ -102,7 +102,9 @@ class OperatorControlsTests(unittest.TestCase):
                     ),
                 )
                 self.assertFalse(result['motion_sent'])
-                fresh = GraspController(self.root, None, self.path)
+                fresh = grasp_control.GraspController(
+                    self.root, None, self.path
+                )
                 self.assertEqual(
                     fresh.snapshot()['open_position_config']['value'], value
                 )
@@ -123,7 +125,9 @@ class OperatorControlsTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaises(BlockingIOError):
                 self.service.set_open_position(300)
-        with patch.object(Path, 'replace', side_effect=OSError('disk failure')):
+        with mock.patch.object(
+            pathlib.Path, 'replace', side_effect=OSError('disk failure')
+        ):
             with self.assertRaises(OSError):
                 self.service.set_open_position(300)
         self.assertEqual(self.path.read_bytes(), original)
@@ -133,9 +137,9 @@ class OperatorControlsTests(unittest.TestCase):
         self
     ):
         robot = self.robot()
-        with patch(
-            'saydo.manipulation.grasp_control.RobotClient', return_value=robot
-        ), patch('saydo.manipulation.grasp_control.time.sleep'):
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
+        ), mock.patch('saydo.manipulation.grasp_control.time.sleep'):
             self.assertTrue(self.service.start_reset()['accepted'])
             self.service.thread.join(3)
         self.assertFalse(self.service.thread.is_alive())
@@ -143,7 +147,7 @@ class OperatorControlsTests(unittest.TestCase):
         self.assertFalse(self.service.snapshot()['busy'])
         self.assertEqual(
             robot.move_joints.call_args.args[:2],
-            (return_joint_target(self.config), 2),
+            (grasp_geometry.return_joint_target(self.config), 2),
         )
         robot.move_gripper.assert_not_called()
         robot.set_register.assert_not_called()
@@ -155,7 +159,7 @@ class OperatorControlsTests(unittest.TestCase):
         )
         self.assertEqual(
             report['arrival_checks'][0]['target_joint'],
-            return_joint_target(self.config),
+            grasp_geometry.return_joint_target(self.config),
         )
         self.assertFalse(report['result']['busy'])
 
@@ -164,9 +168,9 @@ class OperatorControlsTests(unittest.TestCase):
     ):
         original = self.path.read_bytes()
         robot = self.robot(initial_joints=[5000] * 7)
-        with patch(
-            'saydo.manipulation.grasp_control.RobotClient', return_value=robot
-        ), patch('saydo.manipulation.grasp_control.time.sleep'):
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient', return_value=robot
+        ), mock.patch('saydo.manipulation.grasp_control.time.sleep'):
             result = self.service.start_reset('zero')
             self.service.thread.join(3)
         self.assertEqual(result['reset_target_kind'], 'zero')
@@ -197,7 +201,7 @@ class OperatorControlsTests(unittest.TestCase):
         )
         self.assertFalse(self.service.snapshot()['reset_available'])
         self.assertTrue(self.service.snapshot()['zero_reset_available'])
-        with patch(
+        with mock.patch(
             'saydo.manipulation.grasp_control.threading.Thread'
         ) as thread:
             for kind in ('invalid', '', None, True):
@@ -226,12 +230,14 @@ class OperatorControlsTests(unittest.TestCase):
             'arrival', 'timeout', 'cancel', 'disabled', 'communication'
         ):
             with self.subTest(failure=failure):
-                self.service = GraspController(self.root, None, self.path)
+                self.service = grasp_control.GraspController(
+                    self.root, None, self.path
+                )
                 robot = self.robot(failure, initial_joints=[1000] * 7)
-                with patch(
-                    'saydo.manipulation.grasp_control.RobotClient',
+                with mock.patch(
+                    'saydo.robot.grasp_robot.RobotClient',
                     return_value=robot,
-                ), patch('saydo.manipulation.grasp_control.time.sleep'):
+                ), mock.patch('saydo.manipulation.grasp_control.time.sleep'):
                     self.service.start_reset('zero')
                     self.service.thread.join(3)
                 self.assertEqual(
@@ -245,9 +251,11 @@ class OperatorControlsTests(unittest.TestCase):
                     robot.stop.assert_called()
                 robot.move_gripper.assert_not_called()
                 robot.set_register.assert_not_called()
-        self.service = GraspController(self.root, None, self.path)
-        with (self.root / 'work/grasp/robot.lock').open('a') as lock, patch(
-            'saydo.manipulation.grasp_control.RobotClient'
+        self.service = grasp_control.GraspController(self.root, None, self.path)
+        with (
+            self.root / 'work/grasp/robot.lock'
+        ).open('a') as lock, mock.patch(
+            'saydo.robot.grasp_robot.RobotClient'
         ) as client:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.service.start_reset('zero')
@@ -260,10 +268,10 @@ class OperatorControlsTests(unittest.TestCase):
             ('communication', 'failed'), (None, 'completed')
         ]:
             robot = self.robot(failure)
-            with patch(
-                'saydo.manipulation.grasp_control.RobotClient',
+            with mock.patch(
+                'saydo.robot.grasp_robot.RobotClient',
                 return_value=robot,
-            ), patch('saydo.manipulation.grasp_control.time.sleep'):
+            ), mock.patch('saydo.manipulation.grasp_control.time.sleep'):
                 self.service.start_reset()
                 self.service.thread.join(3)
             self.assertEqual(self.service.status['state'], expected)
@@ -275,7 +283,7 @@ class OperatorControlsTests(unittest.TestCase):
                 robot.move_joints.assert_called_once()
 
     def test_reset_requires_execution_mode_target_and_exclusive_task(self):
-        with patch(
+        with mock.patch(
             'saydo.manipulation.grasp_control.threading.Thread'
         ) as thread:
             self.service.mode = 'preview'
@@ -313,12 +321,14 @@ class OperatorControlsTests(unittest.TestCase):
             'arrival', 'timeout', 'cancel', 'disabled', 'communication'
         ):
             with self.subTest(failure=failure):
-                self.service = GraspController(self.root, None, self.path)
+                self.service = grasp_control.GraspController(
+                    self.root, None, self.path
+                )
                 robot = self.robot(failure)
-                with patch(
-                    'saydo.manipulation.grasp_control.RobotClient',
+                with mock.patch(
+                    'saydo.robot.grasp_robot.RobotClient',
                     return_value=robot,
-                ), patch('saydo.manipulation.grasp_control.time.sleep'):
+                ), mock.patch('saydo.manipulation.grasp_control.time.sleep'):
                     self.service.start_reset()
                     self.service.thread.join(3)
                 self.assertEqual(
@@ -334,9 +344,9 @@ class OperatorControlsTests(unittest.TestCase):
                 robot.move_gripper.assert_not_called()
                 robot.set_register.assert_not_called()
         lock_path = self.root / 'work/grasp/robot.lock'
-        self.service = GraspController(self.root, None, self.path)
-        with lock_path.open('a') as lock, patch(
-            'saydo.manipulation.grasp_control.RobotClient'
+        self.service = grasp_control.GraspController(self.root, None, self.path)
+        with lock_path.open('a') as lock, mock.patch(
+            'saydo.robot.grasp_robot.RobotClient'
         ) as client:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.service.start_reset()

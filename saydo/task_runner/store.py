@@ -2,16 +2,16 @@
 
 import json
 import os
-from pathlib import Path
+import pathlib
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+import contextlib
 
 
 class Store:
     def __init__(self, directory, secrets=()):
-        self.directory = Path(directory)
+        self.directory = pathlib.Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self.path = self.directory / 'runs.sqlite'
@@ -76,7 +76,7 @@ class Store:
                     )
         self.path.chmod(0o600)
 
-    @contextmanager
+    @contextlib.contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.execute('PRAGMA synchronous=FULL')

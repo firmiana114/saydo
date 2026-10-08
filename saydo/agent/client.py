@@ -2,7 +2,7 @@
 
 import json
 import http.client
-from pathlib import Path
+import pathlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,7 +38,7 @@ class RobotBackend:
                 'credentials or a path'
             )
         self.base_url, self.token_file, self.timeout = (
-            base_url.rstrip('/'), Path(token_file), timeout
+            base_url.rstrip('/'), pathlib.Path(token_file), timeout
         )
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()

@@ -1,15 +1,15 @@
 import copy
 import json
-from pathlib import Path
+import pathlib
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest import mock
 import numpy as np
 from scipy.spatial.transform import Rotation
-from saydo.geometry.grasp_geometry import controller_pose, rotation_error
-from saydo.manipulation.object_motion_geometry import plan_object_motion, object_error
-from saydo.manipulation.object_motion_store import ObjectPlanStore
-from saydo.contracts.motion_contract import checked_goal, DEFAULT_GOAL
+from saydo.geometry import grasp_geometry
+from saydo.manipulation import object_motion_geometry
+from saydo.manipulation import object_motion_store
+from saydo.contracts import motion_contract
 
 
 def fixture():
@@ -61,8 +61,8 @@ class ObjectGeometryTests(unittest.TestCase):
                 {'verified': len(calls) == 2, 'reason': 'try another route'},
             )
 
-        with patch('time.monotonic', side_effect=lambda: clock[0]):
-            plan = plan_object_motion(
+        with mock.patch('time.monotonic', side_effect=lambda: clock[0]):
+            plan = object_motion_geometry.plan_object_motion(
                 held,
                 vertices,
                 arm,
@@ -89,7 +89,7 @@ class ObjectGeometryTests(unittest.TestCase):
             return False, {'reason': 'no route'}
 
         with self.assertRaisesRegex(RuntimeError, 'cancelled'):
-            plan_object_motion(
+            object_motion_geometry.plan_object_motion(
                 h,
                 v,
                 a,
@@ -103,14 +103,14 @@ class ObjectGeometryTests(unittest.TestCase):
 
     def plan(self, goal, **kw):
         held, vertices, arm, config = fixture()
-        return plan_object_motion(
+        return object_motion_geometry.plan_object_motion(
             held,
             vertices,
             arm,
             config,
             goal,
             np.eye(4),
-            Mock(return_value=(True, {'verified': True})),
+            mock.Mock(return_value=(True, {'verified': True})),
             lambda: None,
             **kw,
         )
@@ -118,14 +118,17 @@ class ObjectGeometryTests(unittest.TestCase):
     def test_translation_rotation_full_pose_and_custom_reference(self):
         held, vertices, arm, config = fixture()
         start = (
-            controller_pose(arm['pose']) @ np.linalg.inv(held['object_T_tcp'])
+            grasp_geometry.controller_pose(arm['pose'])
+            @ np.linalg.inv(held['object_T_tcp'])
         )
         plan = self.plan({'target_position_m': [.4, -.2, .3]})
         np.testing.assert_allclose(
             np.asarray(plan['base_T_object_target'])[:3, 3], [.4, -.2, .3]
         )
         np.testing.assert_allclose(
-            controller_pose(plan['waypoints'][-1]['controller_pose'])[:3, 3],
+            grasp_geometry.controller_pose(
+                plan['waypoints'][-1]['controller_pose']
+            )[:3, 3],
             [.4, -.18, .34],
         )
         plan = self.plan(
@@ -143,7 +146,8 @@ class ObjectGeometryTests(unittest.TestCase):
                 obj[:3, 3] + obj[:3, :3] @ [0, 0, .04], reference, atol=1e-12
             )
             self.assertLessEqual(
-                np.rad2deg(rotation_error(last, obj[:3, :3])), 15.00001
+                np.rad2deg(grasp_geometry.rotation_error(last, obj[:3, :3])),
+                15.00001,
             )
             last = obj[:3, :3]
         plan = self.plan(
@@ -164,8 +168,15 @@ class ObjectGeometryTests(unittest.TestCase):
             'target_rpy_deg': [0, 0, 0],
             'waypoints': [{'position_m': [0, 0, .3], 'rpy_deg': None}],
         }
-        p = plan_object_motion(
-            h, v, a, c, goal, frame, Mock(return_value=(True, {})), lambda: None
+        p = object_motion_geometry.plan_object_motion(
+            h,
+            v,
+            a,
+            c,
+            goal,
+            frame,
+            mock.Mock(return_value=(True, {})),
+            lambda: None,
         )
         np.testing.assert_allclose(
             p['target_reference_position_base_m'], [.2, .3, .3]
@@ -176,8 +187,8 @@ class ObjectGeometryTests(unittest.TestCase):
 
     def test_linear_samples_and_rejections(self):
         h, v, a, c = fixture()
-        reachable = Mock(return_value=(True, {}))
-        p = plan_object_motion(
+        reachable = mock.Mock(return_value=(True, {}))
+        p = object_motion_geometry.plan_object_motion(
             h,
             v,
             a,
@@ -208,15 +219,15 @@ class ObjectGeometryTests(unittest.TestCase):
             {'target_rpy_deg': [0, 0, 0], 'max_rotation_step_deg': 0},
         ]:
             with self.assertRaises(ValueError):
-                checked_goal(goal)
+                motion_contract.checked_goal(goal)
 
     def test_5d_free_spin_and_zero_offset_are_not_reapplied(self):
         h, v, a, c = fixture()
         h['pose_mode'] = '5d'
-        reachable = Mock(
+        reachable = mock.Mock(
             side_effect=[(False, {'reason': 'first blocked'}), (True, {})]
         )
-        p = plan_object_motion(
+        p = object_motion_geometry.plan_object_motion(
             h,
             v,
             a,
@@ -232,12 +243,14 @@ class ObjectGeometryTests(unittest.TestCase):
         )
         expected = np.asarray(p['base_T_object_target']) @ h['object_T_tcp']
         np.testing.assert_allclose(
-            controller_pose(p['waypoints'][-1]['controller_pose'])[:3, 3],
+            grasp_geometry.controller_pose(
+                p['waypoints'][-1]['controller_pose']
+            )[:3, 3],
             expected[:3, 3],
             atol=1e-6,
         )
         with self.assertRaises(ValueError):
-            plan_object_motion(
+            object_motion_geometry.plan_object_motion(
                 h,
                 v,
                 a,
@@ -261,14 +274,14 @@ class ObjectGeometryTests(unittest.TestCase):
                 'target_rpy_deg': [0, 20, 0],
                 'reference_point_object_m': point,
             }
-            p = plan_object_motion(
+            p = object_motion_geometry.plan_object_motion(
                 h,
                 v,
                 a,
                 c,
                 goal,
                 frame,
-                Mock(return_value=(True, {'verified': True})),
+                mock.Mock(return_value=(True, {'verified': True})),
                 lambda: None,
                 release=True,
             )
@@ -295,21 +308,21 @@ class ObjectGeometryTests(unittest.TestCase):
             self.assertEqual(p['reference_point_object_m'], point)
         c['release_preplacement_height_m'] = float('nan')
         with self.assertRaises(ValueError):
-            plan_object_motion(
-                h, v, a, c, goal, frame, Mock(), lambda: None, release=True
+            object_motion_geometry.plan_object_motion(
+                h, v, a, c, goal, frame, mock.Mock(), lambda: None, release=True
             )
 
     def test_preplacement_workspace_checked_and_height_configurable(self):
         h, v, a, c = fixture()
         c['release_preplacement_height_m'] = .12
-        p = plan_object_motion(
+        p = object_motion_geometry.plan_object_motion(
             h,
             v,
             a,
             c,
             {'target_position_m': [.4, 0, .3]},
             np.eye(4),
-            Mock(return_value=(True, {'verified': True})),
+            mock.Mock(return_value=(True, {'verified': True})),
             lambda: None,
             release=True,
         )
@@ -367,7 +380,7 @@ class ObjectGeometryTests(unittest.TestCase):
     def test_detour_search_preserves_goal_orientation_and_final_descent(self):
         h, v, a, c = fixture()
         proof = {'verified': True}
-        reachable = Mock(
+        reachable = mock.Mock(
             side_effect=[
                 (
                     False,
@@ -382,7 +395,7 @@ class ObjectGeometryTests(unittest.TestCase):
                 (True, proof),
             ]
         )
-        p = plan_object_motion(
+        p = object_motion_geometry.plan_object_motion(
             h,
             v,
             a,
@@ -429,10 +442,10 @@ class ObjectGeometryTests(unittest.TestCase):
 class PlanStoreTests(unittest.TestCase):
     def test_expiry_claim_restart_and_tampering(self):
         with tempfile.TemporaryDirectory() as d:
-            store = ObjectPlanStore(d)
+            store = object_motion_store.ObjectPlanStore(d)
             plan = store.save({'kind': 'held_object_motion'})
             self.assertEqual(store.get(plan['plan_id']), plan)
-            with patch(
+            with mock.patch(
                 'saydo.manipulation.object_motion_store.time.time',
                 return_value=plan['expires_at'] + 1,
             ):
@@ -443,7 +456,7 @@ class PlanStoreTests(unittest.TestCase):
                 store.claim(plan['plan_id'], 'request2')
             fresh = store.save({'kind': 'release'})
             with self.assertRaisesRegex(ValueError, '重启'):
-                ObjectPlanStore(d).get(fresh['plan_id'])
+                object_motion_store.ObjectPlanStore(d).get(fresh['plan_id'])
             with store.connect() as db:
                 db.execute(
                     'UPDATE plans SET body=? WHERE id=?',
