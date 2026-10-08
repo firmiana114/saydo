@@ -14,7 +14,8 @@ class ReconcileTests(unittest.TestCase):
             store.prepare(run['run_id'], 'c', 'grasp', {'object_id': 'b'}, 1)
             run.update(state='blocked', outcome_unknown=True)
             store.save(run)
-            backend = Backend();backend.state['grasp']['stopping'] = True
+            backend = Backend()
+            backend.state['grasp']['stopping'] = True
             with self.assertRaises(ValueError):
                 reconcile(store, backend, run['run_id'])
             self.assertTrue(store.has_uncertain_runs())
@@ -29,10 +30,14 @@ class ReconcileTests(unittest.TestCase):
             store = Store(directory)
             run = store.create('操作', 'gpt-5.6-luna', 'execute')
             store.prepare(run['run_id'], 'c', 'grasp', {'object_id': 'b'}, 1)
-            run.update(state='blocked', outcome_unknown=True);store.save(run)
-            backend = Backend();backend.query_error = True
+            run.update(state='blocked', outcome_unknown=True)
+            store.save(run)
+            backend = Backend()
+            backend.query_error = True
             with self.assertRaises(ValueError):
                 reconcile(store, backend, run['run_id'])
             self.assertTrue(store.has_uncertain_runs())
-            reconcile(store, backend, run['run_id'], confirmed_not_submitted=True)
+            reconcile(
+                store, backend, run['run_id'], confirmed_not_submitted=True
+            )
             self.assertFalse(store.has_uncertain_runs())

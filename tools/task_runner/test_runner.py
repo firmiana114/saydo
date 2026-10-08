@@ -15,23 +15,51 @@ from .robot_adapter import Blocked
 
 def call(name, args=None, ident='call-1'):
     args = dict(args or {})
-    if name in ('reorient','preview_reorient'):args.setdefault('max_rotation_step_deg',15)
-    if name in ('grasp','preview_grasp'):
-        args.setdefault('scene_id','fixture-scene');args.setdefault('instance_id','source')
+    if name in ('reorient', 'preview_reorient'):
+        args.setdefault('max_rotation_step_deg', 15)
+    if name in ('grasp', 'preview_grasp'):
+        args.setdefault('scene_id', 'fixture-scene')
+        args.setdefault('instance_id', 'source')
     if name != 'finish_task':
         args.setdefault('progress_message', '我先确认当前情况，再继续下一步。')
-    return {'status': 'completed', 'output': [{'type': 'function_call', 'name': name, 'call_id': ident, 'arguments': json.dumps(args)}]}
+    return {
+        'status': 'completed',
+        'output': [
+            {
+                'type': 'function_call',
+                'name': name,
+                'call_id': ident,
+                'arguments': json.dumps(args),
+            }
+        ],
+    }
 
 
 def end(outcome='answered', evidence=None):
-    return call('finish_task', {'outcome': outcome, 'summary': '任务结果', 'evidence_call_ids': evidence or []}, 'finish')
+    return call(
+        'finish_task',
+        {
+            'outcome': outcome,
+            'summary': '任务结果',
+            'evidence_call_ids': evidence or [],
+        },
+        'finish',
+    )
 
 
 def mock_global_camera(test):
-    mock=patch('tools.task_runner.robot_adapter.observe_global',side_effect=lambda:{
-        'image_base64':'AA==','mime_type':'image/png','captured_at':time.time(),
-        'camera_role':'movable_global','camera_serial':'fixed-camera'})
-    mock.start();test.addCleanup(mock.stop)
+    mock = patch(
+        'tools.task_runner.robot_adapter.observe_global',
+        side_effect=lambda: {
+            'image_base64': 'AA==',
+            'mime_type': 'image/png',
+            'captured_at': time.time(),
+            'camera_role': 'movable_global',
+            'camera_serial': 'fixed-camera',
+        },
+    )
+    mock.start()
+    test.addCleanup(mock.stop)
 
 
 class FakeLLM:
@@ -42,7 +70,16 @@ class FakeLLM:
         self.efforts = []
         self.started = asyncio.Event()
 
-    async def generate(self, history, tools, model, instructions, *, reasoning_effort=None, diagnostics_callback=None):
+    async def generate(
+        self,
+        history,
+        tools,
+        model,
+        instructions,
+        *,
+        reasoning_effort=None,
+        diagnostics_callback=None,
+    ):
         self.histories.append(copy.deepcopy(history))
         self.models.append(model)
         self.efforts.append(reasoning_effort)
@@ -60,7 +97,10 @@ class FakeAdapter:
         self.motion_inflight = False
         self.sent = []
         self.stops = 0
-        self.state = {'session_id': 's', 'grasp': {'busy': False, 'mode': 'execute', 'held_object': None}}
+        self.state = {
+            'session_id': 's',
+            'grasp': {'busy': False, 'mode': 'execute', 'held_object': None},
+        }
         self.fail = None
         self.global_error = None
         self.global_requests = 0
@@ -76,22 +116,44 @@ class FakeAdapter:
             raise Blocked('busy')
 
     async def execute(self, name, args, request_id, cancelled, progress):
-        if name=='observe_global':
-            self.global_requests+=1
-            if self.global_error:raise self.global_error
-            return {'image_base64':'AA==','mime_type':'image/png','captured_at':time.time(),
-                    'camera_role':'movable_global','camera_serial':'fixed-camera'}
+        if name == 'observe_global':
+            self.global_requests += 1
+            if self.global_error:
+                raise self.global_error
+            return {
+                'image_base64': 'AA==',
+                'mime_type': 'image/png',
+                'captured_at': time.time(),
+                'camera_role': 'movable_global',
+                'camera_serial': 'fixed-camera',
+            }
         self.sent.append((name, args, request_id))
         if self.fail:
             raise self.fail
         if name == 'grasp':
-            self.state['grasp']['held_object'] = {'hold_id': 'h', 'object_id': args['object_id']}
-            return {'verified': True, 'task': {'state': 'completed', 'result': {'held_object': copy.deepcopy(self.state['grasp']['held_object'])}}}
+            self.state['grasp']['held_object'] = {
+                'hold_id': 'h', 'object_id': args['object_id']
+            }
+            return {
+                'verified': True,
+                'task': {
+                    'state': 'completed',
+                    'result': {
+                        'held_object': copy.deepcopy(
+                            self.state['grasp']['held_object']
+                        )
+                    },
+                },
+            }
         if name == 'place':
             self.state['grasp']['held_object'] = None
             return {'verified': True, 'task': {'state': 'completed'}}
         if name == 'get_camera_frame':
-            return {'image_base64': 'AA==', 'mime_type': 'image/png', 'captured_at': 1}
+            return {
+                'image_base64': 'AA==',
+                'mime_type': 'image/png',
+                'captured_at': 1,
+            }
         return {'status': self.state}
 
     async def stop(self):
@@ -102,8 +164,13 @@ class FakeAdapter:
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.config = Config(api_key='test-secret', mode='execute', state_dir=Path(self.temp.name),
-            model='gpt-6-luna', fallback_model='gpt-5.6-luna')
+        self.config = Config(
+            api_key='test-secret',
+            mode='execute',
+            state_dir=Path(self.temp.name),
+            model='gpt-6-luna',
+            fallback_model='gpt-5.6-luna',
+        )
         self.store = Store(self.temp.name, secrets=('test-secret',))
         self.adapter = FakeAdapter()
 
@@ -120,22 +187,39 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         return self.store.get(ident), runner
 
     async def test_grasp_place_loop_owns_ids_and_evidence(self):
-        llm = FakeLLM(call('grasp', {'object_id': 'bottle'}, 'g'),
-            call('place', {'hold_id': 'h', 'orientation_version': 0, 'placement_revision': 'v'}, 'p'), end('succeeded', ['g', 'p']))
+        llm = FakeLLM(
+            call('grasp', {'object_id': 'bottle'}, 'g'),
+            call(
+                'place',
+                {
+                    'hold_id': 'h',
+                    'orientation_version': 0,
+                    'placement_revision': 'v',
+                },
+                'p',
+            ),
+            end('succeeded', ['g', 'p']),
+        )
         result, runner = await self.execute(llm)
         self.assertEqual(result['state'], 'succeeded')
         self.assertEqual(len(result['verified_actions']), 2)
         self.assertEqual(len(llm.histories), 3)
         for name, args, request_id in self.adapter.sent:
-            self.assertTrue(request_id.startswith('run-'+result['run_id']))
+            self.assertTrue(request_id.startswith('run-' + result['run_id']))
             self.assertNotIn('request_id', args)
         self.assertTrue(all(c['state'] == 'completed' for c in result['calls']))
 
     async def test_fallback_only_on_initial_model_unavailable(self):
-        llm = FakeLLM(ModelUnavailable('unavailable'), call('get_status'), end('answered', ['call-1']))
+        llm = FakeLLM(
+            ModelUnavailable('unavailable'),
+            call('get_status'),
+            end('answered', ['call-1']),
+        )
         result, _ = await self.execute(llm)
         self.assertEqual(result['model'], 'gpt-5.6-luna')
-        self.assertEqual(llm.models, ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.6-luna'])
+        self.assertEqual(
+            llm.models, ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.6-luna']
+        )
 
     async def test_no_model_switch_after_task_has_started(self):
         llm = FakeLLM(call('get_status'), ModelUnavailable('unavailable'))
@@ -163,6 +247,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_stop_blocks_new_run(self):
         async def failed():
             raise Blocked('stop unconfirmed', uncertain=True)
+
         self.adapter.stop = failed
         llm = FakeLLM('wait')
         runner = self.make(llm)
@@ -186,17 +271,37 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_multiple_calls_rejected_before_any_dispatch(self):
         response = call('grasp', {'object_id': 'b'})
-        response['output'] += call('reset_arm', {'target': 'zero'}, 'c2')['output']
+        response['output'] += call(
+            'reset_arm', {'target': 'zero'}, 'c2'
+        )['output']
         result, _ = await self.execute(FakeLLM(response))
         self.assertEqual(result['state'], 'blocked')
         self.assertEqual(self.adapter.sent, [])
 
     async def test_plain_text_cannot_claim_success(self):
-        result, _ = await self.execute(FakeLLM({'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': '完成'}]}]}))
+        result, _ = await self.execute(
+            FakeLLM(
+                {
+                    'output': [
+                        {
+                            'type': 'message',
+                            'content': [
+                                {'type': 'output_text', 'text': '完成'}
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
         self.assertEqual(result['state'], 'blocked')
 
     async def test_success_requires_real_motion_evidence(self):
-        result, _ = await self.execute(FakeLLM(call('preview_grasp', {'object_id': 'b'}), end('succeeded', ['call-1'])))
+        result, _ = await self.execute(
+            FakeLLM(
+                call('preview_grasp', {'object_id': 'b'}),
+                end('succeeded', ['call-1']),
+            )
+        )
         self.assertEqual(result['state'], 'blocked')
 
     async def test_fabricated_evidence_rejected(self):
@@ -212,9 +317,13 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_action_latches_across_restart(self):
         self.adapter.fail = Blocked('unknown', uncertain=True)
-        result, _ = await self.execute(FakeLLM(call('grasp', {'object_id': 'b'})))
+        result, _ = await self.execute(
+            FakeLLM(call('grasp', {'object_id': 'b'}))
+        )
         self.assertTrue(result['outcome_unknown'])
-        restarted = Runner(self.config, Store(self.temp.name), FakeLLM(), lambda: self.adapter)
+        restarted = Runner(
+            self.config, Store(self.temp.name), FakeLLM(), lambda: self.adapter
+        )
         with self.assertRaises(Blocked):
             restarted.submit('继续')
 
@@ -222,13 +331,21 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         llm = FakeLLM(call('get_camera_frame'), end('answered', ['call-1']))
         result, _ = await self.execute(llm)
         history = llm.histories[1]
-        images = [c for item in history if isinstance(item.get('content'), list) for c in item['content'] if c.get('type') == 'input_image']
+        images = [
+            c
+            for item in history
+            if isinstance(item.get('content'), list)
+            for c in item['content']
+            if c.get('type') == 'input_image'
+        ]
         self.assertEqual(len(images), 1)
         self.assertNotIn('image_base64', json.dumps(result))
 
     async def test_preview_mode_rejects_motion_even_if_model_requests_it(self):
         self.config.mode = 'preview'
-        result, _ = await self.execute(FakeLLM(call('grasp', {'object_id': 'b'})))
+        result, _ = await self.execute(
+            FakeLLM(call('grasp', {'object_id': 'b'}))
+        )
         self.assertNotEqual(result['state'], 'succeeded')
         self.assertEqual(self.adapter.sent, [])
 
@@ -239,25 +356,34 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_request_is_durable_before_dispatch(self):
         original = self.adapter.execute
+
         async def checked(name, args, request_id, cancelled, progress):
             saved = self.store.recent()[0]
             calls = self.store.get(saved['run_id'])['calls']
             self.assertEqual(calls[-1]['request_id'], request_id)
             self.assertEqual(calls[-1]['state'], 'dispatching')
             return await original(name, args, request_id, cancelled, progress)
+
         self.adapter.execute = checked
-        result, _ = await self.execute(FakeLLM(call('get_status'), end('answered', ['call-1'])))
+        result, _ = await self.execute(
+            FakeLLM(call('get_status'), end('answered', ['call-1']))
+        )
         self.assertEqual(result['state'], 'succeeded')
 
     async def test_duplicate_successful_action_cannot_use_a_new_call_id(self):
-        llm = FakeLLM(call('grasp', {'object_id': 'b'}, 'g1'), call('grasp', {'object_id': 'b'}, 'g2'))
+        llm = FakeLLM(
+            call('grasp', {'object_id': 'b'}, 'g1'),
+            call('grasp', {'object_id': 'b'}, 'g2'),
+        )
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'blocked')
         self.assertEqual(len(self.adapter.sent), 1)
 
     async def test_llm_timeout_does_not_mark_motion_unknown_or_send_stop(self):
         self.config.run_timeout = .02
-        result, runner = await self.execute(FakeLLM(LLMError('模型请求已尝试5次，达到上限')))
+        result, runner = await self.execute(
+            FakeLLM(LLMError('模型请求已尝试5次，达到上限'))
+        )
         self.assertFalse(runner.uncertain)
         self.assertEqual(self.adapter.stops, 0)
         self.assertEqual(result['state'], 'failed')
@@ -290,8 +416,10 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unready_pose_is_returned_to_model_without_motion_retry(self):
         from tools.robot_agent.client import BackendError
-        self.adapter.fail = BackendError({'code':'POSE_NOT_READY','message':'请等待跟踪'})
-        llm = FakeLLM(call('get_object_pose'), end('answered',['call-1']))
+        self.adapter.fail = BackendError(
+            {'code': 'POSE_NOT_READY', 'message': '请等待跟踪'}
+        )
+        llm = FakeLLM(call('get_object_pose'), end('answered', ['call-1']))
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'succeeded')
         self.assertEqual(result['calls'][0]['state'], 'unavailable')
@@ -299,86 +427,177 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_changed_hold_identity_cannot_claim_success(self):
         original = self.adapter.status
+
         async def changed():
             state = await original()
             state['grasp']['held_object']['hold_id'] = 'different-hold'
             return state
+
         self.adapter.status = changed
-        result, _ = await self.execute(FakeLLM(call('grasp', {'object_id':'b'}, 'g'), end('succeeded',['g'])))
+        result, _ = await self.execute(
+            FakeLLM(
+                call('grasp', {'object_id': 'b'}, 'g'), end('succeeded', ['g'])
+            )
+        )
         self.assertEqual(result['state'], 'blocked')
 
     async def test_bad_final_evidence_gets_one_non_motion_correction(self):
-        llm = FakeLLM(call('grasp', {'object_id':'b'}, 'g'), end('succeeded',['backend-task-id']), end('succeeded',['g']))
+        llm = FakeLLM(
+            call('grasp', {'object_id': 'b'}, 'g'),
+            end('succeeded', ['backend-task-id']),
+            end('succeeded', ['g']),
+        )
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'succeeded')
         self.assertEqual(len(self.adapter.sent), 1)
         self.assertIn('evidence_call_id', json.dumps(llm.histories[1]))
-        self.assertIn('required_motion_evidence_call_ids', json.dumps(llm.histories[2]))
+        self.assertIn(
+            'required_motion_evidence_call_ids', json.dumps(llm.histories[2])
+        )
 
     async def test_final_correction_cannot_dispatch_another_motion(self):
-        llm = FakeLLM(call('grasp', {'object_id':'b'}, 'g'), end('succeeded',['bad']), call('reset_arm', {'target':'zero'}, 'r'))
+        llm = FakeLLM(
+            call('grasp', {'object_id': 'b'}, 'g'),
+            end('succeeded', ['bad']),
+            call('reset_arm', {'target': 'zero'}, 'r'),
+        )
         result, _ = await self.execute(llm)
         self.assertEqual(result['state'], 'blocked')
         self.assertEqual(len(self.adapter.sent), 1)
 
-    async def test_timeline_commentary_timing_and_full_summary_are_ordered(self):
-        first=call('get_status', {'progress_message':'我先读取状态，确认下一步。'}, 'c')
-        first['output'].insert(0, {'type':'reasoning','encrypted_content':'PRIVATE_REASONING'})
-        final=end('answered',['c']);args=json.loads(final['output'][0]['arguments']);args['summary']='完整总结\n'+'结果。'*300
-        final['output'][0]['arguments']=json.dumps(args)
-        result,_=await self.execute(FakeLLM(first,final))
-        events=result['events'];kinds=[e['event'] for e in events]
-        self.assertEqual(kinds[-1],'final')
-        self.assertEqual([e['seq'] for e in events],list(range(1,len(events)+1)))
+    async def test_timeline_commentary_timing_and_full_summary_are_ordered(
+        self
+    ):
+        first = call(
+            'get_status',
+            {'progress_message': '我先读取状态，确认下一步。'},
+            'c',
+        )
+        first['output'].insert(
+            0, {'type': 'reasoning', 'encrypted_content': 'PRIVATE_REASONING'}
+        )
+        final = end('answered', ['c'])
+        args = json.loads(final['output'][0]['arguments'])
+        args['summary'] = '完整总结\n' + '结果。' * 300
+        final['output'][0]['arguments'] = json.dumps(args)
+        result, _ = await self.execute(FakeLLM(first, final))
+        events = result['events']
+        kinds = [e['event'] for e in events]
+        self.assertEqual(kinds[-1], 'final')
+        self.assertEqual(
+            [e['seq'] for e in events], list(range(1, len(events) + 1))
+        )
         self.assertTrue(all('at' in e for e in events))
-        self.assertLess(kinds.index('model_message'),kinds.index('tool_started'))
-        self.assertLess(kinds.index('tool_started'),kinds.index('tool_finished'))
-        timings=[e for e in events if e['event']=='llm']
-        self.assertEqual(len(timings),2)
-        self.assertTrue(all(e['seconds']>=0 and e['outcome']=='completed' for e in timings))
-        self.assertEqual(events[-1]['text'],args['summary'])
-        self.assertNotIn('PRIVATE_REASONING',json.dumps(events))
-        self.assertNotIn('progress_message',self.adapter.sent[0][1])
+        self.assertLess(
+            kinds.index('model_message'), kinds.index('tool_started')
+        )
+        self.assertLess(
+            kinds.index('tool_started'), kinds.index('tool_finished')
+        )
+        timings = [e for e in events if e['event'] == 'llm']
+        self.assertEqual(len(timings), 2)
+        self.assertTrue(
+            all(
+                e['seconds'] >= 0 and e['outcome'] == 'completed'
+                for e in timings
+            )
+        )
+        self.assertEqual(events[-1]['text'], args['summary'])
+        self.assertNotIn('PRIVATE_REASONING', json.dumps(events))
+        self.assertNotIn('progress_message', self.adapter.sent[0][1])
 
-    async def test_fallback_attempts_have_separate_timing_before_next_call(self):
-        result,_=await self.execute(FakeLLM(ModelUnavailable('no'),call('get_status'),end('answered',['call-1'])))
-        events=result['events'];timings=[e for e in events if e['event']=='llm']
-        self.assertEqual([e['invocation'] for e in timings],[1,2,3])
-        self.assertEqual([e['outcome'] for e in timings],['unavailable','completed','completed'])
-        first_end=next(e['seq'] for e in timings if e['invocation']==1)
-        next_start=next(e['seq'] for e in events if e['event']=='llm_started' and e['invocation']==2)
-        self.assertLess(first_end,next_start)
+    async def test_fallback_attempts_have_separate_timing_before_next_call(
+        self
+    ):
+        result, _ = await self.execute(
+            FakeLLM(
+                ModelUnavailable('no'),
+                call('get_status'),
+                end('answered', ['call-1']),
+            )
+        )
+        events = result['events']
+        timings = [e for e in events if e['event'] == 'llm']
+        self.assertEqual([e['invocation'] for e in timings], [1, 2, 3])
+        self.assertEqual(
+            [e['outcome'] for e in timings],
+            ['unavailable', 'completed', 'completed'],
+        )
+        first_end = next(e['seq'] for e in timings if e['invocation'] == 1)
+        next_start = next(
+            e['seq']
+            for e in events
+            if e['event'] == 'llm_started' and e['invocation'] == 2
+        )
+        self.assertLess(first_end, next_start)
 
     async def test_failed_llm_is_timed_and_final_is_last(self):
-        result,_=await self.execute(FakeLLM(LLMError('unavailable')))
-        timing=next(e for e in result['events'] if e['event']=='llm')
-        self.assertEqual(timing['outcome'],'failed');self.assertGreaterEqual(timing['seconds'],0)
-        self.assertEqual(result['events'][-1]['event'],'final')
+        result, _ = await self.execute(FakeLLM(LLMError('unavailable')))
+        timing = next(e for e in result['events'] if e['event'] == 'llm')
+        self.assertEqual(timing['outcome'], 'failed')
+        self.assertGreaterEqual(timing['seconds'], 0)
+        self.assertEqual(result['events'][-1]['event'], 'final')
 
     async def test_cancelled_llm_is_timed_without_late_commentary(self):
-        llm=FakeLLM('wait');runner=self.make(llm);ident=runner.submit('观察')
-        await llm.started.wait();await runner.cancel(ident);await runner.worker
-        result=self.store.get(ident)
-        timing=next(e for e in result['events'] if e['event']=='llm')
-        self.assertEqual(timing['outcome'],'cancelled')
-        self.assertFalse(any(e['event']=='model_message' for e in result['events']))
-        self.assertEqual(result['events'][-1]['event'],'final')
+        llm = FakeLLM('wait')
+        runner = self.make(llm)
+        ident = runner.submit('观察')
+        await llm.started.wait()
+        await runner.cancel(ident)
+        await runner.worker
+        result = self.store.get(ident)
+        timing = next(e for e in result['events'] if e['event'] == 'llm')
+        self.assertEqual(timing['outcome'], 'cancelled')
+        self.assertFalse(
+            any(e['event'] == 'model_message' for e in result['events'])
+        )
+        self.assertEqual(result['events'][-1]['event'], 'final')
 
     async def test_failed_tool_is_logged_before_final(self):
-        self.adapter.fail=Blocked('设备不就绪')
-        result,_=await self.execute(FakeLLM(call('grasp',{'object_id':'b'})))
-        self.assertEqual([e['event'] for e in result['events']][-2:],['tool_finished','final'])
-        self.assertEqual(result['events'][-2]['state'],'blocked')
+        self.adapter.fail = Blocked('设备不就绪')
+        result, _ = await self.execute(
+            FakeLLM(call('grasp', {'object_id': 'b'}))
+        )
+        self.assertEqual(
+            [e['event'] for e in result['events']][-2:],
+            ['tool_finished', 'final'],
+        )
+        self.assertEqual(result['events'][-2]['state'], 'blocked')
 
-    async def test_native_commentary_takes_precedence_and_summary_appears_once(self):
-        first=call('get_status',{'progress_message':'备用过程说明。'},'c')
-        first['output'].insert(0,{'type':'message','content':[{'type':'output_text','text':'我先读取当前状态。'}]})
-        final=end('answered',['c'])
-        final['output'].insert(0,{'type':'message','content':[{'type':'output_text','text':'不重复展示这份未经证据校验的结束说明。'}]})
-        result,_=await self.execute(FakeLLM(first,final))
-        messages=[e['text'] for e in result['events'] if e['event']=='model_message']
-        self.assertEqual(messages,['我先读取当前状态。'])
-        self.assertEqual(sum(e['event']=='final' for e in result['events']),1)
+    async def test_native_commentary_takes_precedence_and_summary_appears_once(
+        self
+    ):
+        first = call('get_status', {'progress_message': '备用过程说明。'}, 'c')
+        first['output'].insert(
+            0,
+            {
+                'type': 'message',
+                'content': [
+                    {'type': 'output_text', 'text': '我先读取当前状态。'}
+                ],
+            },
+        )
+        final = end('answered', ['c'])
+        final['output'].insert(
+            0,
+            {
+                'type': 'message',
+                'content': [
+                    {
+                        'type': 'output_text',
+                        'text': '不重复展示这份未经证据校验的结束说明。',
+                    }
+                ],
+            },
+        )
+        result, _ = await self.execute(FakeLLM(first, final))
+        messages = [
+            e['text'] for e in result['events'] if e['event'] == 'model_message'
+        ]
+        self.assertEqual(messages, ['我先读取当前状态。'])
+        self.assertEqual(
+            sum(e['event'] == 'final' for e in result['events']), 1
+        )
 
 
 class StoreTests(unittest.TestCase):
@@ -393,6 +612,7 @@ class StoreTests(unittest.TestCase):
             self.assertTrue(saved['outcome_unknown'])
             self.assertEqual(saved['instruction'], '[REDACTED]')
             self.assertEqual(saved['calls'][0]['state'], 'prepared')
+
     def test_read_only_restart_does_not_latch_motion_uncertainty(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
