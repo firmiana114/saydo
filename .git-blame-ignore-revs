@@ -7,3 +7,6 @@ d40cc08bf0f39013079f86ee3f9531fbce53d144 # 纯排版：重排手眼标定 handey
 6e4ec66194ed4daede60427fa989efd157512d23 # 纯排版：重排任务执行器 task_runner 的 Python 代码
 1112f75b75b4a658e42eb1e2a00fa8ee109a8831 # 纯排版：重排定位与抓取后端 foundationpose 的 Python 代码
 21f4f838ccd3f036f7ebf9cd92a3ac84d84b7bc2 # 纯排版：重排 foundationpose 测试的 Python 代码
+6e4bd96691c9c416bb9d0e22003b4239d48eb049 # 纯排版：重排前端与前端测试的 JavaScript 代码
+# 下一项会改变语法树（补花括号、拆多变量声明），但属于机械改写，行为不变。
+04a3cd1f97f54ac09fa206d29b533b6b46a4ab24 # 前端 JavaScript 补花括号并拆开多变量声明
