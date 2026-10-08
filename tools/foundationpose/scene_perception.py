@@ -60,7 +60,10 @@ def localize_scene(frame,targets,models_root,estimator,sam,context,detector,chec
                 if not quality['good']:raise ValueError(f'{target["instance_id"]}位姿/深度质量检查不通过：{quality}')
                 if k==0:
                     prior=pose.copy();pose=instance.track_one(rgb=rgb,depth=frame['depth'].copy(),K=frame['K'],iteration=2)
-                    if np.linalg.norm(pose[:3,3]-prior[:3,3])>.005 or object_rotation_error(pose[:3,:3],prior[:3,:3],info.get('pose_mode','6d'))>np.deg2rad(15):raise ValueError('同帧细化位姿变化超过5毫米/15度')
+                    shift=np.linalg.norm(pose[:3,3]-prior[:3,3]);turn=object_rotation_error(pose[:3,:3],prior[:3,:3],info.get('pose_mode','6d'))
+                    if shift>.005 or turn>np.deg2rad(15):
+                        # Name the instance and the measured change; either object can be the unstable one.
+                        raise ValueError(f'{target["instance_id"]}同帧细化位姿变化超过5毫米/15度（实际平移{shift*1000:.1f}毫米、旋转{np.rad2deg(turn):.1f}度）')
                 check()
             if info.get('pose_mode')=='5d':pose=canonical_pose(pose,'5d')
             rows.append({**target,'box':box,'object_name':info['name'],'camera_T_object':np.asarray(pose).tolist(),
