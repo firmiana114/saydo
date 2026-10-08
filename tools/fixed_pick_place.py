@@ -53,14 +53,15 @@ def workflow(backend,args):
     save('scene.json',scene)
     print('规划完整抓取、调姿、入架及退出路线；尚未运动……',flush=True)
     request={'scene_id':scene['scene_id'],'source_instance_id':'tube','reference_instance_id':'rack',
-             'free_slots':slots,'release_gap_m':args.release_gap_mm/1000,'seed':args.seed if args.seed is not None else secrets.randbits(32)}
+             'free_slots':slots,'release_gap_m':args.release_gap_mm/1000}
     try:
         result=wait_task(backend,'plan_fixed_pick_place',request,ident+'-plan')
     except KeyboardInterrupt:
         save('cancel_planning.json',backend.request('/api/agent/cancel-planning',{'task_id':ident+'-plan'}))
         raise
     save('plan.json',result);plan=result['fixed_pick_place_plan']
-    print(json.dumps({'selected_slot':plan['selected_slot'],'plan_id':plan['plan_id'],
+    print(json.dumps({'selected_slot':plan['selected_slot'],'selection':'距试管最近且全程通过的孔位',
+        'distance_mm':round(plan['selected_slot_distance_m']*1000,1),'nearer_slots_rejected':plan['nearer_slots_rejected'],'plan_id':plan['plan_id'],
         'complete_path_prechecked':plan['complete_path_prechecked'],'files':str(directory),'validation_scope':plan['validation_scope']},ensure_ascii=False),flush=True)
     if not args.execute:
         print('只读规划完成。未发送机械臂或夹爪动作。',flush=True);return result
@@ -89,12 +90,10 @@ def main():
     free.add_argument('--free-slots',help='明确确认空闲的模型孔位，例如A01,A02,B03')
     free.add_argument('--empty-rack',action='store_true',help='声明架子所有候选孔均为空；不自动检测占用')
     p.add_argument('--release-gap-mm',type=float,default=3.,help='底端距支撑面的间隙，0至5毫米；默认3毫米')
-    p.add_argument('--seed',type=int,help='可复现随机候选顺序')
     p.add_argument('--execute',action='store_true',help='完整方案通过后实际执行；默认仅规划')
     p.add_argument('--output',type=Path,default=Path('work/fixed_pick_place'))
     args=p.parse_args()
     if not 0<=args.release_gap_mm<=5:p.error('释放间隙须为0至5毫米')
-    if args.seed is not None and not 0<=args.seed<2**32:p.error('seed须为32位无符号整数')
     workflow(RobotBackend(args.base_url,args.token_file),args)
 
 

@@ -17,9 +17,10 @@ class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.args=argparse.Namespace(tube='tube',rack='rack',tube_box=[0,0,10,10],rack_box=[20,20,50,50],
-            free_slots='A01,A02',empty_rack=False,release_gap_mm=3,seed=7,execute=False,output=self.temp.name)
+            free_slots='A01,A02',empty_rack=False,release_gap_mm=3,execute=False,output=self.temp.name)
         self.backend=Mock();self.backend.request.return_value={'grasp':{'mode':'execute'}}
-        self.plan={'plan_id':'p','selected_slot':'A02','complete_path_prechecked':True,'validation_scope':{}}
+        self.plan={'plan_id':'p','selected_slot':'A02','selected_slot_distance_m':.0831,'nearer_slots_rejected':['A01'],
+                   'complete_path_prechecked':True,'validation_scope':{}}
 
     def test_default_plan_only_and_explicit_execute_preserve_plan_id(self):
         results=[{'scene_id':'scene'},{'fixed_pick_place_plan':self.plan},{}]

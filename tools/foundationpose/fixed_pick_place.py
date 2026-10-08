@@ -2,7 +2,6 @@
 import copy
 import fcntl
 import json
-import random
 import threading
 import time
 import uuid
@@ -24,7 +23,7 @@ FIXED_RELEASE_BUDGET_S=600
 
 
 def checked_request(value):
-    keys={'scene_id','source_instance_id','reference_instance_id','free_slots','release_gap_m','seed'}
+    keys={'scene_id','source_instance_id','reference_instance_id','free_slots','release_gap_m'}
     if not isinstance(value,dict) or set(value)!=keys:raise ValueError('固定流程参数不完整')
     for key in ('scene_id','source_instance_id','reference_instance_id'):
         if not isinstance(value[key],str) or not 1<=len(value[key])<=100:raise ValueError('实例/场景编号无效')
@@ -33,7 +32,6 @@ def checked_request(value):
         raise ValueError('须提供已确认空闲的孔位列表，不自动推断占用')
     gap=value['release_gap_m']
     if type(gap) not in (float,int) or not np.isfinite(gap) or not 0<=gap<=.005:raise ValueError('支撑面释放间隙须为0至5毫米')
-    if type(value['seed']) is not int or not 0<=value['seed']<2**32:raise ValueError('随机种子无效')
     return copy.deepcopy(value)
 
 
@@ -49,7 +47,8 @@ def placement_goals(scene, request, geometry):
     points=np.asarray(geometry['vertices']);low=points.min(axis=0);high=points.max(axis=0)
     if source.get('pose_mode')!='5d':raise ValueError('此固定流程要求试管为有方向Z轴的5D模型')
     diameter=2*float(np.linalg.norm(points[:,:2],axis=1).max())
-    features={f['id']:f for f in rack['features']};slots=list(request['free_slots']);random.Random(request['seed']).shuffle(slots)
+    features={f['id']:f for f in rack['features']};slots=list(request['free_slots'])
+    origin=transform(source['base_T_object'])[:2,3]
     goals=[]
     for slot in slots:
         entry=features.get(slot+'.entry');support=features.get(slot+'.support')
@@ -69,8 +68,11 @@ def placement_goals(scene, request, geometry):
         goal=checked_goal({'reference_frame':'scene_object','scene_id':scene['scene_id'],
             'reference_instance_id':rack['instance_id'],'reference_point_object_m':[0,0,float(low[2])],
             'target_position_m':target.tolist(),'target_rpy_deg':[0,0,0],'path_mode':'joint','position_mode':'fixed'},True)
-        goals.append((slot,goal,frame))
+        # Horizontal distance from the object's current position to this slot's entry in Base.
+        goals.append((slot,goal,frame,float(np.linalg.norm((frame@e)[:2,3]-origin))))
     if not goals:raise ValueError('没有通过模型直径与竖直下降几何检查的孔位')
+    # Nearest first; the planner takes the first slot whose complete path passes.
+    goals.sort(key=lambda item:(item[3],item[0]))
     return source,rack,goals
 
 
@@ -145,9 +147,9 @@ class FixedPickPlaceMixin:
             full_points=prefix+points
             if len(full_points)>480:raise ValueError('全程超过480个采样点')
             return check_waypoints(checker,tool,arm,full_points,timeout)
-        for slot,goal,frame in goals:
+        for slot,goal,frame,distance in goals:
             self.check_cancel()
-            row={'slot':slot};attempts.append(row)
+            row={'slot':slot,'distance_from_source_m':distance};attempts.append(row)
             try:
                 release=plan_object_motion(held,geometry['vertices'],predicted_arm,effective,goal,frame,reachable,
                     self.check_cancel,True,[0,0,.05],row.setdefault('search',[]))
@@ -159,6 +161,8 @@ class FixedPickPlaceMixin:
                 release['current_arm']['joint']=grasp['fixed_joint_targets']['lift']
                 release.update(model_sha256=held['model_sha256'],pose_mode_revision=held['pose_mode_revision'],flange_T_grip_tcp=tool['flange_T_grip_tcp'])
                 plan={'kind':'fixed_pick_place','scene_id':scene['scene_id'],'request':request,'selected_slot':slot,
+                    'slot_selection':'nearest_feasible_to_source','selected_slot_distance_m':distance,
+                    'nearer_slots_rejected':[r['slot'] for r in attempts[:-1]],
                     'source_model_id':source['object_id'],'reference_model_id':rack['object_id'],
                     'current_arm':arm,'grasp':grasp,'release':release,'effective_config':effective,
                     'predicted_hold':held,'configuration_binding':binding,

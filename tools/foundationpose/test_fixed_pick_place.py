@@ -20,17 +20,30 @@ def fixtures():
             features.append({'id':slot+'.'+part,'object_T_feature':f.tolist(),'diameter_m':.02})
     rack={'instance_id':'rack','object_id':'rack_model','role':'reference','state':'static','pose_mode':'6d','base_T_object':frame.tolist(),'features':features}
     scene={'scene_id':'a'*32,'instances':[source,rack]}
-    request={'scene_id':scene['scene_id'],'source_instance_id':'tube','reference_instance_id':'rack','free_slots':['A01','A02'],'release_gap_m':.003,'seed':7}
+    request={'scene_id':scene['scene_id'],'source_instance_id':'tube','reference_instance_id':'rack','free_slots':['A01','A02'],'release_gap_m':.003}
     vertices=np.array([[x,y,z] for x in [-.007,.007] for y in [0] for z in [-.075,.075]])
     return scene,request,{'vertices':vertices}
 
 
 class GeometryTests(unittest.TestCase):
-    def test_random_order_reproducible_bottom_reference_and_support_height(self):
+    def test_slots_are_ordered_nearest_to_the_source_object_first(self):
         scene,req,geometry=fixtures();checked_request(req)
+        # The tube lies at x=0.30; slot A01 is at x=0.35 and A02 at x=0.375 in Base.
+        for listed in (['A01','A02'],['A02','A01']):
+            _,_,goals=placement_goals(scene,{**req,'free_slots':listed},geometry)
+            self.assertEqual([x[0] for x in goals],['A01','A02'])
+            np.testing.assert_allclose([x[3] for x in goals],[.05,.075],atol=1e-9)
+        beyond=copy.deepcopy(scene);beyond['instances'][0]['base_T_object'][0][3]=.42
+        self.assertEqual([x[0] for x in placement_goals(beyond,req,geometry)[2]],['A02','A01'])
+        # Height is ignored and an exact tie falls back to the slot name.
+        level=copy.deepcopy(scene);level['instances'][0]['base_T_object'][0][3]=.3625;level['instances'][0]['base_T_object'][2][3]=.5
+        tie=placement_goals(level,{**req,'free_slots':['A02','A01']},geometry)[2]
+        self.assertEqual([x[0] for x in tie],['A01','A02']);self.assertAlmostEqual(tie[0][3],tie[1][3])
+
+    def test_bottom_reference_and_support_height(self):
+        scene,req,geometry=fixtures()
         _,_,goals=placement_goals(scene,req,geometry)
-        self.assertEqual([x[0] for x in goals],[x[0] for x in placement_goals(scene,req,geometry)[2]])
-        for _,goal,_ in goals:
+        for _,goal,_,_ in goals:
             self.assertEqual(goal['reference_point_object_m'],[0,0,-.075])
             self.assertAlmostEqual(goal['target_position_m'][2],.015)
             self.assertEqual(goal['target_rpy_deg'],[0,0,0])
@@ -50,7 +63,7 @@ class GeometryTests(unittest.TestCase):
         variants.append((small,req))
         for value,request in variants:
             with self.assertRaises(ValueError):placement_goals(value,request,geometry)
-        for change in [{'free_slots':[]},{'free_slots':[{}]},{'seed':True},{'release_gap_m':float('nan')},{'release_gap_m':.01}]:
+        for change in [{'free_slots':[]},{'free_slots':[{}]},{'seed':7},{'release_gap_m':float('nan')},{'release_gap_m':.01}]:
             with self.assertRaises(ValueError):checked_request({**req,**change})
 
     def test_waypoint_joint_mapping_uses_own_endpoint_not_retreat(self):
@@ -85,7 +98,9 @@ class PlanningTests(unittest.TestCase):
     def test_full_plan_includes_grasp_and_release_before_any_write(self):
         with patch('fixed_pick_place.model_geometry',return_value=self.geom),patch('fixed_pick_place.RobotClient') as robot,patch('fixed_pick_place.check_waypoints',side_effect=self.check) as check:
             plan=self.service.plan_fixed_pick_place(self.request,{})
-        self.assertTrue(plan['complete_path_prechecked']);self.assertIn(plan['selected_slot'],self.request['free_slots'])
+        self.assertTrue(plan['complete_path_prechecked']);self.assertEqual(plan['selected_slot'],'A01')
+        self.assertEqual(plan['slot_selection'],'nearest_feasible_to_source');self.assertAlmostEqual(plan['selected_slot_distance_m'],.05)
+        self.assertEqual(plan['nearer_slots_rejected'],[])
         self.assertEqual(set(plan['grasp']['fixed_joint_targets']),{'pregrasp','grasp','lift'})
         points=check.call_args.args[3]
         self.assertTrue(any(p['name'].startswith('release_descent') for p in points))

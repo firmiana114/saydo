@@ -234,7 +234,7 @@ class AgentAPI:
                    'plan_held_object_motion': {'object_id','hold_id','orientation_version','goal'},
                    'plan_release': {'object_id','hold_id','orientation_version','goal','retreat_vector_base_m'},
                    'execute_plan': {'plan_id'},'execute_fixed_pick_place':{'plan_id'},
-                   'plan_fixed_pick_place':{'scene_id','source_instance_id','reference_instance_id','free_slots','release_gap_m','seed'}}
+                   'plan_fixed_pick_place':{'scene_id','source_instance_id','reference_instance_id','free_slots','release_gap_m'}}
         allowed=schemas.get(operation)
         valid=isinstance(args,dict) and allowed is not None and (set(args)==allowed or operation in ('grasp','preview_grasp') and set(args)=={'object_id','scene_id','instance_id'} or operation in ('reorient','preview_reorient') and set(args)==allowed|{'max_rotation_step_deg'})
         if not valid:
