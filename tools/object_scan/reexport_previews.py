@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Re-export saved RGB-D previews with backups, session locks and updated hashes."""
+
 import argparse
 import datetime
 import fcntl
@@ -21,7 +22,11 @@ def sha(path):
 
 
 def reexport_session(session):
-    backup = session / 'preview_backups' / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    backup = (
+        session
+        / 'preview_backups'
+        / datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    )
     records = []
     with (session / '.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -32,7 +37,9 @@ def reexport_session(session):
                 continue
             for name, expected in report['files_sha256'].items():
                 if sha(path.parent / name) != expected:
-                    raise ValueError('Capture file hash mismatch: ' + str(path.parent / name))
+                    raise ValueError(
+                        'Capture file hash mismatch: ' + str(path.parent / name)
+                    )
             selected.append((path, report))
         for path, report in selected:
             directory = path.parent
@@ -46,32 +53,68 @@ def reexport_session(session):
             for name in names:
                 if (directory / name).exists():
                     shutil.copy2(directory / name, saved / name)
-            report['depth_visualization'] = export_previews(directory, bgr, depth)
+            report['depth_visualization'] = export_previews(
+                directory, bgr, depth
+            )
             for name in ['depth_color.png', 'preview.jpg']:
                 report['files_sha256'][name] = sha(directory / name)
             temp = path.with_suffix('.preview.tmp')
-            temp.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + '\n')
+            temp.write_text(
+                json.dumps(
+                    report, indent=2, ensure_ascii=False, allow_nan=False
+                )
+                + '\n'
+            )
             temp.replace(path)
             for name, expected in report['files_sha256'].items():
                 if sha(directory / name) != expected:
-                    raise ValueError('Post-export hash mismatch: ' + str(directory / name))
-            records.append({'sample_id': directory.name, 'backup': str(saved),
-                            'updated': ['preview.jpg', 'depth_color.png', 'sample.json']})
-    result = {'session': session.name, 'views_updated': len(records), 'records': records,
-              'numeric_depth_and_color_unchanged': True}
+                    raise ValueError(
+                        'Post-export hash mismatch: ' + str(directory / name)
+                    )
+            records.append(
+                {
+                    'sample_id': directory.name,
+                    'backup': str(saved),
+                    'updated': [
+                        'preview.jpg', 'depth_color.png', 'sample.json'
+                    ],
+                }
+            )
+    result = {
+        'session': session.name,
+        'views_updated': len(records),
+        'records': records,
+        'numeric_depth_and_color_unchanged': True,
+    }
     if records:
-        (backup / 'reexport.json').write_text(json.dumps(result, indent=2) + '\n')
+        (backup / 'reexport.json').write_text(
+            json.dumps(result, indent=2) + '\n'
+        )
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT / 'work/object_scan')
-    parser.add_argument('--sessions', nargs='+', help='Default: every capture session under root')
+    parser.add_argument(
+        '--sessions',
+        nargs='+',
+        help='Default: every capture session under root',
+    )
     args = parser.parse_args()
-    if args.sessions and any(Path(name).name != name or name in ('.', '..') for name in args.sessions):
+    if (
+        args.sessions
+        and any(
+            Path(name).name != name or name in ('.', '..')
+            for name in args.sessions
+        )
+    ):
         parser.error('Session names must be single directory names')
-    sessions = [args.root / name for name in args.sessions] if args.sessions else sorted(p.parent for p in args.root.glob('*/session.json'))
+    sessions = (
+        [args.root / name for name in args.sessions]
+        if args.sessions
+        else sorted(p.parent for p in args.root.glob('*/session.json'))
+    )
     for session in sessions:
         print(json.dumps(reexport_session(session)), flush=True)
 
