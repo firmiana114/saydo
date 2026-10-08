@@ -48,7 +48,7 @@
 
 ## 6. 当前状态（2026-10-08）
 
-- 三个服务在运行：8089（PID 274951，常驻 Qwen 子进程 PID 275070）、8088（PID 273955）、8091（PID 273957）。8089 最近一次于 2026-10-08 10:04 按第 5 节命令重启，日志 `work/foundationpose_live/restart_remove_codex_terminal_20261008_100414.log`；PID 文件均已更新。8092 已随网页 Codex 终端一并删除。
+- 三个服务在运行：8089（PID 275471，常驻 Qwen 子进程 PID 275591）、8088（PID 273955）、8091（PID 273957）。8089 最近一次于 2026-10-08 10:05 应用户要求按第 5 节命令重启，日志 `work/foundationpose_live/restart_user_request_20261008_100556.log`；PID 文件均已更新。8092 已随网页 Codex 终端一并删除。
 - 8089 读回：`model_ready=true`、`error=null`、找框方式 qwen、相机 D435i `405622073572` 640×360、帧龄约 0.11 秒、抓取模式 execute、`held_object=null`、不忙。当时画面内没有试管，状态为 `detecting`（持续寻找目标），不是故障。8091 重启后读回 execute、`gpt-6-sol`/medium、无停止中、无不确定阻断，20 条历史任务仍在。整卡显存占用约 3511 MiB。
 - 2026-10-08 按用户要求删除全部 D405 标定内容：`tools/handeye/capture_pair.py` 及其测试与说明、8088 的 `calibration-frame` 接口、两机 `work/dual_camera_calibration/` 数据（含两版未验收的候选外参）。原因：D405 已被拿走，原有标定作废。候选外参从未写入运行配置。9 月 30 日关停 8089 前的启动参数记录移至 MSI `work/camera_monitor/services_before_native_capture.json`。
 - 用户于 2026-10-08 确认：D435i 手眼标定是精准的，依据是换装后多次实机抓取均可靠执行。`camera_checks.camera_binding` 原先把 `replacement_accuracy_verified` 固定为 `False`，现改为读取 `camera_reuse.yaml` 的同名字段（仅显式 `true` 生效）；两机该配置已设为 `true` 并写明依据，原文件与标定说明备份在各自 `work/calibration/camera_reuse_accuracy_20261008/`。这是用户依据实际使用作出的确认，不是软件测得的误差数值；安装关系再变时应改回 `false`。
