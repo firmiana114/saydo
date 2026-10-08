@@ -93,7 +93,7 @@ class APITests(unittest.TestCase):
         self.assertNotIn(b'private-test-key', html)
         self.assertIn(b'id="timeline"', html)
         _, script = self.request('GET', '/app.js')
-        self.assertIn(b'root.SaydoTimeline=', script)
+        self.assertIn(b'root.SaydoTimeline = ', script)
         self.assertEqual(self.request('GET', '/.env')[0], 404)
 
     def test_cross_site_and_rebinding_rejected(self):
