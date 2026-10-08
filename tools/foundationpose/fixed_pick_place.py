@@ -208,7 +208,10 @@ class FixedPickPlaceMixin:
         # Keep the planned lift pose as the required start; the joint set comes from real feedback,
         # from which every release segment re-solves the remaining path.
         release['current_arm']['joint']=list(self.arm_state()['joint'])
-        release.update(max_execution_duration_s=FIXED_RELEASE_BUDGET_S,hold=actual,configuration_binding=self.motion_binding(config),plan_id=plan['plan_id'],expires_at=plan['expires_at'])
+        # The release needs the complete hold record (tool binding, contact position), not the
+        # reduced public snapshot that was enough for the attachment comparison above.
+        with self.lock:hold=copy.deepcopy(self.held_object)
+        release.update(max_execution_duration_s=FIXED_RELEASE_BUDGET_S,hold=hold,configuration_binding=self.motion_binding(config),plan_id=plan['plan_id'],expires_at=plan['expires_at'])
         self.run_object_execution(release,request_id,nested=True)
         report['release_diagnostics_ref']=copy.deepcopy(self.status.get('diagnostics_ref'))
         if self.status['state']!='completed':raise ValueError(self.status.get('error') or '固定放置失败')

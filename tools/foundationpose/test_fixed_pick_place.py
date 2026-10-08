@@ -122,6 +122,9 @@ class PlanningTests(unittest.TestCase):
             order.append('release');self.assertTrue(nested)
             self.assertEqual(p['waypoints'],plan['release']['waypoints'])
             self.assertEqual(p['hold']['hold_id'],'actual');self.service.status['state']='completed'
+            # The complete hold record is required by the release hardware checks.
+            self.assertEqual(p['hold'],self.service.held_object);self.assertIn('tool_response',p['hold'])
+            self.assertGreater(p['max_execution_duration_s'],90)
         self.service.execute=Mock(side_effect=grasp);self.service.run_object_execution=Mock(side_effect=release)
         with patch('fixed_pick_place.model_geometry',return_value=self.geom),patch('fixed_pick_place.RobotClient'):
             self.service.execute_fixed_pick_place(plan,{},'test')
@@ -224,6 +227,18 @@ class SampledJointSegmentTests(unittest.TestCase):
         opened=kinds.index('open');self.assertGreaterEqual(opened,2);self.assertGreater(len(kinds)-opened-1,0)
         self.assertEqual(set(kinds)-{'open'},{'movej'});self.assertIsNone(self.service.held_object)
         np.testing.assert_allclose(control.controller_pose(self.arm['pose'])[:3,3],before[:3,3]+[0,0,.05],atol=1e-6)
+
+    def test_nested_release_failing_before_its_context_reports_the_real_error(self):
+        args=control.ObjectControlTests.args(self);args.update(goal=None,retreat_vector_base_m=[0,0,.05])
+        plan=copy.deepcopy(control.ObjectControlTests.planned(self,args,True))
+        self.service.robot=self.robot;self.service.actuated=True;hold=copy.deepcopy(self.service.held_object)
+        self.service.motion_context=Mock(side_effect=KeyError('tool_response'))
+        self.service.status.update(busy=True)
+        self.service.run_object_execution(plan,'fixed-release',nested=True)
+        self.assertEqual(self.service.status['state'],'failed')
+        self.assertIn('tool_response',self.service.status['error']);self.assertNotIn('local variable',self.service.status['error'])
+        self.service.retain_reorientation_hold.assert_not_called();self.assertEqual(self.service.held_object,hold)
+        self.assertEqual(self.calls,[])
 
     def test_ordinary_release_still_uses_controller_linear_moves(self):
         args=control.ObjectControlTests.args(self);args.update(goal=None,retreat_vector_base_m=[0,0,.05])

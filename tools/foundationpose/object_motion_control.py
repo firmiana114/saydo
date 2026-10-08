@@ -334,7 +334,9 @@ class ObjectMotionMixin:
             if self.actuated:
                 try:self.robot.stop();report['stop_acknowledged']=True
                 except Exception as stop_error:report['stop_error']=str(stop_error)
-                if not report['release_attempted']:
+                # A nested release can fail before its own context exists while the grasp has already
+                # actuated; the hold is then left as recorded instead of masking the real error.
+                if not report['release_attempted'] and 'config' in locals():
                     self.retain_reorientation_hold(held,config,report)
             try:self.object_plan_store().finish(plan['plan_id'],'failed')
             except Exception as store_error:report['plan_recording_error']=str(store_error)
