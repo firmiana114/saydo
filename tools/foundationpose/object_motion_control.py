@@ -13,7 +13,7 @@ import numpy as np
 from grasp_geometry import controller_pose, transform, rotation_error, object_in_base
 from grasp_library import held_clearance_config
 from grasp_robot import RobotClient
-from motion_validation import check_waypoints, wait_for_pose
+from motion_validation import check_waypoints, wait_for_pose, note_joint_change
 from object_catalog import select_object
 from scene_features import object_features
 from object_motion_geometry import plan_object_motion, segment_samples, validate_tcp, object_error
@@ -242,8 +242,9 @@ class ObjectMotionMixin:
                         points.extend(segment_samples(last,future_pose,None,None,config,'linear',future['name']))
                 detail=self.verify_motion_targets(plan,config,report,start,points)
                 fixed=plan.get('fixed_joint_targets',{}).get(target['name'])
-                if fixed is not None and np.max(np.abs(np.asarray(detail['joint_solutions_deg'][current_endpoint_index])*1000-fixed))>500:
-                    raise ValueError('固定流程关节构型复核不一致，不能更换路径')
+                # A fixed plan follows the remaining path as re-solved from real feedback above; its
+                # planned joint set is only a diagnostic reference once the controller has run a movel.
+                if fixed is not None:note_joint_change(report,target['name'],'resolved_remaining_path_vs_plan',fixed,np.asarray(detail['joint_solutions_deg'][current_endpoint_index])*1000)
                 self.check_cancel()
                 if not self.actuated and time.time()>plan['expires_at']:raise ValueError('方案已过期，请重新规划')
                 report['active_stage']=target['name'];self.robot.motion_stage=target['name']
@@ -264,7 +265,7 @@ class ObjectMotionMixin:
                 else:
                     solutions=detail.get('joint_solutions_deg') if isinstance(detail,dict) else None
                     if not solutions or len(solutions)<=current_endpoint_index or len(solutions[current_endpoint_index])!=7 or not np.isfinite(solutions[current_endpoint_index]).all():raise ValueError('缺少已验证的关节解，不能执行关节方案')
-                    joint_target=fixed if fixed is not None else np.rint(np.asarray(solutions[current_endpoint_index])*1000).astype(int).tolist()
+                    joint_target=np.rint(np.asarray(solutions[current_endpoint_index])*1000).astype(int).tolist()
                     report.setdefault('commanded_joint_targets',[]).append({'stage':target['name'],'joint_raw':joint_target})
                     self.actuated=True;report['robot_motion_sent']=True
                     self.robot.move_joints(joint_target,plan['speed_percent'],self.cancelled,observed)
@@ -272,7 +273,7 @@ class ObjectMotionMixin:
                 reached=wait_for_pose(observed,target['controller_pose'],self.check_cancel,record,
                     plan['position_tolerance_m'],np.deg2rad(plan['orientation_tolerance_deg']))
                 if joint_target is not None and np.max(np.abs(np.asarray(reached['joint'])-joint_target))>500:raise ValueError('关节方案未到达所选关节解')
-                if fixed is not None and np.max(np.abs(np.asarray(reached['joint'])-fixed))>500:raise ValueError('实际关节构型偏离固定路径')
+                if fixed is not None and joint_target is None:note_joint_change(report,target['name'],'controller_linear_move_vs_plan',fixed,reached['joint'])
                 previous_feedback=copy.deepcopy(reached)
                 report['completed_waypoints']=report.get('completed_waypoints',0)+1
                 return reached

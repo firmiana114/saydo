@@ -92,6 +92,16 @@ def parse_kinematics(result, arm, waypoints):
         return fail('离线正解回验数据无效：'+str(error))
 
 
+def note_joint_change(report, stage, basis, reference, actual, limit_deg=.5):
+    """Record that a redundant arm reached, or re-solved to, a joint set other than the earlier reference."""
+    deviation = float(np.max(np.abs(np.asarray(actual, dtype=float) - np.asarray(reference, dtype=float)))) / 1000
+    if deviation > limit_deg:
+        report.setdefault('joint_configuration_changes', []).append({'stage': stage, 'basis': basis,
+            'reference_joint_raw': [int(round(v)) for v in reference], 'actual_joint_raw': [int(round(v)) for v in actual],
+            'max_deviation_deg': deviation})
+    return deviation
+
+
 def check_waypoints(executable, tool, arm, waypoints, timeout=3.):
     if not waypoints:raise ValueError('至少需要一个待验证航点')
     joints=np.asarray(arm['joint'],dtype=float)

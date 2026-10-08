@@ -135,7 +135,7 @@ class PlanningTests(unittest.TestCase):
 
 
 class GraspSegmentVerificationTests(unittest.TestCase):
-    """The preselected joint set is only reproducible by solving the same remaining path."""
+    """Each grasp segment follows the remaining path as re-solved from real feedback."""
     def setUp(self):
         control.ObjectControlTests.setUp(self)
         names=['pregrasp_sample_0','pregrasp_sample_1','grasp_sample_0','grasp_sample_1','lift_sample_0','release_descent_1_sample_0']
@@ -150,20 +150,28 @@ class GraspSegmentVerificationTests(unittest.TestCase):
         self.plan={'fixed_joint_targets':{'pregrasp':[1000]*7,'grasp':[3000]*7,'lift':[4000]*7}}
 
     def test_each_segment_solves_the_remaining_fixed_path_and_reads_its_own_endpoint(self):
-        self.service._fixed_path_points=self.points
+        self.service._fixed_path_points=self.points;report={}
         for name,first in [('pregrasp',0),('grasp',2),('lift',4)]:
             with self.subTest(name=name):
-                fixed=self.service.verify_waypoint(self.plan,{},{},{'name':name,'controller_pose':[0]*6})
-                self.assertEqual(fixed,self.plan['fixed_joint_targets'][name])
+                solved=self.service.verify_waypoint(self.plan,{},report,{'name':name,'controller_pose':[0]*6})
+                self.assertEqual(solved,self.plan['fixed_joint_targets'][name])
                 self.assertEqual(self.seen[-1],[p['name'] for p in self.points[first:]])
+        self.assertNotIn('joint_configuration_changes',report)
 
-    def test_changed_solution_is_rejected_with_diagnostics_and_missing_path_is_an_error(self):
+    def test_changed_solution_replaces_the_planned_set_and_is_recorded(self):
         self.service._fixed_path_points=self.points;report={}
         self.plan['fixed_joint_targets']['grasp']=[3600]*7
-        with self.assertRaisesRegex(ValueError,'预先选定的关节构型'):
-            self.service.verify_waypoint(self.plan,{},report,{'name':'grasp','controller_pose':[0]*6})
-        self.assertEqual(report['fixed_joint_mismatch']['waypoint'],'grasp')
-        self.assertAlmostEqual(report['fixed_joint_mismatch']['max_deviation_deg'],.6)
+        solved=self.service.verify_waypoint(self.plan,{},report,{'name':'grasp','controller_pose':[0]*6})
+        self.assertEqual(solved,[3000]*7)
+        change=report['joint_configuration_changes'][0]
+        self.assertEqual((change['stage'],change['basis']),('grasp','resolved_remaining_path_vs_plan'))
+        self.assertEqual(change['reference_joint_raw'],[3600]*7);self.assertAlmostEqual(change['max_deviation_deg'],.6)
+
+    def test_unsolvable_remaining_path_and_missing_samples_stop_before_motion(self):
+        self.service._fixed_path_points=self.points
+        self.service.verify_motion_targets.side_effect=ValueError('没有连续逆解')
+        with self.assertRaisesRegex(ValueError,'没有连续逆解'):
+            self.service.verify_waypoint(self.plan,{},{},{'name':'lift','controller_pose':[0]*6})
         self.service._fixed_path_points=None
         with self.assertRaisesRegex(ValueError,'缺少航点采样'):
             self.service.verify_waypoint(self.plan,{},{},{'name':'pregrasp','controller_pose':[0]*6})
@@ -172,6 +180,33 @@ class GraspSegmentVerificationTests(unittest.TestCase):
         waypoint={'name':'pregrasp','controller_pose':[0]*6}
         self.assertIsNone(self.service.verify_waypoint({},{},{},waypoint))
         self.assertEqual(self.seen,[['pregrasp']])
+
+
+class FixedReleaseAfterControllerMoveTests(unittest.TestCase):
+    """A fixed release continues when the controller's joints differ from the planned set."""
+    def setUp(self):
+        control.ObjectControlTests.setUp(self)
+
+    def test_release_with_different_planned_joints_completes_and_records_the_difference(self):
+        args=control.ObjectControlTests.args(self);args.update(goal=None,retreat_vector_base_m=[0,0,.05])
+        plan=copy.deepcopy(control.ObjectControlTests.planned(self,args,True))
+        names=[w['name'] for w in plan['waypoints']]+[plan['retreat_waypoint']['name']]
+        plan['fixed_joint_targets']={name:[777000]*7 for name in names}
+        saved={}
+        self.service.save_object_job=Mock(side_effect=lambda report:saved.update(report=report) or {'file':'job.json'})
+        self.service.status.update(busy=True)
+        self.service.run_object_execution(plan,'fixed-release',nested=True)
+        self.assertEqual(self.service.status['state'],'completed',self.service.status.get('error'))
+        self.assertEqual([c[0] for c in self.calls],['movel','movel','open','movel'])
+        self.assertIsNone(self.service.held_object)
+
+    def test_joint_change_note_records_only_real_differences(self):
+        from motion_validation import note_joint_change
+        report={}
+        self.assertAlmostEqual(note_joint_change(report,'lift','basis',[1000]*7,[1400]*7),.4)
+        self.assertEqual(report,{})
+        self.assertAlmostEqual(note_joint_change(report,'lift','basis',[1000]*7,[1000,1000,11010.4,1000,1000,1000,1000]),10.0104)
+        self.assertEqual(report['joint_configuration_changes'][0]['actual_joint_raw'][2],11010)
 
 
 class ApiTests(unittest.TestCase):

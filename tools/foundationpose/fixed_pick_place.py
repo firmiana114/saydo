@@ -189,7 +189,7 @@ class FixedPickPlaceMixin:
         if any(np.max(np.abs(np.asarray(targets[k])-q))>500 for k,q in expected.items()):raise ValueError('全程关节构型复核不一致，未发送动作')
         if time.time()>plan['expires_at']:raise ValueError('固定方案已过期')
         self._fixed_guard=lambda:self.fixed_binding_check(plan)
-        self._fixed_path_points=points  # Each grasp segment re-solves the remaining part of this same path.
+        self._fixed_path_points=points  # Each grasp segment re-solves the remaining part of this same path from real feedback.
         self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=True);self.robot.motion_log=report.setdefault('motion_events',[])
         self.update_scene_instance(grasp,'moving')
         self.execute(grasp,config,report)
@@ -200,6 +200,9 @@ class FixedPickPlaceMixin:
         if np.linalg.norm(a[:3,3]-b[:3,3])>.002 or rotation_error(a[:3,:3],b[:3,:3])>np.deg2rad(2):
             raise ValueError('实际夹持关系偏离预先规划，不重新规划或继续下降')
         release=copy.deepcopy(plan['release'])
+        # The lift is a controller-resolved movel: keep the planned lift pose as the required start,
+        # but take the joint set from real feedback so the remaining path is re-solved from it.
+        release['current_arm']['joint']=list(self.arm_state()['joint'])
         release.update(hold=actual,configuration_binding=self.motion_binding(config),plan_id=plan['plan_id'],expires_at=plan['expires_at'])
         self.run_object_execution(release,request_id,nested=True)
         report['release_diagnostics_ref']=copy.deepcopy(self.status.get('diagnostics_ref'))
