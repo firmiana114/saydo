@@ -43,8 +43,8 @@ context.renderHistory([{...runs[0], state: 'succeeded'}, runs[1]]);
 assert.equal(history.scrollTop, 90);
 const html = fs.readFileSync(__dirname + '/index.html', 'utf8');
 assert(html.includes('id="progress-scroll"'));
-assert(html.includes('#history{max-height:'));
-assert(html.includes('overflow-y:auto'));
+assert(/#history \{\s*max-height:/.test(html));
+assert(html.includes('overflow-y: auto'));
 console.log(
     'History scrolling passed: bounded regions, stable polling and preserved scroll position.'
 );

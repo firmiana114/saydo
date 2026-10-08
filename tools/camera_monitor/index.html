@@ -1,22 +1,370 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SayDo · 双相机监控</title>
-<style>
-:root{color-scheme:dark;--bg:#0b1115;--panel:#121c22;--line:#27353e;--text:#edf5f5;--muted:#9bafb9;--green:#9ae6b3}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}main{max-width:1600px;margin:auto;padding:32px}header,.title-row,.camera-heading,.toolbar,.metrics{display:flex;align-items:center;gap:16px}header,.camera-heading{justify-content:space-between}.brand{font-size:24px;font-weight:750;letter-spacing:-1px}.brand span{color:var(--green)}.eyebrow{font-size:11px;color:var(--muted);letter-spacing:2px}.tag,.badge{font-size:12px;color:var(--muted)}.tag{padding:6px 12px;border:1px solid var(--line);border-radius:30px}.title-row{justify-content:space-between;margin:28px 0 24px;flex-wrap:wrap}h1{font-size:28px;margin:0 0 6px}h2{font-size:17px;margin:0}p{color:var(--muted);margin:0}.actions{display:flex;gap:10px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.camera-card{background:var(--panel);border:1px solid var(--line);border-radius:15px;overflow:hidden}.camera-heading{padding:18px 20px}.dot{display:inline-block;width:8px;height:8px;background:#7a8d97;border-radius:50%;margin-right:7px}.dot.on{background:var(--green);box-shadow:0 0 15px #9ae6b360}.video{aspect-ratio:16/9;background:#060c0f;position:relative;display:grid;place-items:center}.video img{width:100%;height:100%;object-fit:contain;display:none}.placeholder{text-align:center;padding:24px}.placeholder strong{display:block;font-size:17px;margin-bottom:8px}.placeholder p{font-size:13px;max-width:380px}.toolbar{padding:16px 20px;flex-wrap:wrap}button,.download{border:1px solid var(--line);border-radius:7px;padding:9px 13px;background:#1b2a32;color:var(--text);font:inherit;font-size:13px;cursor:pointer;text-decoration:none}button.primary{background:var(--green);border-color:var(--green);color:#10251a;font-weight:700}button:disabled{opacity:.4;cursor:not-allowed}button:hover:not(:disabled),.download:hover{filter:brightness(1.1)}.download{margin-left:auto}.metrics{padding:0 20px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;font-size:12px;color:var(--muted);justify-content:space-between}.details{padding:14px 20px;font-size:12px;color:var(--muted)}.details div{overflow-wrap:anywhere}.error{color:#ffc0ac;min-height:20px;margin-top:7px}.notice{font-size:12px;color:var(--muted);margin-top:22px;border-top:1px solid var(--line);padding-top:17px}.notice p+p{margin-top:5px}.live-note{color:var(--green);font-size:12px}.service-error{color:#ffc0ac;margin-bottom:12px;min-height:20px}@media(max-width:850px){main{padding:20px 16px}.grid{grid-template-columns:1fr}.tag{display:none}h1{font-size:24px}.title-row{margin-top:20px}.actions{flex-wrap:wrap}}
-</style></head>
-<body><main>
-<header><div class="brand">Say<span>Do</span><div class="eyebrow">VISION WORKSPACE</div></div><span class="tag">D435i + D405 · 只读预览</span></header>
-<div class="title-row"><div><h1>两个机位，一起看</h1><p>左侧是眼在手相机，右侧是不固定的全局相机。可同时预览或单独释放。</p></div><div class="actions"><button class="primary" id="start-all">开始双路预览</button><button id="stop-all">释放全部预览</button></div></div>
-<div id="service-error" class="service-error" role="status"></div>
-<div class="grid">
-<section class="camera-card" data-camera="d435i"><div class="camera-heading"><div><h2>D435i · 眼在手</h2><span class="live-note">随机械臂末端移动</span></div><span class="badge"><span class="dot" id="d435i-dot"></span><span id="d435i-state">连接中</span></span></div>
-<div class="video"><div class="placeholder" id="d435i-placeholder"><strong id="d435i-title">等待开始预览</strong><p>8089 正在使用此相机时，共享其最新原始画面。</p></div><img id="d435i-feed" alt="D435i 眼在手实时彩色画面"></div>
-<div class="toolbar"><button class="primary" id="d435i-start">开始预览</button><button id="d435i-stop" disabled>释放预览</button><a class="download" id="d435i-snapshot" href="/snapshot/d435i.jpg" download>保存截图 ↓</a></div>
-<div class="metrics"><span id="d435i-resolution">—</span><span id="d435i-fps">— fps</span><span id="d435i-frames">— 帧</span></div><div class="details"><div id="d435i-device">设备待确认</div><div id="d435i-source">尚未收到图像</div><div id="d435i-updated">—</div><div class="error" id="d435i-error" role="status"></div></div></section>
-<section class="camera-card" data-camera="d405"><div class="camera-heading"><div><h2>D405 · 不固定的全局相机</h2><span class="live-note">独立观察工作区域</span></div><span class="badge"><span class="dot" id="d405-dot"></span><span id="d405-state">连接中</span></span></div>
-<div class="video"><div class="placeholder" id="d405-placeholder"><strong id="d405-title">等待开始预览</strong><p>开启后持续采集不固定的全局相机画面，全局观察可共享此画面。</p></div><img id="d405-feed" alt="D405 不固定的全局相机实时彩色画面"></div>
-<div class="toolbar"><button class="primary" id="d405-start">开始预览</button><button id="d405-stop" disabled>释放预览</button><a class="download" id="d405-snapshot" href="/snapshot/d405.jpg" download>保存截图 ↓</a></div>
-<div class="metrics"><span id="d405-resolution">—</span><span id="d405-fps">— fps</span><span id="d405-frames">— 帧</span></div><div class="details"><div id="d405-device">设备待确认</div><div id="d405-source">尚未收到图像</div><div id="d405-updated">—</div><div class="error" id="d405-error" role="status"></div></div></section>
-</div>
-<div class="notice"><p>标定或独立采集前请释放所需机位。共享 8089 的预览停止后，8089 仍保持相机采集。</p><p>两路画面独立采集，不是同步标定样本。仅供可信局域网使用；本页不控制机械臂或夹爪，不录制视频。</p></div>
-</main><script src="/app.js"></script></body></html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SayDo · 双相机监控</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1115;
+        --panel: #121c22;
+        --line: #27353e;
+        --text: #edf5f5;
+        --muted: #9bafb9;
+        --green: #9ae6b3;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+      }
+
+      main {
+        max-width: 1600px;
+        margin: auto;
+        padding: 32px;
+      }
+
+      header,
+      .title-row,
+      .camera-heading,
+      .toolbar,
+      .metrics {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      header,
+      .camera-heading {
+        justify-content: space-between;
+      }
+
+      .brand {
+        font-size: 24px;
+        font-weight: 750;
+        letter-spacing: -1px;
+      }
+
+      .brand span {
+        color: var(--green);
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        color: var(--muted);
+        letter-spacing: 2px;
+      }
+
+      .tag,
+      .badge {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .tag {
+        padding: 6px 12px;
+        border: 1px solid var(--line);
+        border-radius: 30px;
+      }
+
+      .title-row {
+        justify-content: space-between;
+        margin: 28px 0 24px;
+        flex-wrap: wrap;
+      }
+
+      h1 {
+        font-size: 28px;
+        margin: 0 0 6px;
+      }
+
+      h2 {
+        font-size: 17px;
+        margin: 0;
+      }
+
+      p {
+        color: var(--muted);
+        margin: 0;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2,minmax(0,1fr));
+        gap: 20px;
+      }
+
+      .camera-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 15px;
+        overflow: hidden;
+      }
+
+      .camera-heading {
+        padding: 18px 20px;
+      }
+
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        background: #7a8d97;
+        border-radius: 50%;
+        margin-right: 7px;
+      }
+
+      .dot.on {
+        background: var(--green);
+        box-shadow: 0 0 15px #9ae6b360;
+      }
+
+      .video {
+        aspect-ratio: 16/9;
+        background: #060c0f;
+        position: relative;
+        display: grid;
+        place-items: center;
+      }
+
+      .video img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: none;
+      }
+
+      .placeholder {
+        text-align: center;
+        padding: 24px;
+      }
+
+      .placeholder strong {
+        display: block;
+        font-size: 17px;
+        margin-bottom: 8px;
+      }
+
+      .placeholder p {
+        font-size: 13px;
+        max-width: 380px;
+      }
+
+      .toolbar {
+        padding: 16px 20px;
+        flex-wrap: wrap;
+      }
+
+      button,
+      .download {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 9px 13px;
+        background: #1b2a32;
+        color: var(--text);
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+
+      button.primary {
+        background: var(--green);
+        border-color: var(--green);
+        color: #10251a;
+        font-weight: 700;
+      }
+
+      button:disabled {
+        opacity: .4;
+        cursor: not-allowed;
+      }
+
+      button:hover:not(:disabled),
+      .download:hover {
+        filter: brightness(1.1);
+      }
+
+      .download {
+        margin-left: auto;
+      }
+
+      .metrics {
+        padding: 0 20px 16px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+        font-size: 12px;
+        color: var(--muted);
+        justify-content: space-between;
+      }
+
+      .details {
+        padding: 14px 20px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .details div {
+        overflow-wrap: anywhere;
+      }
+
+      .error {
+        color: #ffc0ac;
+        min-height: 20px;
+        margin-top: 7px;
+      }
+
+      .notice {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 22px;
+        border-top: 1px solid var(--line);
+        padding-top: 17px;
+      }
+
+      .notice p+p {
+        margin-top: 5px;
+      }
+
+      .live-note {
+        color: var(--green);
+        font-size: 12px;
+      }
+
+      .service-error {
+        color: #ffc0ac;
+        margin-bottom: 12px;
+        min-height: 20px;
+      }
+
+      @media(max-width:850px) {
+        main {
+          padding: 20px 16px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .tag {
+          display: none;
+        }
+
+        h1 {
+          font-size: 24px;
+        }
+
+        .title-row {
+          margin-top: 20px;
+        }
+
+        .actions {
+          flex-wrap: wrap;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand">
+          Say<span>Do</span>
+          <div class="eyebrow">VISION WORKSPACE</div>
+        </div>
+        <span class="tag">D435i + D405 · 只读预览</span>
+      </header>
+      <div class="title-row">
+        <div>
+          <h1>两个机位，一起看</h1>
+          <p>
+            左侧是眼在手相机，右侧是不固定的全局相机。可同时预览或单独释放。
+          </p>
+        </div>
+        <div class="actions">
+          <button class="primary" id="start-all">开始双路预览</button><button id="stop-all">释放全部预览</button>
+        </div>
+      </div>
+      <div id="service-error" class="service-error" role="status"></div>
+      <div class="grid">
+        <section class="camera-card" data-camera="d435i">
+          <div class="camera-heading">
+            <div>
+              <h2>D435i · 眼在手</h2>
+              <span class="live-note">随机械臂末端移动</span>
+            </div>
+            <span class="badge"><span class="dot" id="d435i-dot"></span><span id="d435i-state">连接中</span></span>
+          </div>
+          <div class="video">
+            <div class="placeholder" id="d435i-placeholder">
+              <strong id="d435i-title">等待开始预览</strong>
+              <p>8089 正在使用此相机时，共享其最新原始画面。</p>
+            </div>
+            <img id="d435i-feed" alt="D435i 眼在手实时彩色画面">
+          </div>
+          <div class="toolbar">
+            <button class="primary" id="d435i-start">开始预览</button><button id="d435i-stop" disabled>释放预览</button><a class="download" id="d435i-snapshot" href="/snapshot/d435i.jpg" download>保存截图 ↓</a>
+          </div>
+          <div class="metrics">
+            <span id="d435i-resolution">—</span><span id="d435i-fps">— fps</span><span id="d435i-frames">— 帧</span>
+          </div>
+          <div class="details">
+            <div id="d435i-device">设备待确认</div>
+            <div id="d435i-source">尚未收到图像</div>
+            <div id="d435i-updated">—</div>
+            <div class="error" id="d435i-error" role="status"></div>
+          </div>
+        </section>
+        <section class="camera-card" data-camera="d405">
+          <div class="camera-heading">
+            <div>
+              <h2>D405 · 不固定的全局相机</h2>
+              <span class="live-note">独立观察工作区域</span>
+            </div>
+            <span class="badge"><span class="dot" id="d405-dot"></span><span id="d405-state">连接中</span></span>
+          </div>
+          <div class="video">
+            <div class="placeholder" id="d405-placeholder">
+              <strong id="d405-title">等待开始预览</strong>
+              <p>开启后持续采集不固定的全局相机画面，全局观察可共享此画面。</p>
+            </div>
+            <img id="d405-feed" alt="D405 不固定的全局相机实时彩色画面">
+          </div>
+          <div class="toolbar">
+            <button class="primary" id="d405-start">开始预览</button><button id="d405-stop" disabled>释放预览</button><a class="download" id="d405-snapshot" href="/snapshot/d405.jpg" download>保存截图 ↓</a>
+          </div>
+          <div class="metrics">
+            <span id="d405-resolution">—</span><span id="d405-fps">— fps</span><span id="d405-frames">— 帧</span>
+          </div>
+          <div class="details">
+            <div id="d405-device">设备待确认</div>
+            <div id="d405-source">尚未收到图像</div>
+            <div id="d405-updated">—</div>
+            <div class="error" id="d405-error" role="status"></div>
+          </div>
+        </section>
+      </div>
+      <div class="notice">
+        <p>
+          标定或独立采集前请释放所需机位。共享 8089 的预览停止后，8089 仍保持相机采集。
+        </p>
+        <p>
+          两路画面独立采集，不是同步标定样本。仅供可信局域网使用；本页不控制机械臂或夹爪，不录制视频。
+        </p>
+      </div>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

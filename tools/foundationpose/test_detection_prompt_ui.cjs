@@ -123,7 +123,7 @@ const context = vm.createContext({
 const html = fs.readFileSync(__dirname + '/live_tracker.html', 'utf8');
 vm.runInContext(
     html.slice(
-        html.indexOf('const chooser='), html.indexOf('let openingGripper=')
+        html.indexOf('const chooser ='), html.indexOf('let openingGripper =')
     ),
     context
 );

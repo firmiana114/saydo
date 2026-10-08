@@ -148,10 +148,10 @@ assert(
 );
 assert(
     html.includes(
-        "document.querySelector('#grasp-stop').disabled=taskStopPending;"
+        "document.querySelector('#grasp-stop').disabled = taskStopPending;"
     )
 );
-assert(html.includes("if(taskStopPending)return;"));
+assert(/if \(taskStopPending\) \{\s*return;/.test(html));
 
 assert(
     !/codex-terminal/.test(html),

@@ -1,11 +1,425 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saydo · 自然语言任务</title>
-<style>
-:root{font-family:system-ui,-apple-system,sans-serif;color:#173137;background:#edf2ef}*{box-sizing:border-box}body{margin:0}main{max-width:1050px;margin:40px auto;padding:0 24px}.brand{letter-spacing:.15em;font-size:13px;color:#527068}h1{font-size:34px;margin:12px 0}header p{color:#526663;line-height:1.7}.grid{display:grid;grid-template-columns:1.2fr 1fr;gap:20px;margin-top:28px}section{background:#fff;border:1px solid #d6e0da;border-radius:16px;padding:24px}h2{font-size:18px;margin:0 0 18px}textarea{width:100%;min-height:145px;resize:vertical;border:1px solid #bfcec7;border-radius:10px;padding:14px;font:inherit;line-height:1.7}button{font:inherit;border:0;border-radius:9px;padding:12px 18px;cursor:pointer;background:#12644d;color:#fff}button:disabled{opacity:.45;cursor:default}.buttons{display:flex;gap:10px;margin-top:14px}.stop{background:#a53332}.badge{display:inline-block;background:#e2efe8;padding:6px 10px;border-radius:6px;font-size:13px}.muted{color:#657773;font-size:13px}.phase{font-size:20px;line-height:1.5;margin:14px 0}#summary{white-space:pre-wrap;line-height:1.7}#error{color:#a53332;min-height:24px}ol{padding-left:22px;line-height:1.8}details{border-top:1px solid #dde5df;padding:12px 0}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.history button{display:block;color:#244c42;background:#f0f5f2;text-align:left;width:100%;margin:8px 0;padding:10px}footer{margin-top:22px;color:#657773;font-size:13px}@media(max-width:750px){main{margin:24px auto}.grid{grid-template-columns:1fr}h1{font-size:28px}}
-body.embedded{background:transparent}body.embedded main{margin:0;padding:0}body.embedded .brand{display:none}body.embedded header{padding:18px 20px 0}body.embedded h1{font-size:24px}body.embedded .grid{margin-top:18px}body.embedded footer{padding:0 20px 12px}
-#timeline{list-style:none;padding:0;margin:18px 0}.timeline-item{position:relative;border-left:2px solid #d6e4dc;padding:0 0 20px 17px;margin-left:4px}.timeline-item:before{content:"";position:absolute;left:-5px;top:5px;width:8px;height:8px;border-radius:50%;background:#829d8e}.timeline-head{display:flex;gap:8px;justify-content:space-between;align-items:baseline;flex-wrap:wrap;font-size:13px}.timeline-head time{color:#73867c;font-size:11px;font-variant-numeric:tabular-nums}.timeline-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.8;margin-top:6px}.timeline-item.llm .timeline-text,.timeline-item.llm-pending .timeline-text{color:#62776c;font-size:12px}.timeline-item.model_message:before,.timeline-item.final:before{background:#12644d}.timeline-item.final{border-left-color:#12644d;background:#f0f7f2;border-radius:0 8px 8px 0;padding:12px 14px 14px 17px}.timeline-item.final:before{top:17px}.timeline-item.final .timeline-text{font-size:15px}.timeline-item.legacy{color:#748379}.timeline-item:last-child{padding-bottom:12px}
-.model-controls{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}.model-controls label{display:grid;gap:7px;font-size:13px;flex:1;min-width:150px}.model-controls select{font:inherit;width:100%;padding:10px;border:1px solid #bfcec7;border-radius:8px;background:white;color:#173137}.model-controls select:disabled{background:#f1f4f2;color:#77877f}#model-help{line-height:1.6;margin-bottom:18px}
-#history{max-height:300px;overflow-y:auto;padding-right:5px}#progress-scroll{max-height:580px;min-height:160px;overflow-y:auto;padding-right:7px}#history,#progress-scroll{overscroll-behavior:contain;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#9bb2a5 #eef3ef}#history::-webkit-scrollbar,#progress-scroll::-webkit-scrollbar{width:8px}#history::-webkit-scrollbar-track,#progress-scroll::-webkit-scrollbar-track{background:#eef3ef;border-radius:5px}#history::-webkit-scrollbar-thumb,#progress-scroll::-webkit-scrollbar-thumb{background:#9bb2a5;border-radius:5px}#history:focus-visible,#progress-scroll:focus-visible{outline:2px solid #528d73;outline-offset:3px}@media(max-width:750px){#history{max-height:240px}#progress-scroll{max-height:460px}}
-</style>
-<main><header><div class="brand">SAYDO / 言动</div><h1>说出任务，查看每一步</h1><p>使用现有物品模型与夹法完成操作。你可以随时停止任务，查看实际执行结果。</p><span class="badge" id="mode">连接中</span> <span class="muted" id="model"></span></header>
-<div class="grid"><section><h2>新任务</h2><div class="model-controls"><label for="model-select">模型<select id="model-select" disabled aria-describedby="model-help"></select></label><label for="effort-select">推理强度<select id="effort-select" disabled aria-describedby="model-help"></select></label></div><p class="muted" id="model-help">用于新提交的任务，开始后配置固定。本浏览器会记住你的选择。</p><label for="instruction" class="muted">描述目标物品和希望完成的操作</label><textarea id="instruction" maxlength="4000" placeholder="例如：查看当前画面，告诉我有哪些已登记的物品。"></textarea><div class="buttons"><button id="submit" disabled>开始任务</button><button id="cancel" class="stop" disabled>停止机械臂并取消</button></div><p id="error" role="alert"></p><p class="muted" id="mode-help"></p><div class="history"><h2>最近任务</h2><div id="history" tabindex="0" role="region" aria-label="最近任务列表"></div></div></section>
-<section aria-live="polite"><h2>执行进度</h2><span class="badge" id="state">尚未开始</span><div class="phase" id="phase">等待任务</div><p class="muted" id="meta"></p><div id="progress-scroll" tabindex="0" role="region" aria-label="执行进度信息流"><ol id="timeline" aria-label="按时间排列的执行信息流"></ol><details><summary>已核验的动作</summary><pre id="evidence">无</pre></details></div></section></div><footer>软件停止不会主动松开夹爪；停止未确认时请核对现场。预览不会建立真实夹持记录。</footer></main><script src="app.js"></script></html>
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Saydo · 自然语言任务</title>
+  <style>
+    :root {
+      font-family: system-ui,-apple-system,sans-serif;
+      color: #173137;
+      background: #edf2ef;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+    }
+
+    main {
+      max-width: 1050px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+
+    .brand {
+      letter-spacing: .15em;
+      font-size: 13px;
+      color: #527068;
+    }
+
+    h1 {
+      font-size: 34px;
+      margin: 12px 0;
+    }
+
+    header p {
+      color: #526663;
+      line-height: 1.7;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 20px;
+      margin-top: 28px;
+    }
+
+    section {
+      background: #fff;
+      border: 1px solid #d6e0da;
+      border-radius: 16px;
+      padding: 24px;
+    }
+
+    h2 {
+      font-size: 18px;
+      margin: 0 0 18px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 145px;
+      resize: vertical;
+      border: 1px solid #bfcec7;
+      border-radius: 10px;
+      padding: 14px;
+      font: inherit;
+      line-height: 1.7;
+    }
+
+    button {
+      font: inherit;
+      border: 0;
+      border-radius: 9px;
+      padding: 12px 18px;
+      cursor: pointer;
+      background: #12644d;
+      color: #fff;
+    }
+
+    button:disabled {
+      opacity: .45;
+      cursor: default;
+    }
+
+    .buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .stop {
+      background: #a53332;
+    }
+
+    .badge {
+      display: inline-block;
+      background: #e2efe8;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .muted {
+      color: #657773;
+      font-size: 13px;
+    }
+
+    .phase {
+      font-size: 20px;
+      line-height: 1.5;
+      margin: 14px 0;
+    }
+
+    #summary {
+      white-space: pre-wrap;
+      line-height: 1.7;
+    }
+
+    #error {
+      color: #a53332;
+      min-height: 24px;
+    }
+
+    ol {
+      padding-left: 22px;
+      line-height: 1.8;
+    }
+
+    details {
+      border-top: 1px solid #dde5df;
+      padding: 12px 0;
+    }
+
+    summary {
+      cursor: pointer;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+    }
+
+    .history button {
+      display: block;
+      color: #244c42;
+      background: #f0f5f2;
+      text-align: left;
+      width: 100%;
+      margin: 8px 0;
+      padding: 10px;
+    }
+
+    footer {
+      margin-top: 22px;
+      color: #657773;
+      font-size: 13px;
+    }
+
+    @media(max-width:750px) {
+      main {
+        margin: 24px auto;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+    }
+
+    body.embedded {
+      background: transparent;
+    }
+
+    body.embedded main {
+      margin: 0;
+      padding: 0;
+    }
+
+    body.embedded .brand {
+      display: none;
+    }
+
+    body.embedded header {
+      padding: 18px 20px 0;
+    }
+
+    body.embedded h1 {
+      font-size: 24px;
+    }
+
+    body.embedded .grid {
+      margin-top: 18px;
+    }
+
+    body.embedded footer {
+      padding: 0 20px 12px;
+    }
+
+    #timeline {
+      list-style: none;
+      padding: 0;
+      margin: 18px 0;
+    }
+
+    .timeline-item {
+      position: relative;
+      border-left: 2px solid #d6e4dc;
+      padding: 0 0 20px 17px;
+      margin-left: 4px;
+    }
+
+    .timeline-item:before {
+      content: "";
+      position: absolute;
+      left: -5px;
+      top: 5px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #829d8e;
+    }
+
+    .timeline-head {
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+      font-size: 13px;
+    }
+
+    .timeline-head time {
+      color: #73867c;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .timeline-text {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+      line-height: 1.8;
+      margin-top: 6px;
+    }
+
+    .timeline-item.llm .timeline-text,
+    .timeline-item.llm-pending .timeline-text {
+      color: #62776c;
+      font-size: 12px;
+    }
+
+    .timeline-item.model_message:before,
+    .timeline-item.final:before {
+      background: #12644d;
+    }
+
+    .timeline-item.final {
+      border-left-color: #12644d;
+      background: #f0f7f2;
+      border-radius: 0 8px 8px 0;
+      padding: 12px 14px 14px 17px;
+    }
+
+    .timeline-item.final:before {
+      top: 17px;
+    }
+
+    .timeline-item.final .timeline-text {
+      font-size: 15px;
+    }
+
+    .timeline-item.legacy {
+      color: #748379;
+    }
+
+    .timeline-item:last-child {
+      padding-bottom: 12px;
+    }
+
+    .model-controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    .model-controls label {
+      display: grid;
+      gap: 7px;
+      font-size: 13px;
+      flex: 1;
+      min-width: 150px;
+    }
+
+    .model-controls select {
+      font: inherit;
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #bfcec7;
+      border-radius: 8px;
+      background: white;
+      color: #173137;
+    }
+
+    .model-controls select:disabled {
+      background: #f1f4f2;
+      color: #77877f;
+    }
+
+    #model-help {
+      line-height: 1.6;
+      margin-bottom: 18px;
+    }
+
+    #history {
+      max-height: 300px;
+      overflow-y: auto;
+      padding-right: 5px;
+    }
+
+    #progress-scroll {
+      max-height: 580px;
+      min-height: 160px;
+      overflow-y: auto;
+      padding-right: 7px;
+    }
+
+    #history,
+    #progress-scroll {
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+      scrollbar-color: #9bb2a5 #eef3ef;
+    }
+
+    #history::-webkit-scrollbar,
+    #progress-scroll::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    #history::-webkit-scrollbar-track,
+    #progress-scroll::-webkit-scrollbar-track {
+      background: #eef3ef;
+      border-radius: 5px;
+    }
+
+    #history::-webkit-scrollbar-thumb,
+    #progress-scroll::-webkit-scrollbar-thumb {
+      background: #9bb2a5;
+      border-radius: 5px;
+    }
+
+    #history:focus-visible,
+    #progress-scroll:focus-visible {
+      outline: 2px solid #528d73;
+      outline-offset: 3px;
+    }
+
+    @media(max-width:750px) {
+      #history {
+        max-height: 240px;
+      }
+
+      #progress-scroll {
+        max-height: 460px;
+      }
+    }
+  </style>
+  <main>
+    <header>
+      <div class="brand">SAYDO / 言动</div>
+      <h1>说出任务，查看每一步</h1>
+      <p>
+        使用现有物品模型与夹法完成操作。你可以随时停止任务，查看实际执行结果。
+      </p>
+      <span class="badge" id="mode">连接中</span>
+      <span class="muted" id="model"></span>
+    </header>
+    <div class="grid">
+      <section>
+        <h2>新任务</h2>
+        <div class="model-controls">
+          <label for="model-select">模型<select id="model-select" disabled aria-describedby="model-help"></select></label><label for="effort-select">推理强度<select id="effort-select" disabled aria-describedby="model-help"></select></label>
+        </div>
+        <p class="muted" id="model-help">
+          用于新提交的任务，开始后配置固定。本浏览器会记住你的选择。
+        </p>
+        <label for="instruction" class="muted">描述目标物品和希望完成的操作</label><textarea id="instruction" maxlength="4000" placeholder="例如：查看当前画面，告诉我有哪些已登记的物品。"></textarea>
+        <div class="buttons">
+          <button id="submit" disabled>开始任务</button><button id="cancel" class="stop" disabled>停止机械臂并取消</button>
+        </div>
+        <p id="error" role="alert"></p>
+        <p class="muted" id="mode-help"></p>
+        <div class="history">
+          <h2>最近任务</h2>
+          <div id="history" tabindex="0" role="region" aria-label="最近任务列表"></div>
+        </div>
+      </section>
+      <section aria-live="polite">
+        <h2>执行进度</h2>
+        <span class="badge" id="state">尚未开始</span>
+        <div class="phase" id="phase">等待任务</div>
+        <p class="muted" id="meta"></p>
+        <div id="progress-scroll" tabindex="0" role="region" aria-label="执行进度信息流">
+          <ol id="timeline" aria-label="按时间排列的执行信息流"></ol>
+          <details>
+            <summary>已核验的动作</summary>
+            <pre id="evidence">无</pre>
+          </details>
+        </div>
+      </section>
+    </div>
+    <footer>
+      软件停止不会主动松开夹爪；停止未确认时请核对现场。预览不会建立真实夹持记录。
+    </footer>
+  </main>
+  <script src="app.js"></script>
+</html>
