@@ -23,6 +23,7 @@
 - `tools/task_runner/`：自然语言任务执行器（8091，工作台第 5 页）。`tools/robot_agent/`：MCP 服务、命令行 Codex 启动器 `codex_launcher.py` 与全局观察 `global_camera.py`。
 - `tools/camera_monitor/`：8088 双路相机预览。`tools/handeye/`：眼在手静态配对采集与手眼求解。`tools/object_scan/`：单视角 RGB-D 物品采集。
 - `tools/fixed_pick_place.py`：不经 LLM 的固定试管抓放命令行，说明见 `tools/FIXED_PICK_PLACE.md`。`tools/teach_pendant_gateway.py`：本机访问示教器的兼容入口。
+- `docs/CODING_STANDARD.md`：编码规范（以 Google 各语言风格指南为基线，2026-10-08 起生效），`AGENTS.md` 的“编码规范”一节是它的摘要。`tools/style_check.py`：只用标准库的规范自检脚本，测试为 `tools/test_style_check.py`。
 - `third_party/FoundationPose/`：固定版本上游源码。`ros2_rm_ws/`：睿尔曼 ROS 2 工作区与驱动启动脚本。
 - `config/`：机器本地配置，Git 只保留 `.gitkeep`。`work/`：模型、权重、环境、日志、验证证据，全部不入 Git。
 
@@ -43,12 +44,14 @@
 - 启动 8088：`./tools/camera_monitor/run.sh --port 8088 --tracker-url http://192.168.101.65:8089`。
 - 启动 8091：`work/task_runner_env/bin/python -m tools.task_runner.api`。
 - 后端测试：`work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`（前置 `SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check"`）。执行器测试：`work/task_runner_env/bin/python -m unittest discover -s tools/task_runner -t . -p 'test_*.py' -v`。MCP 测试：`~/.local/share/saydo-mcp/venv/bin/python -m unittest discover -s tools/robot_agent -p 'test_*.py' -v`。预览测试：`.venv/bin/python -m unittest tools.camera_monitor.test_monitor`。MSI 未装 node，前端 `.cjs` 测试在本机运行。
+- 规范自检（本机与 MSI 均可，只读）：提交前 `python3 tools/style_check.py --changed`；纯排版提交前 `python3 tools/style_check.py --same-ast`；脚本自测 `python3 -m unittest tools.test_style_check`。
 - 逆解检查器重建：`bash tools/foundationpose/build_ik_checker.sh`，须原子替换原路径二进制并保留备份。
 - Python 环境：`work/foundationpose_env`（FoundationPose/CUDA）、`.venv`（RealSense/OpenCV）、`work/task_runner_env`、`~/.local/share/saydo-mcp/venv`（MCP）、Qwen 使用的 `work/vlm_benchmark_20260930/hf_env` 及同目录 `models/Qwen3-VL-4B-Instruct`（torch 2.5.1+cu124、Transformers 5.17，路径由 `config/vision/qwen_local.json` 指定）。均为运行依赖，不要清理。
 - 各服务 PID/日志：`work/foundationpose_live/server.pid`（8089，日志为同目录各次 `restart_*.log`）、`work/camera_monitor/`、`work/task_runner/` 下的 `server.pid` 与日志。均未配置开机自启。
 
 ## 6. 当前状态（2026-10-08）
 
+- **可读性重构已启动（2026-10-08，用户要求）**：首要目的是让人类工程师读得懂，并建立编码规范。用户的决定：注释与文档字符串用中文；以 Google 风格指南为准；非必需不引入第三方工具，接受项目内的标准库自检脚本；三处例外为不用 pylint 与排版工具、JavaScript 暂不改 ES 模块、C++ 保留异常。分五个阶段：0 定规范 → 1 纯排版（用 `--same-ast` 证明行为不变）→ 2 目录、包结构与导入 → 3 拆巨型函数并补文档字符串和类型 → 4 文档体系。**阶段 0 已完成**（规范文档、`AGENTS.md` 摘要、自检脚本及 36 项测试，本机 Python 3.9 与 MSI Python 3.12 均通过）；阶段 1 起尚未开始，现有业务代码一行未动。重构前的基线（`python3 tools/style_check.py`，189 个自写源码文件）：错误 11298 条，其中行宽 6562、分号 1678、同行语句 966、导入符号 733、类型标注 487、文档字符串 471、完整包名 271、相对导入 122、`sys.path` 8；提示 76 条（函数超过约 40 行 73 处）。注意：阶段 2、3 会改动执行路径上的代码，测试全过不等于实机可用（固定抓放的放置阶段曾因测试整段替换而漏掉三处缺陷），各需一次实机回归。
 - 三个服务在运行：8089（用户于 2026-10-08 11:12 用重启脚本启动，已加载固定抓放复核修复；进程号见 `work/foundationpose_live/server.pid`，日志 `work/foundationpose_live/restart_script_20261008_111234.log`）、8088（PID 273955）、8091（PID 273957）。8092 已随网页 Codex 终端一并删除。
 - 眼在手相机拔插后深度流不出帧（2026-10-08，已恢复）：D435i 于 10:50:44 从 USB 断开、10:54:05 重新枚举（USB 3.2）。此后 8089 报 `camera_error`、“Frame didn't arrive within 4000”，重启 8089 无效。单独测试发现仅彩色正常、仅深度及彩色+深度均取不到帧；对相机执行 SDK `hardware_reset()` 后三种配置都恢复，再用重启脚本启动 8089 即回到 tracking、帧龄约 0.1 秒。断开原因未确认。经验：热插拔后若深度不出帧，先硬件复位相机再重启 8089；8089 的采集线程出错后不会自行重试。
 - 未确认事项：10:05 启动的上一个 8089 进程（PID 275471）在 10:19:12 左右退出，日志无报错堆栈，系统无内存不足杀进程或崩溃转储记录，退出前状态为正常跟踪、无夹持；迹象符合被外部信号停止，但是否为人工操作未确认。
@@ -89,6 +92,9 @@
 3. 全局相机支架可能移动：不同时刻的全局图片视角不一定相同。目前只改了称呼，没有在提示词里额外写“不要假设前后视角一致”之类的约束，如实测发现模型误判再补。
 4. 已打开的命令行 Codex/MCP 会话仍持有旧说法和旧角色标识，需重新启动才刷新；第 5 页刷新后新任务即使用新说法。
 5. `gpt-5.6-luna` 在服务商侧返回 503（上游负载），未恢复。
+
+6. 可读性重构：按第 6 节的阶段顺序推进；阶段 1 建议按目录分批，每批一次纯排版提交。
+7. 10-08 会话末尾只做了分析、尚未处理的三件事：入孔偶尔向基座 +X 偏几毫米（记录显示同一位置的试管架，位姿估计在约 3～5 毫米内跳动，估出的倾斜越大越偏；尚未由用户对照现场确认）；逐点关节运动一步一停（可试控制器的轨迹连接，未实机验证）；夹指与架子顶板约 5 mm 余量未处理。
 
 ## 9. 注意事项
 
