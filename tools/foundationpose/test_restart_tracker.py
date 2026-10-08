@@ -1,13 +1,19 @@
 """Restart helper decisions, without touching any process, port or device."""
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import restart_tracker as restart
 
+REAL_ACQUIRE_LOCK = restart.acquire_lock  # setUp replaces it so tests never lock the real service directory.
+
 
 class RestartTrackerTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(restart, 'acquire_lock');self.lock = patcher.start();self.addCleanup(patcher.stop)
+
     def test_listening_pid_is_parsed_from_ss_output(self):
         line = 'LISTEN 0 5 192.168.101.65:8089 0.0.0.0:* users:(("python",pid=282318,fd=5))\n'
         self.assertEqual(restart.listening_pid(line), 282318)
@@ -47,6 +53,20 @@ class RestartTrackerTests(unittest.TestCase):
              patch.object(restart, 'stop') as stop, patch.object(restart, 'start') as start:
             self.assertEqual(restart.main([]), 1)
             stop.assert_not_called();start.assert_not_called()
+
+    def test_concurrent_restart_is_refused_before_touching_the_service(self):
+        self.lock.side_effect = RuntimeError('另一次重启正在进行')
+        with patch.object(restart, 'current_pid') as pid, patch.object(restart, 'stop') as stop, \
+             patch.object(restart, 'start') as start:
+            self.assertEqual(restart.main(['--force']), 1)
+        pid.assert_not_called();stop.assert_not_called();start.assert_not_called()
+
+    def test_second_lock_holder_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(restart, 'LIVE', Path(directory)/'live'):
+            first = REAL_ACQUIRE_LOCK()
+            with self.assertRaisesRegex(RuntimeError, '另一次重启正在进行'):REAL_ACQUIRE_LOCK()
+            first.close()
+            REAL_ACQUIRE_LOCK().close()
 
     @unittest.skipUnless(Path('/proc/self/cmdline').exists(), 'requires Linux /proc')
     def test_stop_refuses_a_process_that_is_not_the_tracker(self):

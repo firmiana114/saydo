@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stop and start the 8089 tracker on this machine; sends no robot or gripper command."""
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -123,6 +124,18 @@ def wait_ready(process, log_path, listen_timeout=120, model_timeout=180):
     return status
 
 
+def acquire_lock():
+    """Hold an exclusive lock for this run so two restarts cannot stop each other's new process."""
+    LIVE.mkdir(parents=True, exist_ok=True)
+    handle = (LIVE/'restart.lock').open('a')
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise RuntimeError('另一次重启正在进行，本次未执行；等它结束后查看结果') from error
+    return handle
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='关闭并启动 8089 跟踪服务；不发送机械臂或夹爪指令。')
     parser.add_argument('--force', action='store_true', help='跳过“无任务、无夹持”检查（会丢失夹持记录）')
@@ -130,6 +143,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S')
     try:
+        lock = acquire_lock()  # Released when this process exits.
         pid = current_pid()
         if pid is None:
             LOG.info('%d 端口当前无服务，直接启动', PORT)

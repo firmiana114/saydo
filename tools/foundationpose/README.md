@@ -183,6 +183,8 @@ ssh msi /home/pc/saydo/tools/foundationpose/restart_tracker.py
 
 - 停止前检查 8089 无执行中的机械臂任务、无夹持记录，且 8091 没有未结束的任务；任一不满足则拒绝并说明原因。读不到服务状态时同样拒绝。确认可以丢弃这些状态后加 `--force` 跳过检查。
 - 只向确认为 `live_tracker.py` 的进程发送 SIGTERM，30 秒内未退出则报错停止，不强制结束。8089 未运行时直接启动。
+- 同一时间只允许一次重启（`work/foundationpose_live/restart.lock` 互斥锁）；另一处正在重启时本次直接拒绝，避免两次重启互相停掉对方刚启动的进程。
+- 相机采集线程出错后不会自行重试：状态为 `camera_error` 时（例如相机被拔插过），确认相机已连接后运行本脚本恢复。
 - 启动参数固定为脚本顶部的 `TRACKER_ARGS`（局域网地址、眼在手相机序列号、后端令牌路径、默认试管模型、`--auto-start`），机器或设备变化时修改该处。需要临时追加参数时写在 `--` 之后，例如 `restart_tracker.py -- --detector ssdlite`。
 - 本次启动日志为 `work/foundationpose_live/restart_script_<时间>.log`；退出码 0 表示已监听且模型就绪，1 表示被拒绝或启动失败。
 
