@@ -1,5 +1,7 @@
 /* Run with node; no browser or hardware required. */
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const source = fs.readFileSync(__dirname + '/reorientation_viewer.js', 'utf8');
 const M = vm.runInNewContext(source + '\nReorientationMath');
 const basis = [
@@ -9,9 +11,11 @@ const basis = [
 ];
 
 function rigid(r) {
-  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) assert(
-      Math.abs(M.dot(r[i], r[j]) - (i === j ? 1 : 0)) < 1e-10
-  );
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      assert(Math.abs(M.dot(r[i], r[j]) - (i === j ? 1 : 0)) < 1e-10);
+    }
+  }
   assert(Math.abs(M.dot(M.cross(r[0], r[1]), r[2]) - 1) < 1e-10);
 }
 
@@ -49,7 +53,8 @@ for (let i = 0; i < 1500; i++) {
 }
 rigid(r);
 for (const angles of [[0, 0, 0], [23, -51, 137], [0, 90, 40], [0, -90, -30]]) {
-  const r = M.euler(...angles), back = M.euler(...M.angles(r));
+  const r = M.euler(...angles);
+  const back = M.euler(...M.angles(r));
   assert(
       r.every((row, i) => row.every((x, j) => Math.abs(x - back[i][j]) < 1e-8))
   );
@@ -60,7 +65,8 @@ console.log(
 
 const pivot = [.02, -.03, .04];
 for (const r of [M.identity(), M.euler(30, 90, 135)]) {
-  const o = M.objectOrigin(r, pivot), v = M.apply(r, pivot);
+  const o = M.objectOrigin(r, pivot);
+  const v = M.apply(r, pivot);
   assert(
       v.every((x, k) => Math.abs(x + o[k]) < 1e-12),
       'held TCP must remain at the fixed preview center'
@@ -69,9 +75,8 @@ for (const r of [M.identity(), M.euler(30, 90, 135)]) {
 console.log('Fixed-pivot preview checks passed.');
 
 // A tilted object's selected local axis must remain fixed in world space.
-const tilted = M.euler(32, 47, 81), near = (a, b) => a.every(
-    (v, i) => Math.abs(v - b[i]) < 1e-10
-);
+const tilted = M.euler(32, 47, 81);
+const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-10);
 for (const mode of ['x', 'y', 'z']) {
   const axis = [0, 0, 0];
   axis['xyz'.indexOf(mode)] = 1;
@@ -104,9 +109,8 @@ console.log(
     'Local-axis drag/keyboard and unchanged free-rotation checks passed.'
 );
 
-const adaptiveShift = [0, -.035355, .035355], adaptiveOrigin = M.objectOrigin(
-    tilted, pivot, adaptiveShift
-);
+const adaptiveShift = [0, -.035355, .035355];
+const adaptiveOrigin = M.objectOrigin(tilted, pivot, adaptiveShift);
 assert(
     near(
         M.apply(tilted, pivot).map((v, i) => v + adaptiveOrigin[i]),
@@ -124,9 +128,9 @@ assert(
     'rightward view drag must rotate the visible scene rightward'
 );
 let orbitBasis = basis;
-for (let i = 0; i < 1000; i++) orbitBasis = M.orbit(
-    orbitBasis, [73, 57], [90, 67], 146, 115
-);
+for (let i = 0; i < 1000; i++) {
+  orbitBasis = M.orbit(orbitBasis, [73, 57], [90, 67], 146, 115);
+}
 rigid(orbitBasis);
 console.log(
     'Camera orbit direction and accumulated basis stability checks passed.'
@@ -134,42 +138,45 @@ console.log(
 
 // Exercise actual panel event handlers with a lightweight viewer, retaining its
 // real orbit/reset methods. No browser GL or robot endpoint is used here.
-const elements = new Map(), posts = [];
+const elements = new Map();
+const posts = [];
 
 function element(id) {
-  if (!elements.has(id)) elements.set(id, {
-    value: '0',
-    disabled: false,
-    style: {},
-    textContent: '',
-    checked: true,
-    classList: {add() {}, remove() {}},
-    focus() {},
-    setAttribute() {},
-    checkValidity() {
-      return true;
-    },
-    addEventListener() {},
-    getBoundingClientRect() {
-      return {
-        left: 0,
-        top: 0,
-        width: id === '#reorientation-camera-control' ? 146 : 800,
-        height: id === '#reorientation-camera-control' ? 115 : 400,
-      };
-    },
-    clientWidth: 800,
-    clientHeight: 400,
-    setPointerCapture(id) {
-      this.pointer = id;
-    },
-    hasPointerCapture(id) {
-      return this.pointer === id;
-    },
-    releasePointerCapture() {
-      this.pointer = null;
-    },
-  });
+  if (!elements.has(id)) {
+    elements.set(id, {
+      value: '0',
+      disabled: false,
+      style: {},
+      textContent: '',
+      checked: true,
+      classList: {add() {}, remove() {}},
+      focus() {},
+      setAttribute() {},
+      checkValidity() {
+        return true;
+      },
+      addEventListener() {},
+      getBoundingClientRect() {
+        return {
+          left: 0,
+          top: 0,
+          width: id === '#reorientation-camera-control' ? 146 : 800,
+          height: id === '#reorientation-camera-control' ? 115 : 400,
+        };
+      },
+      clientWidth: 800,
+      clientHeight: 400,
+      setPointerCapture(id) {
+        this.pointer = id;
+      },
+      hasPointerCapture(id) {
+        return this.pointer === id;
+      },
+      releasePointerCapture() {
+        this.pointer = null;
+      },
+    });
+  }
   return elements.get(id);
 }
 

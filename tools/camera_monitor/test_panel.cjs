@@ -4,15 +4,17 @@ const vm = require('node:vm');
 const nodes = new Map();
 
 function node(id) {
-  if (!nodes.has(id)) nodes.set(id, {
-    style: {},
-    disabled: false,
-    textContent: '',
-    src: '',
-    removeAttribute(key) {
-      delete this[key];
-    },
-  });
+  if (!nodes.has(id)) {
+    nodes.set(id, {
+      style: {},
+      disabled: false,
+      textContent: '',
+      src: '',
+      removeAttribute(key) {
+        delete this[key];
+      },
+    });
+  }
   return nodes.get(id);
 }
 

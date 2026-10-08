@@ -2,25 +2,26 @@
 'use strict';
 const GraspEditorMath = {
   axisRotation(degrees) {
-    const a = degrees * Math.PI / 180, s = Math.sin(a), c = Math.cos(a);
+    const a = degrees * Math.PI / 180;
+    const s = Math.sin(a);
+    const c = Math.cos(a);
     return [[0, -c, s], [1, 0, 0], [0, s, c]];
   },
   add: (a, b) => a.map((v, i) => v + b[i]),
   sub: (a, b) => a.map((v, i) => v - b[i]),
   scale: (a, n) => a.map(v => v * n),
   segmentDistance(p, a, b) {
-    const d =
-        this.sub(b, a), n =
-        ReorientationMath.dot(d, d), t =
+    const d = this.sub(b, a);
+    const n = ReorientationMath.dot(d, d);
+    const t =
         n ?
         Math.max(0, Math.min(1, ReorientationMath.dot(this.sub(p, a), d) / n)) :
         0;
     return Math.hypot(...this.sub(p, this.add(a, this.scale(d, t))));
   },
   ray(pixel, width, height, basis, scale, pivot) {
-    const x =
-        (pixel[0] - width / 2) * 2 * scale / height, y =
-        (height / 2 - pixel[1]) * 2 * scale / height;
+    const x = (pixel[0] - width / 2) * 2 * scale / height;
+    const y = (height / 2 - pixel[1]) * 2 * scale / height;
     return {
       origin: this.add(
           pivot,
@@ -36,7 +37,9 @@ const GraspEditorMath = {
   },
   plane(ray, center, normal) {
     const d = ReorientationMath.dot(ray.direction, normal);
-    if (Math.abs(d) < .08) return null;
+    if (Math.abs(d) < .08) {
+      return null;
+    }
     return this.add(
         ray.origin,
         this.scale(
@@ -46,19 +49,28 @@ const GraspEditorMath = {
     );
   },
   surface(ray, vertices, faces) {
-    let nearest = Infinity, hit = null;
+    let nearest = Infinity;
+    let hit = null;
     const M = ReorientationMath;
     for (const face of faces) {
-      const a = vertices[face[0]], e1 = this.sub(
-          vertices[face[1]], a
-      ), e2 = this.sub(
-          vertices[face[2]], a
-      ), p = M.cross(ray.direction, e2), det = M.dot(e1, p);
-      if (Math.abs(det) < 1e-10) continue;
-      const t = this.sub(ray.origin, a), u = M.dot(t, p) / det;
-      if (u < 0 || u > 1) continue;
-      const q = M.cross(t, e1), v = M.dot(ray.direction, q) / det;
-      if (v < 0 || u + v > 1) continue;
+      const a = vertices[face[0]];
+      const e1 = this.sub(vertices[face[1]], a);
+      const e2 = this.sub(vertices[face[2]], a);
+      const p = M.cross(ray.direction, e2);
+      const det = M.dot(e1, p);
+      if (Math.abs(det) < 1e-10) {
+        continue;
+      }
+      const t = this.sub(ray.origin, a);
+      const u = M.dot(t, p) / det;
+      if (u < 0 || u > 1) {
+        continue;
+      }
+      const q = M.cross(t, e1);
+      const v = M.dot(ray.direction, q) / det;
+      if (v < 0 || u + v > 1) {
+        continue;
+      }
       const distance = M.dot(e2, q) / det;
       if (distance >= 0 && distance < nearest) {
         nearest = distance;
@@ -74,7 +86,8 @@ const GraspEditorMath = {
     return rotation.map(row => -row[1]);
   },
   rotate(rotation, axis, angle, frame = 'tcp') {
-    const M = ReorientationMath, vector = [0, 0, 0];
+    const M = ReorientationMath;
+    const vector = [0, 0, 0];
     vector[axis] = 1;
     const delta = M.axisAngle(vector, angle);
     return frame === 'object' ?
@@ -82,12 +95,18 @@ const GraspEditorMath = {
         M.multiply(rotation, delta);
   },
   rotationDrag(rotation, axis, startRay, endRay, point, frame = 'tcp') {
-    const M = ReorientationMath, n = this.rotationFrame(rotation, frame).map(
-        row => row[axis]
-    ), a = this.plane(startRay, point, n), b = this.plane(endRay, point, n);
-    if (!a || !b) return null;
-    const x = this.sub(a, point), y = this.sub(b, point);
-    if (Math.hypot(...x) < 1e-6 || Math.hypot(...y) < 1e-6) return null;
+    const M = ReorientationMath;
+    const n = this.rotationFrame(rotation, frame).map(row => row[axis]);
+    const a = this.plane(startRay, point, n);
+    const b = this.plane(endRay, point, n);
+    if (!a || !b) {
+      return null;
+    }
+    const x = this.sub(a, point);
+    const y = this.sub(b, point);
+    if (Math.hypot(...x) < 1e-6 || Math.hypot(...y) < 1e-6) {
+      return null;
+    }
     return Math.atan2(M.dot(n, M.cross(x, y)), M.dot(x, y));
   },
 };
@@ -114,16 +133,21 @@ class GraspEditorViewer extends ReorientationViewer {
   }
 
   drawOverlay(width, height, offset, project) {
-    const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(
-        ns, 'svg'
-    ), M = ReorientationMath, V = GraspEditorMath;
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    const M = ReorientationMath;
+    const V = GraspEditorMath;
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
     const add = (tag, attrs, text) => {
       const e = document.createElementNS(ns, tag);
-      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-      if (text) e.textContent = text;
+      for (const [k, v] of Object.entries(attrs)) {
+        e.setAttribute(k, v);
+      }
+      if (text) {
+        e.textContent = text;
+      }
       svg.appendChild(e);
       return e;
     };
@@ -168,9 +192,8 @@ class GraspEditorViewer extends ReorientationViewer {
           }
       );
       if (!dashed) {
-        const angle = Math.atan2(
-            b[1] - a[1], b[0] - a[0]
-        ), ends = [-.5, .5].map(
+        const angle = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        const ends = [-.5, .5].map(
             d =>
             [b[0] - 10 * Math.cos(angle + d), b[1] - 10 * Math.sin(angle + d)]
         );
@@ -187,15 +210,13 @@ class GraspEditorViewer extends ReorientationViewer {
     };
     this.handles = [];
     if (this.grasp) {
-      const point =
-          this.grasp.grasp_point_object_m, R =
-          this.grasp.object_R_tcp, origin =
-          project(V.add(point, offset)), length =
-          Math.max(.025, Math.min(.07, this.radius * .7));
+      const point = this.grasp.grasp_point_object_m;
+      const R = this.grasp.object_R_tcp;
+      const origin = project(V.add(point, offset));
+      const length = Math.max(.025, Math.min(.07, this.radius * .7));
       if (this.tcpOffset?.some(v => Math.abs(v) > 1e-9)) {
-        const tcpPoint = V.sub(
-            point, R.map(row => M.dot(row, this.tcpOffset))
-        ), tcpScreen = project(V.add(tcpPoint, offset));
+        const tcpPoint = V.sub(point, R.map(row => M.dot(row, this.tcpOffset)));
+        const tcpScreen = project(V.add(tcpPoint, offset));
         arrow(tcpScreen, origin, '#eec476', true);
         add(
             'circle',
@@ -203,37 +224,33 @@ class GraspEditorViewer extends ReorientationViewer {
         );
         label('grip_tcp 原点', [tcpScreen[0] + 8, tcpScreen[1] - 8], '#eec476');
       }
-      const strokes =
-          [], labels =
-          [], frame =
-          this.editMode === 'rotate-object' ? 'object' : 'tcp', ringRotation =
-          V.rotationFrame(R, frame);
+      const strokes = [];
+      const labels = [];
+      const frame = this.editMode === 'rotate-object' ? 'object' : 'tcp';
+      const ringRotation = V.rotationFrame(R, frame);
       for (let axis = 0; axis < 3; axis++) {
-        const vector = ringRotation.map(
-            row => row[axis]
-        ), cue = AxisDepthCue.describe(vector, this.basis[2]), end = project(
+        const vector = ringRotation.map(row => row[axis]);
+        const cue = AxisDepthCue.describe(vector, this.basis[2]);
+        const end = project(
             V.add(V.add(point, offset), V.scale(vector, length))
         );
         if (this.editMode === 'rotate' || this.editMode === 'rotate-object') {
-          const u = ringRotation.map(
-              row => row[(axis + 1) % 3]
-          ), v = ringRotation.map(
-              row => row[(axis + 2) % 3]
-          ), ring = [], vectors = [];
+          const u = ringRotation.map(row => row[(axis + 1) % 3]);
+          const v = ringRotation.map(row => row[(axis + 2) % 3]);
+          const ring = [];
+          const vectors = [];
           for (let k = 0; k <= 64; k++) {
-            const theta =
-                k * Math.PI / 32, relative =
-                V.add(
-                    V.scale(u, Math.cos(theta) * length),
-                    V.scale(v, Math.sin(theta) * length)
-                );
+            const theta = k * Math.PI / 32;
+            const relative = V.add(
+                V.scale(u, Math.cos(theta) * length),
+                V.scale(v, Math.sin(theta) * length)
+            );
             vectors.push(relative);
             ring.push(project(V.add(V.add(point, offset), relative)));
           }
           for (let k = 0; k < 64; k++) {
-            const middle =
-                V.scale(V.add(vectors[k], vectors[k + 1]), .5), depth =
-                M.dot(middle, this.basis[2]) / length;
+            const middle = V.scale(V.add(vectors[k], vectors[k + 1]), .5);
+            const depth = M.dot(middle, this.basis[2]) / length;
             const style = AxisDepthCue.describe(middle, this.basis[2]);
             strokes.push({
               a: ring[k],
@@ -280,7 +297,9 @@ class GraspEditorViewer extends ReorientationViewer {
       for (const stroke of strokes.sort((a, b) => a.depth - b.depth)) {
         if (
             stroke.ring && stroke.cue.kind === 'back' && stroke.segmentIndex % 2
-        ) continue;
+        ) {
+          continue;
+        }
         if (stroke.ring) {
           add(
               'line',
@@ -309,14 +328,18 @@ class GraspEditorViewer extends ReorientationViewer {
                 'data-depth': stroke.cue.kind,
               }
           );
-        } else AxisDepthCue.segment(
-            add, stroke.a, stroke.b, stroke.color, stroke.cue
-        );
+        } else {
+          AxisDepthCue.segment(
+              add, stroke.a, stroke.b, stroke.color, stroke.cue
+          );
+        }
       }
-      for (const item of labels) label(item.text, item.p, item.color);
-      const top = V.gripperUp(R), topCue = AxisDepthCue.describe(
-          top, this.basis[2]
-      ), topEnd = project(
+      for (const item of labels) {
+        label(item.text, item.p, item.color);
+      }
+      const top = V.gripperUp(R);
+      const topCue = AxisDepthCue.describe(top, this.basis[2]);
+      const topEnd = project(
           V.add(V.add(point, offset), V.scale(top, length * 1.3))
       );
       AxisDepthCue.segment(add, origin, topEnd, '#d9abff', topCue);
@@ -334,9 +357,8 @@ class GraspEditorViewer extends ReorientationViewer {
           '#d9abff'
       );
       topLabel.setAttribute('data-gripper-up', 'tcp-negative-y');
-      const pre = V.sub(
-          point, V.scale(R.map(row => row[2]), this.distance)
-      ), prePixel = project(V.add(pre, offset));
+      const pre = V.sub(point, V.scale(R.map(row => row[2]), this.distance));
+      const prePixel = project(V.add(pre, offset));
       arrow(prePixel, origin, '#ffd27c', true);
       add(
           'circle',
@@ -363,12 +385,11 @@ class GraspEditorViewer extends ReorientationViewer {
       );
       label('预抓点 → 工具 +Z', [prePixel[0] + 8, prePixel[1] - 8], '#ffd27c');
     }
-    const small =
-        width < 450, w =
-        small ? 112 : 146, h =
-        small ? 98 : 115, anchor =
-        [small ? 62 : 80, height - (small ? 54 : 65)], length =
-        small ? 30 : 42;
+    const small = width < 450;
+    const w = small ? 112 : 146;
+    const h = small ? 98 : 115;
+    const anchor = [small ? 62 : 80, height - (small ? 54 : 65)];
+    const length = small ? 30 : 42;
     if (this.viewControl) {
       this.viewControl.style.width = w + 'px';
       this.viewControl.style.height = h + 'px';
@@ -447,7 +468,9 @@ class GraspEditorPanel {
     }
     this.mode = q('mode');
     this.mode.onchange = () => this.redraw();
-    for (const field of this.fields) field.oninput = () => this.readFields();
+    for (const field of this.fields) {
+      field.oninput = () => this.readFields();
+    }
     this.list.onchange = () => this.selectEntry(this.list.value);
     q('new').onclick = () => this.newEntry();
     q('save').onclick = () => this.save();
@@ -457,7 +480,9 @@ class GraspEditorPanel {
     q('use').onclick = () => this.mutate('select', {selection_mode: 'manual'});
     q('auto').onclick = () => this.mutate('select', {selection_mode: 'auto'});
     q('preview').onclick = async() => {
-      if (this.pending || this.locked || this.dirty) return;
+      if (this.pending || this.locked || this.dirty) {
+        return;
+      }
       this.pending = true;
       try {
         await this.send('/api/grasp/preview');
@@ -473,7 +498,9 @@ class GraspEditorPanel {
   }
 
   async load(id) {
-    if (!id) return;
+    if (!id) {
+      return;
+    }
     const generation = ++this.generation;
     this.objectId = id;
     this.loading = true;
@@ -482,14 +509,18 @@ class GraspEditorPanel {
       const fetchJSON = async path => {
         const r = await fetch(path);
         const data = await r.json();
-        if (!r.ok) throw Error(data.error);
+        if (!r.ok) {
+          throw Error(data.error);
+        }
         return data;
       };
       const [data, model] = await Promise.all([
         fetchJSON('/api/grasp/profiles?object_id=' + encodeURIComponent(id)),
         fetchJSON('/api/grasp/editor-model?object_id=' + encodeURIComponent(id)),
       ]);
-      if (generation !== this.generation) return;
+      if (generation !== this.generation) {
+        return;
+      }
       this.data = data;
       this.changedAt = data.changed_at;
       this.model = model;
@@ -498,16 +529,20 @@ class GraspEditorPanel {
       this.populate();
       this.q('full-rotation').hidden = this.fiveD;
       this.q('axis-controls').hidden = !this.fiveD;
-      if (data.grasps.length) this.selectEntry(
-          data.selected_id || data.grasps[0].id
-      ); else this.newEntry();
+      if (data.grasps.length) {
+        this.selectEntry(data.selected_id || data.grasps[0].id);
+      } else {
+        this.newEntry();
+      }
     } catch (error) {
       if (generation === this.generation) {
         this.data = null;
         this.feedback.textContent = error.message;
       }
     } finally {
-      if (generation === this.generation) this.loading = false;
+      if (generation === this.generation) {
+        this.loading = false;
+      }
     }
   }
 
@@ -543,18 +578,21 @@ class GraspEditorPanel {
         );
     this.q('info').textContent =
         this.data.object_name + ' · 坐标与角度均相对于物品模型';
-    if (
-        this.fiveD
-    ) this.q(
-        'info'
-    ).textContent +=
-        ' · 5D：Z轴夹角与轴上抓取中心；物品Z轴距水平面≤10°时强制竖直向下抓取，覆盖接近夹角；否则自由绕轴选方位';
+    if (this.fiveD) {
+      this.q(
+          'info'
+      ).textContent +=
+          ' · 5D：Z轴夹角与轴上抓取中心；物品Z轴距水平面≤10°时强制竖直向下抓取，覆盖接近夹角；否则自由绕轴选方位';
+    }
   }
 
   newEntry() {
-    if (!this.model || !this.data) return;
+    if (!this.model || !this.data) {
+      return;
+    }
     this.activeId = null;
-    const low = this.model.point_min_m, high = this.model.point_max_m;
+    const low = this.model.point_min_m;
+    const high = this.model.point_max_m;
     this.draft = {
       name: '新夹法',
       enabled: true,
@@ -587,7 +625,9 @@ class GraspEditorPanel {
 
   selectEntry(id) {
     const entry = this.data?.grasps.find(g => g.id === id);
-    if (!entry) return;
+    if (!entry) {
+      return;
+    }
     this.activeId = id;
     this.list.value = id;
     this.draft = JSON.parse(JSON.stringify(entry));
@@ -614,7 +654,9 @@ class GraspEditorPanel {
     ReorientationMath.angles(d.profile.object_R_tcp).forEach(
         (v, i) => this.angleInputs[i].value = v.toFixed(2)
     );
-    if (this.fiveD) this.approachAngle.value = d.profile.approach_angle_deg;
+    if (this.fiveD) {
+      this.approachAngle.value = d.profile.approach_angle_deg;
+    }
     for (
         const [id, key, factor] of [
           ['distance', 'pregrasp_distance_m', 1000],
@@ -644,7 +686,9 @@ class GraspEditorPanel {
 
   readFields() {
     this.dirty = true;
-    if (!this.draft) return;
+    if (!this.draft) {
+      return;
+    }
     try {
       this.draft = this.formValue();
       this.feedback.textContent = '草稿未保存；抓取仍使用已保存的夹法。';
@@ -667,19 +711,25 @@ class GraspEditorPanel {
         this.fields.filter(
             e => active(e) && e.type !== 'checkbox' && e.value !== ''
         ).some(e => !e.checkValidity())
-    ) throw Error('请检查名称、坐标、角度和参数范围。');
+    ) {
+      throw Error('请检查名称、坐标、角度和参数范围。');
+    }
     if (
         [
           ...this.pointInputs, ...this.angleInputs, this.q('priority')
         ].filter(active).some(
             e => e.value.trim() === '' || !Number.isFinite(Number(e.value))
         )
-    ) throw Error('坐标、角度和优先级不能为空。');
+    ) {
+      throw Error('坐标、角度和优先级不能为空。');
+    }
     if (
         [this.q('opening'), this.q('force')].some(
             e => e.value.trim() === '' || !Number.isInteger(Number(e.value))
         )
-    ) throw Error('夹爪力度和抓取张开位置必须为整数且不能为空。');
+    ) {
+      throw Error('夹爪力度和抓取张开位置必须为整数且不能为空。');
+    }
     const overrides = {};
     for (
         const [id, key, factor] of [
@@ -688,8 +738,11 @@ class GraspEditorPanel {
           ['opening', 'open_position', 1],
           ['force', 'force_target_raw', 1],
         ]
-    ) if (this.q(id).value.trim() !== '') overrides[key] =
-        Number(this.q(id).value) * factor;
+    ) {
+      if (this.q(id).value.trim() !== '') {
+        overrides[key] = Number(this.q(id).value) * factor;
+      }
+    }
     if (
         this.offsetInputs.some(
             e =>
@@ -697,11 +750,12 @@ class GraspEditorPanel {
             !Number.isFinite(Number(e.value)) ||
             Math.abs(Number(e.value)) > 300
         )
-    ) throw Error('TCP偏移X/Y/Z须填写−300到300毫米内的数值。');
+    ) {
+      throw Error('TCP偏移X/Y/Z须填写−300到300毫米内的数值。');
+    }
     overrides.tcp_offset_m = this.offsetInputs.map(e => Number(e.value) / 1000);
-    const old =
-        this.draft?.profile, angles =
-        old ? ReorientationMath.angles(old.object_R_tcp) : [];
+    const old = this.draft?.profile;
+    const angles = old ? ReorientationMath.angles(old.object_R_tcp) : [];
     const point =
         old &&
             this.pointInputs.every(
@@ -723,7 +777,9 @@ class GraspEditorPanel {
           !Number.isFinite(value) ||
           value < 0 ||
           value > 180
-      ) throw Error('Z轴夹角须为0–180度');
+      ) {
+        throw Error('Z轴夹角须为0–180度');
+      }
       profile = {
         grasp_point_object_m: [0, 0, point[2]],
         approach_angle_deg: value,
@@ -740,17 +796,21 @@ class GraspEditorPanel {
   }
 
   redraw() {
-    if (this.draft && this.viewer) this.viewer.setGrasp(
-        this.draft.profile,
-        this.draft.overrides?.pregrasp_distance_m ??
-            this.data.defaults.pregrasp_distance_m,
-        this.mode.value,
-        this.draft.overrides?.tcp_offset_m ?? [0, 0, 0]
-    );
+    if (this.draft && this.viewer) {
+      this.viewer.setGrasp(
+          this.draft.profile,
+          this.draft.overrides?.pregrasp_distance_m ??
+              this.data.defaults.pregrasp_distance_m,
+          this.mode.value,
+          this.draft.overrides?.tcp_offset_m ?? [0, 0, 0]
+      );
+    }
   }
 
   async save() {
-    if (this.pending || this.locked || !this.data) return;
+    if (this.pending || this.locked || !this.data) {
+      return;
+    }
     let grasp;
     try {
       grasp = this.formValue();
@@ -762,7 +822,9 @@ class GraspEditorPanel {
   }
 
   async mutate(action, extra = {}) {
-    if (this.pending || this.locked || !this.data) return;
+    if (this.pending || this.locked || !this.data) {
+      return;
+    }
     if (this.dirty && ['duplicate', 'select'].includes(action)) {
       this.feedback.textContent =
           '请先保存草稿或重新载入，再复制或更改抓取选择。';
@@ -790,7 +852,11 @@ class GraspEditorPanel {
           action === 'delete' ?
           (data.selected_id || data.grasps[0]?.id) :
           (data.saved_id || this.activeId);
-      if (id) this.selectEntry(id); else this.newEntry();
+      if (id) {
+        this.selectEntry(id);
+      } else {
+        this.newEntry();
+      }
       this.feedback.textContent =
           '已保存。' +
           (
@@ -806,8 +872,11 @@ class GraspEditorPanel {
   }
 
   update(state, otherPending = false) {
-    if (!this.viewer) return;
-    const id = state.object_id, g = state.grasp || {};
+    if (!this.viewer) {
+      return;
+    }
+    const id = state.object_id;
+    const g = state.grasp || {};
     if (id && id !== this.objectId) {
       this.changedAt = g.grasp_library_changed_at;
       this.load(id);
@@ -838,29 +907,32 @@ class GraspEditorPanel {
     }
     if (this.data) {
       const oldDistance = this.data.defaults.pregrasp_distance_m;
-      if (
-          g.pregrasp_distance_m != null
-      ) this.data.defaults.pregrasp_distance_m = g.pregrasp_distance_m;
+      if (g.pregrasp_distance_m != null) {
+        this.data.defaults.pregrasp_distance_m = g.pregrasp_distance_m;
+      }
       this.q('distance').placeholder =
           '沿用 ' + this.data.defaults.pregrasp_distance_m * 1000;
-      if (oldDistance !== this.data.defaults.pregrasp_distance_m) this.redraw();
+      if (oldDistance !== this.data.defaults.pregrasp_distance_m) {
+        this.redraw();
+      }
     }
     this.locked =
         !!g.busy || otherPending || this.pending || this.loading || !this.data;
-    for (
-        const field of [...this.fields, this.list, this.mode]
-    ) field.disabled = this.locked;
-    if (this.approachAngle) this.approachAngle.disabled =
-        this.locked || !this.fiveD;
+    for (const field of [...this.fields, this.list, this.mode]) {
+      field.disabled = this.locked;
+    }
+    if (this.approachAngle) {
+      this.approachAngle.disabled = this.locked || !this.fiveD;
+    }
     if (this.fiveD) {
       this.pointInputs[0].disabled = true;
       this.pointInputs[1].disabled = true;
       this.angleInputs.forEach(e => e.disabled = true);
       this.mode.disabled = true;
     }
-    for (
-        const id of ['new', 'save', 'reload']
-    ) this.q(id).disabled = this.locked;
+    for (const id of ['new', 'save', 'reload']) {
+      this.q(id).disabled = this.locked;
+    }
     this.q('auto').disabled = this.locked || this.dirty;
     this.q('delete').disabled = this.locked || !this.activeId;
     this.q('duplicate').disabled = this.locked || !this.activeId || this.dirty;
@@ -878,26 +950,27 @@ class GraspEditorPanel {
         !state.quality?.good;
     this.q('camera').disabled = !this.viewer.model;
     const plan = g.plan;
-    if (plan?.grasp_candidates) this.q('results').textContent =
-        '本次选择：' +
-        plan.grasp_name +
-        '\n' +
-        plan.grasp_candidates.map(
-            r => r.name + '：' + (r.passed ? '航点检查通过' : r.reason)
-        ).join('\n'); else if (
-            g.operation === 'grasp' && g.error
-        ) this.q('results').textContent =
-        g.error;
+    if (plan?.grasp_candidates) {
+      this.q('results').textContent =
+          '本次选择：' +
+          plan.grasp_name +
+          '\n' +
+          plan.grasp_candidates.map(
+              r => r.name + '：' + (r.passed ? '航点检查通过' : r.reason)
+          ).join('\n');
+    } else if (g.operation === 'grasp' && g.error) {
+      this.q('results').textContent = g.error;
+    }
   }
 
   bindGestures() {
-    const viewer =
-        this.viewer, M =
-        ReorientationMath, V =
-        GraspEditorMath, canvas =
-        viewer.canvas, camera =
-        this.q('camera');
-    let drag = null, orbit = null;
+    const viewer = this.viewer;
+    const M = ReorientationMath;
+    const V = GraspEditorMath;
+    const canvas = viewer.canvas;
+    const camera = this.q('camera');
+    let drag = null;
+    let orbit = null;
     const point = (el, e) => {
       const r = el.getBoundingClientRect();
       return [e.clientX - r.left, e.clientY - r.top];
@@ -913,7 +986,9 @@ class GraspEditorPanel {
             '5D夹法请用Z高度和夹角输入；左下角可旋转观察视角。';
         return;
       }
-      if (this.locked || !this.draft || e.button !== 0 || drag || orbit) return;
+      if (this.locked || !this.draft || e.button !== 0 || drag || orbit) {
+        return;
+      }
       e.preventDefault();
       const p = point(canvas, e);
       if (this.mode.value === 'pick') {
@@ -923,7 +998,9 @@ class GraspEditorPanel {
         if (hit) {
           this.draft.profile.grasp_point_object_m = hit;
           changed();
-        } else this.feedback.textContent = '没有点中模型表面。';
+        } else {
+          this.feedback.textContent = '没有点中模型表面。';
+        }
         return;
       }
       const choices = viewer.handles.map(
@@ -960,12 +1037,15 @@ class GraspEditorPanel {
       canvas.setPointerCapture(e.pointerId);
     };
     canvas.onpointermove = e => {
-      if (!drag || e.pointerId !== drag.id) return;
+      if (!drag || e.pointerId !== drag.id) {
+        return;
+      }
       if (this.locked) {
         drag = null;
         return;
       }
-      const p = point(canvas, e), factor = drag.fine ? .2 : 1;
+      const p = point(canvas, e);
+      const factor = drag.fine ? .2 : 1;
       if (drag.h.ring) {
         const angle = V.rotationDrag(
             drag.profile.object_R_tcp,
@@ -983,8 +1063,8 @@ class GraspEditorPanel {
             drag.profile.object_R_tcp, drag.h.axis, angle * factor, drag.h.frame
         );
       } else {
-        const axis =
-            V.sub(drag.h.b, drag.h.a), delta =
+        const axis = V.sub(drag.h.b, drag.h.a);
+        const delta =
             M.dot(V.sub(p, drag.p), axis) /
             M.dot(axis, axis) *
             drag.h.length *
@@ -996,11 +1076,15 @@ class GraspEditorPanel {
       changed();
     };
     canvas.onpointerup = canvas.onpointercancel = e => {
-      if (drag?.id === e.pointerId) drag = null;
+      if (drag?.id === e.pointerId) {
+        drag = null;
+      }
     };
     canvas.onlostpointercapture = () => drag = null;
     camera.onpointerdown = e => {
-      if (!viewer.model || e.button !== 0 || orbit || drag) return;
+      if (!viewer.model || e.button !== 0 || orbit || drag) {
+        return;
+      }
       e.preventDefault();
       const r = camera.getBoundingClientRect();
       orbit = {
@@ -1014,12 +1098,16 @@ class GraspEditorPanel {
       camera.setPointerCapture(e.pointerId);
     };
     camera.onpointermove = e => {
-      if (orbit?.id === e.pointerId) viewer.orbitView(
-          orbit.basis, orbit.p, point(camera, e), orbit.w, orbit.h, orbit.fine
-      );
+      if (orbit?.id === e.pointerId) {
+        viewer.orbitView(
+            orbit.basis, orbit.p, point(camera, e), orbit.w, orbit.h, orbit.fine
+        );
+      }
     };
     camera.onpointerup = camera.onpointercancel = e => {
-      if (orbit?.id === e.pointerId) orbit = null;
+      if (orbit?.id === e.pointerId) {
+        orbit = null;
+      }
     };
     camera.onlostpointercapture = () => orbit = null;
     camera.ondblclick = () => {

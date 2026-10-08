@@ -21,7 +21,9 @@ function clearFeed(id, title = '预览已释放') {
 }
 
 function start(id) {
-  if (cameras[id].active) return;
+  if (cameras[id].active) {
+    return;
+  }
   cameras[id].active = true;
   cameras[id].startAt = Date.now();
   $(id + '-error').textContent = '';
@@ -41,7 +43,9 @@ async function stop(id) {
     const r = await fetch(
         id ? '/api/cameras/' + id + '/pause' : '/api/pause', {method: 'POST'}
     );
-    if (!r.ok) throw Error(r.status);
+    if (!r.ok) {
+      throw Error(r.status);
+    }
     await status();
   } catch (e) {
     $('service-error').textContent = '释放请求未确认，请检查服务连接。';
@@ -65,12 +69,16 @@ $('stop-all').onclick = () => stop();
 async function status() {
   try {
     const r = await fetch('/api/status', {cache: 'no-store'});
-    if (!r.ok) throw Error(r.status);
+    if (!r.ok) {
+      throw Error(r.status);
+    }
     const data = await r.json();
     errors = 0;
     $('service-error').textContent = '';
     for (const [id, s] of Object.entries(data.cameras)) {
-      if (!cameras[id]) continue;
+      if (!cameras[id]) {
+        continue;
+      }
       $(id + '-state').textContent = labels[s.state] || s.state;
       $(id + '-dot').className = 'dot' + (s.state === 'streaming' ? ' on' : '');
       $(id + '-resolution').textContent = s.width + ' × ' + s.height;

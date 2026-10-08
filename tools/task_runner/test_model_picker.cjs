@@ -1,4 +1,6 @@
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 
 class Select {
   constructor() {
@@ -17,7 +19,8 @@ class Select {
   }
 }
 
-const window = {}, document = {createElement: () => ({})};
+const window = {};
+const document = {createElement: () => ({})};
 vm.runInNewContext(
     fs.readFileSync(__dirname + '/model_picker.js', 'utf8'), {window, document}
 );
@@ -37,7 +40,8 @@ const storage = {
     stored = v;
   },
 };
-const model = new Select(), effort = new Select();
+const model = new Select();
+const effort = new Select();
 let chosen;
 const picker = new ModelPicker(model, effort, storage, value => {
   chosen = value;

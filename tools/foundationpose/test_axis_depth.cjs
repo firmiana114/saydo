@@ -1,10 +1,11 @@
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const source = fs.readFileSync(__dirname + '/reorientation_viewer.js', 'utf8');
 const ctx = vm.createContext({});
 vm.runInContext(source, ctx);
-const M = vm.runInContext(
-    'ReorientationMath', ctx
-), C = vm.runInContext('AxisDepthCue', ctx);
+const M = vm.runInContext('ReorientationMath', ctx);
+const C = vm.runInContext('AxisDepthCue', ctx);
 assert.equal(C.describe([0, 0, 1], [0, 0, 1]).kind, 'front');
 assert.equal(C.describe([0, 0, -1], [0, 0, 1]).kind, 'back');
 assert.equal(C.describe([1, 0, 0], [0, 0, 1]).kind, 'plane');
@@ -46,11 +47,15 @@ for (const kind of ['front', 'back', 'plane']) {
   assert.equal(
       line.attrs['stroke-dasharray'], kind === 'back' ? '5 4' : 'none'
   );
-  if (kind === 'back') assert(line.attrs.opacity < .5);
-  if (kind !== 'plane') assert(
-      rows.some(row => row.tag === 'circle'),
-      'out/in glyph must remain visible at the axis tip'
-  );
+  if (kind === 'back') {
+    assert(line.attrs.opacity < .5);
+  }
+  if (kind !== 'plane') {
+    assert(
+        rows.some(row => row.tag === 'circle'),
+        'out/in glyph must remain visible at the axis tip'
+    );
+  }
 }
 const rows = [];
 C.segment(

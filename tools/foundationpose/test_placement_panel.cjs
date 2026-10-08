@@ -1,5 +1,7 @@
 /* Fake DOM exercises the actual panel's mm conversion, gating and request payloads. */
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const elements = new Map();
 const context = {
   clearRect() {},
@@ -12,27 +14,33 @@ const context = {
 };
 
 function element(selector) {
-  if (!elements.has(selector)) elements.set(selector, {
-    _value: '',
-    get value() {
-      return this._value;
-    },
-    set value(v) {
-      this._value = String(v);
-    },
-    textContent: '',
-    disabled: false,
-    width: 650,
-    height: 280,
-    checkValidity() {
-      const n = Number(this.value);
-      return Number.isFinite(n) &&
-          (selector === '#place-gap' ? n >= 0 && n <= 60 : Math.abs(n) <= 2000);
-    },
-    getContext() {
-      return context;
-    },
-  });
+  if (!elements.has(selector)) {
+    elements.set(selector, {
+      _value: '',
+      get value() {
+        return this._value;
+      },
+      set value(v) {
+        this._value = String(v);
+      },
+      textContent: '',
+      disabled: false,
+      width: 650,
+      height: 280,
+      checkValidity() {
+        const n = Number(this.value);
+        return Number.isFinite(n) &&
+            (
+                selector === '#place-gap' ?
+                n >= 0 && n <= 60 :
+                Math.abs(n) <= 2000
+            );
+      },
+      getContext() {
+        return context;
+      },
+    });
+  }
   return elements.get(selector);
 }
 

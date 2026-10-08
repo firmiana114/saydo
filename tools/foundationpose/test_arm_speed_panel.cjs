@@ -1,10 +1,12 @@
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const fields = new Map();
 const root = {
   querySelector: id => {
-    if (!fields.has(id)) fields.set(
-        id, {value: '', disabled: false, textContent: ''}
-    );
+    if (!fields.has(id)) {
+      fields.set(id, {value: '', disabled: false, textContent: ''});
+    }
     return fields.get(id);
   },
 };
@@ -13,10 +15,13 @@ vm.runInContext(
     fs.readFileSync(__dirname + '/arm_speed_panel.js', 'utf8'), context
 );
 const Panel = vm.runInContext('ArmSpeedPanel', context);
-let posts = [], fail = false;
+let posts = [];
+let fail = false;
 const panel = new Panel(async(path, body) => {
   posts.push({path, body});
-  if (fail) throw Error('配置已变化');
+  if (fail) {
+    throw Error('配置已变化');
+  }
   return {value: body.value, revision: 'r2', message: '已保存', error: null};
 }, root);
 const state = (value = 25, revision = 'r1', busy = false) => ({

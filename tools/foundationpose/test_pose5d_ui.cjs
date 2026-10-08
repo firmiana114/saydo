@@ -1,23 +1,27 @@
 'use strict';
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const elements = new Map();
 const element = id => {
-  if (!elements.has(id)) elements.set(id, {
-    value: '0',
-    type: 'number',
-    checked: true,
-    disabled: false,
-    style: {},
-    classList: {add() {}, remove() {}},
-    checkValidity() {
-      return this.value !== '' && Number.isFinite(Number(this.value));
-    },
-    addEventListener() {},
-    setAttribute() {},
-    getBoundingClientRect() {
-      return {left: 0, top: 0, width: 600, height: 400};
-    },
-  });
+  if (!elements.has(id)) {
+    elements.set(id, {
+      value: '0',
+      type: 'number',
+      checked: true,
+      disabled: false,
+      style: {},
+      classList: {add() {}, remove() {}},
+      checkValidity() {
+        return this.value !== '' && Number.isFinite(Number(this.value));
+      },
+      addEventListener() {},
+      setAttribute() {},
+      getBoundingClientRect() {
+        return {left: 0, top: 0, width: 600, height: 400};
+      },
+    });
+  }
   return elements.get(id);
 };
 const context = vm.createContext({
@@ -65,9 +69,9 @@ assert(
     ).every((v, i) => Math.abs(v - axis[i]) < 1e-10),
     'free spin must not change the directed-axis goal'
 );
-const Editor = vm.runInContext(
-    'GraspEditorPanel', context
-), editor = Object.create(Editor.prototype), fields = new Map();
+const Editor = vm.runInContext('GraspEditorPanel', context);
+const editor = Object.create(Editor.prototype);
+const fields = new Map();
 const field = (id, value) => {
   const f = {
     value,

@@ -1,4 +1,6 @@
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const source = fs.readFileSync(__dirname + '/app.js', 'utf8');
 const block = source.slice(
     source.indexOf('function renderHistory('),

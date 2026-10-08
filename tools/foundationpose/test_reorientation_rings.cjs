@@ -1,47 +1,48 @@
 /* Ring geometry and actual panel pointer handlers, without GL or hardware. */
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
-const source = fs.readFileSync(
-    __dirname + '/reorientation_viewer.js', 'utf8'
-), context = vm.createContext({console});
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+const source = fs.readFileSync(__dirname + '/reorientation_viewer.js', 'utf8');
+const context = vm.createContext({console});
 vm.runInContext(source, context);
-const M = vm.runInContext('ReorientationMath', context), G = vm.runInContext(
-    'ReorientationRings', context
-), Viewer = vm.runInContext('ReorientationViewer', context);
-const plain = x => JSON.parse(JSON.stringify(x)), near = (a, b) => assert(
+const M = vm.runInContext('ReorientationMath', context);
+const G = vm.runInContext('ReorientationRings', context);
+const Viewer = vm.runInContext('ReorientationViewer', context);
+const plain = x => JSON.parse(JSON.stringify(x));
+const near = (a, b) => assert(
     a.flat().every((v, i) => Math.abs(v - b.flat()[i]) < 1e-9)
 );
-const tilted = M.euler(31, -24, 67), center = [
-  .03, -.02, .01
-], pivot = [.07, .02, -.04];
-const add = (a, b) => a.map(
-    (v, i) => v + b[i]
-), scale = (a, n) => a.map(v => v * n);
-for (
-    const mode of ['object-ring', 'base-ring']
-) for (let axis = 0; axis < 3; axis++) {
-  const frame = G.basis(tilted, mode), normal = frame.map(
-      row => row[axis]
-  ), u = frame.map(
-      row => row[(axis + 1) % 3]
-  ), v = frame.map(row => row[(axis + 2) % 3]);
-  const ray = p => ({
-    origin: add(center, add(p, scale(normal, 2))), direction: scale(normal, -1)
-  });
-  near([G.angle(ray(u), ray(v), center, normal)], [Math.PI / 2]);
-  const unit = [0, 0, 0];
-  unit[axis] = 1;
-  const delta = M.axisAngle(unit, Math.PI / 2), result = M.rotate(
-      tilted, delta, mode
-  );
-  near(
-      result,
-      mode === 'base-ring' ?
-          M.multiply(delta, tilted) :
-          M.multiply(tilted, delta)
-  );
-  near(
-      add(M.apply(result, pivot), M.objectOrigin(result, pivot, center)), center
-  );
+const tilted = M.euler(31, -24, 67);
+const center = [.03, -.02, .01];
+const pivot = [.07, .02, -.04];
+const add = (a, b) => a.map((v, i) => v + b[i]);
+const scale = (a, n) => a.map(v => v * n);
+for (const mode of ['object-ring', 'base-ring']) {
+  for (let axis = 0; axis < 3; axis++) {
+    const frame = G.basis(tilted, mode);
+    const normal = frame.map(row => row[axis]);
+    const u = frame.map(row => row[(axis + 1) % 3]);
+    const v = frame.map(row => row[(axis + 2) % 3]);
+    const ray = p => ({
+      origin: add(center, add(p, scale(normal, 2))),
+      direction: scale(normal, -1),
+    });
+    near([G.angle(ray(u), ray(v), center, normal)], [Math.PI / 2]);
+    const unit = [0, 0, 0];
+    unit[axis] = 1;
+    const delta = M.axisAngle(unit, Math.PI / 2);
+    const result = M.rotate(tilted, delta, mode);
+    near(
+        result,
+        mode === 'base-ring' ?
+            M.multiply(delta, tilted) :
+            M.multiply(tilted, delta)
+    );
+    near(
+        add(M.apply(result, pivot), M.objectOrigin(result, pivot, center)),
+        center
+    );
+  }
 }
 assert.equal(
     G.angle(
@@ -58,18 +59,17 @@ for (
       M.defaultView(), M.orbit(M.defaultView(), [73, 57], [98, 67], 146, 115)
     ]
 ) {
-  const p = [
-    .08, -.04, .02
-  ], displayCenter = scale(center, .5), extent = .19, relative = p.map(
-      (v, i) => v - displayCenter[i]
-  );
+  const p = [.08, -.04, .02];
+  const displayCenter = scale(center, .5);
+  const extent = .19;
+  const relative = p.map((v, i) => v - displayCenter[i]);
   const pixel = [
     400 + M.dot(basis[0], relative) * 400 / (2 * extent),
     200 - M.dot(basis[1], relative) * 400 / (2 * extent),
   ];
-  const ray =
-      G.ray(pixel, 800, 400, basis, extent, displayCenter), n =
-      basis[2], t =
+  const ray = G.ray(pixel, 800, 400, basis, extent, displayCenter);
+  const n = basis[2];
+  const t =
       M.dot(p.map((v, i) => v - ray.origin[i]), n) / M.dot(ray.direction, n);
   near(add(ray.origin, scale(ray.direction, t)), p);
 }
@@ -104,29 +104,32 @@ viewer.dragMode = 'free';
 viewer.drawOverlay(800, 400, [0, 0, 0], project);
 assert.equal(viewer.ringHandles.length, 0);
 
-const elements = new Map(), posts = [];
+const elements = new Map();
+const posts = [];
 
 function el(id) {
-  if (!elements.has(id)) elements.set(id, {
-    value: id === '#reorientation-drag-mode' ? 'free' : '0',
-    checked: true,
-    classList: {add() {}, remove() {}},
-    focus() {},
-    setAttribute() {},
-    addEventListener() {},
-    getBoundingClientRect() {
-      return {left: 0, top: 0, width: 800, height: 400};
-    },
-    clientWidth: 800,
-    clientHeight: 400,
-    setPointerCapture() {},
-    hasPointerCapture() {
-      return false;
-    },
-    checkValidity() {
-      return true;
-    },
-  });
+  if (!elements.has(id)) {
+    elements.set(id, {
+      value: id === '#reorientation-drag-mode' ? 'free' : '0',
+      checked: true,
+      classList: {add() {}, remove() {}},
+      focus() {},
+      setAttribute() {},
+      addEventListener() {},
+      getBoundingClientRect() {
+        return {left: 0, top: 0, width: 800, height: 400};
+      },
+      clientWidth: 800,
+      clientHeight: 400,
+      setPointerCapture() {},
+      hasPointerCapture() {
+        return false;
+      },
+      checkValidity() {
+        return true;
+      },
+    });
+  }
   return elements.get(id);
 }
 
@@ -142,9 +145,9 @@ const panel=new ReorientationPanel();panel.disabled=false;
 `,
     c
 );
-const panel = vm.runInContext(
-    'panel', c
-), canvas = panel.viewer.canvas, modeInput = el('#reorientation-drag-mode');
+const panel = vm.runInContext('panel', c);
+const canvas = panel.viewer.canvas;
+const modeInput = el('#reorientation-drag-mode');
 const event = (x, extra = {}) => ({
   button: 0,
   pointerId: 1,
@@ -154,41 +157,45 @@ const event = (x, extra = {}) => ({
   preventDefault() {},
   ...extra,
 });
-for (
-    const mode of ['object-ring', 'base-ring']
-) for (let axis = 0; axis < 3; axis++) for (const fine of [false, true]) {
-  panel.viewer.rotation = plain(tilted);
-  panel.viewer.translation = center.slice();
-  modeInput.value = mode;
-  modeInput.onchange();
-  const frame = G.basis(tilted, mode), normal = frame.map(
-      row => row[axis]
-  ), u = frame.map(
-      row => row[(axis + 1) % 3]
-  ), v = frame.map(row => row[(axis + 2) % 3]);
-  panel.viewer.ringHandles = [{axis, normal, points: [[0, 0], [1, 0]]}];
-  panel.viewer.ringRay = p => {
-    const a =
-        p[0] * Math.PI / 180, relative =
-        add(scale(u, Math.cos(a)), scale(v, Math.sin(a)));
-    return {
-      origin: add(center, add(relative, scale(normal, 2))),
-      direction: scale(normal, -1),
-    };
-  };
-  canvas.onpointerdown(event(0, {shiftKey: fine}));
-  for (const angle of [90, 170, 190, 270]) canvas.onpointermove(event(angle));
-  const unit = [0, 0, 0];
-  unit[axis] = 1;
-  near(
-      panel.viewer.rotation,
-      M.rotate(tilted, M.axisAngle(unit, Math.PI * 1.5 * (fine ? .2 : 1)), mode)
-  );
-  near(panel.viewer.translation, center);
-  assert(panel.poseDirty);
-  assert.equal(panel.selectedRingAxis, axis);
-  canvas.onpointerup(event(270));
-  near(panel.viewer.translation, [0, 0, 0]);
+for (const mode of ['object-ring', 'base-ring']) {
+  for (let axis = 0; axis < 3; axis++) {
+    for (const fine of [false, true]) {
+      panel.viewer.rotation = plain(tilted);
+      panel.viewer.translation = center.slice();
+      modeInput.value = mode;
+      modeInput.onchange();
+      const frame = G.basis(tilted, mode);
+      const normal = frame.map(row => row[axis]);
+      const u = frame.map(row => row[(axis + 1) % 3]);
+      const v = frame.map(row => row[(axis + 2) % 3]);
+      panel.viewer.ringHandles = [{axis, normal, points: [[0, 0], [1, 0]]}];
+      panel.viewer.ringRay = p => {
+        const a = p[0] * Math.PI / 180;
+        const relative = add(scale(u, Math.cos(a)), scale(v, Math.sin(a)));
+        return {
+          origin: add(center, add(relative, scale(normal, 2))),
+          direction: scale(normal, -1),
+        };
+      };
+      canvas.onpointerdown(event(0, {shiftKey: fine}));
+      for (const angle of [90, 170, 190, 270]) {
+        canvas.onpointermove(event(angle));
+      }
+      const unit = [0, 0, 0];
+      unit[axis] = 1;
+      near(
+          panel.viewer.rotation,
+          M.rotate(
+              tilted, M.axisAngle(unit, Math.PI * 1.5 * (fine ? .2 : 1)), mode
+          )
+      );
+      near(panel.viewer.translation, center);
+      assert(panel.poseDirty);
+      assert.equal(panel.selectedRingAxis, axis);
+      canvas.onpointerup(event(270));
+      near(panel.viewer.translation, [0, 0, 0]);
+    }
+  }
 }
 panel.viewer.rotation = plain(tilted);
 panel.viewer.translation = center.slice();
@@ -208,9 +215,10 @@ canvas.onpointerdown(event(0));
 canvas.onpointermove(event(90));
 near(panel.viewer.rotation, tilted);
 assert.equal(posts.length, 0);
-const html = fs.readFileSync(
-    __dirname + '/live_tracker.html', 'utf8'
-), select = html.match(/id="reorientation-drag-mode">([\s\S]*?)<\/select>/)[1];
+const html = fs.readFileSync(__dirname + '/live_tracker.html', 'utf8');
+const select = html.match(
+    /id="reorientation-drag-mode">([\s\S]*?)<\/select>/
+)[1];
 assert(
     select.includes('value="free"') &&
     select.includes('value="object-ring"') &&

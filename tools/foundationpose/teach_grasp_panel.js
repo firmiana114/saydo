@@ -11,16 +11,19 @@
       this.opening = root.querySelector('#teach-open-position');
       this.point = root.querySelector('#teach-point');
       this.feedback = root.querySelector('#teach-feedback');
-      for (const input of [this.force, this.opening]) input.oninput = () => {
-        this.feedback.textContent =
-            '这些值将在记录时保存到新夹法，不会立即下发夹爪。';
-      };
+      for (const input of [this.force, this.opening]) {
+        input.oninput = () => {
+          this.feedback.textContent =
+              '这些值将在记录时保存到新夹法，不会立即下发夹爪。';
+        };
+      }
       this.button.onclick = () => this.record();
     }
 
     update(state, otherPending = false) {
       this.state = state;
-      const id = state.object_id, g = state.grasp || {};
+      const id = state.object_id;
+      const g = state.grasp || {};
       const defaults = g.grasp_configuration?.teaching_defaults;
       const modeChanged = state.pose_mode !== this.poseMode;
       this.poseMode = state.pose_mode;
@@ -31,10 +34,12 @@
         this.feedback.textContent =
             id ? '参数随新夹法保存；记录不发送运动。' : '先选择物品。';
       }
-      if (modeChanged && id) this.feedback.textContent =
-          state.pose_mode === '5d' ?
-          '5D示教记录轴上高度和接近夹角；抓取中心X/Y投影为0，方位由规划选择。' :
-          '参数随新夹法保存；记录不发送运动。';
+      if (modeChanged && id) {
+        this.feedback.textContent =
+            state.pose_mode === '5d' ?
+            '5D示教记录轴上高度和接近夹角；抓取中心X/Y投影为0，方位由规划选择。' :
+            '参数随新夹法保存；记录不发送运动。';
+      }
       const disabled =
           !id || !!g.busy || !!g.stopping || this.pending || otherPending;
       this.force.disabled =
@@ -46,7 +51,9 @@
     }
 
     async record() {
-      if (this.pending || this.button.disabled || !this.objectId) return;
+      if (this.pending || this.button.disabled || !this.objectId) {
+        return;
+      }
       if (
           [this.force, this.opening].some(
               el => el.value.trim() === '' || !el.checkValidity()

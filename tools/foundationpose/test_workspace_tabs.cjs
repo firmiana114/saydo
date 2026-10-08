@@ -1,5 +1,7 @@
 /* Page navigation changes visibility only; no robot requests or draft resets. */
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const html = fs.readFileSync(__dirname + '/live_tracker.html', 'utf8');
 const source = html.match(
     /<script id="workspace-tabs-script">([\s\S]*?)<\/script>/
@@ -24,7 +26,9 @@ assert(html.includes('夹爪的正上方为 <strong>TCP −Y 方向</strong>'));
 function run(saved, unavailable = false) {
   const panels = names.map(
       () => ({hidden: false, draft: {point: [.02, 0, 0], dirty: true}})
-  ), draws = [], buttons = names.map((name, index) => ({
+  );
+  const draws = [];
+  const buttons = names.map((name, index) => ({
     id: 'tab-' + name,
     attributes: {'aria-controls': name + '-panel'},
     events: {},
@@ -43,11 +47,15 @@ function run(saved, unavailable = false) {
   }));
   const storage = {
     getItem() {
-      if (unavailable) throw Error('disabled');
+      if (unavailable) {
+        throw Error('disabled');
+      }
       return saved;
     },
     setItem(k, v) {
-      if (unavailable) throw Error('disabled');
+      if (unavailable) {
+        throw Error('disabled');
+      }
       saved = v;
     },
   };

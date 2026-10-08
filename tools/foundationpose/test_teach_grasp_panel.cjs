@@ -1,4 +1,6 @@
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 const elements = {};
 for (
     const id of [
@@ -34,7 +36,8 @@ vm.createContext(context);
 vm.runInContext(
     fs.readFileSync(__dirname + '/teach_grasp_panel.js', 'utf8'), context
 );
-let calls = [], resolve;
+let calls = [];
+let resolve;
 const panel = new context.TeachGraspPanel((path, data) => {
   calls.push({path, data});
   return new Promise(r => {

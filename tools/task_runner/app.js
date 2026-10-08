@@ -1,6 +1,8 @@
 'use strict';
 const el = id => document.getElementById(id);
-let selected = null, active = null, polling = false;
+let selected = null;
+let active = null;
+let polling = false;
 const states = {
   running: '执行中',
   succeeded: '已结束',
@@ -39,7 +41,9 @@ async function request(path, data) {
       }
   );
   const value = await response.json();
-  if (!response.ok) throw new Error(value.error || '请求失败');
+  if (!response.ok) {
+    throw new Error(value.error || '请求失败');
+  }
   return value;
 }
 
@@ -57,10 +61,13 @@ function show(run) {
 }
 
 function renderHistory(runs) {
-  const history = el('history'), signature = JSON.stringify(
+  const history = el('history');
+  const signature = JSON.stringify(
       runs.map(run => [run.run_id, run.state, run.instruction])
   );
-  if (history.dataset.signature === signature) return;
+  if (history.dataset.signature === signature) {
+    return;
+  }
   const top = history.scrollTop;
   history.dataset.signature = signature;
   history.replaceChildren();
@@ -77,7 +84,9 @@ function renderHistory(runs) {
 }
 
 async function refresh() {
-  if (polling) return;
+  if (polling) {
+    return;
+  }
   polling = true;
   try {
     const data = await request('/api/task-runs');
@@ -99,15 +108,17 @@ async function refresh() {
         data.stopping ||
         data.blocked_by_uncertainty;
     el('cancel').disabled = !active;
-    if (
-        data.blocked_by_uncertainty
-    ) el(
-        'error'
-    ).textContent =
-        '存在未核对的执行结果，已禁止新任务。请人工核对现场和运行记录。';
+    if (data.blocked_by_uncertainty) {
+      el(
+          'error'
+      ).textContent =
+          '存在未核对的执行结果，已禁止新任务。请人工核对现场和运行记录。';
+    }
     renderHistory(data.runs);
     selected = selected || active || data.runs[0]?.run_id;
-    if (selected) show(await request('/api/task-runs/' + selected));
+    if (selected) {
+      show(await request('/api/task-runs/' + selected));
+    }
   } catch (error) {
     el('error').textContent = error.message;
   } finally {
@@ -130,7 +141,9 @@ el('submit').onclick = async() => {
   await refresh();
 };
 el('cancel').onclick = async() => {
-  if (!active) return;
+  if (!active) {
+    return;
+  }
   el('cancel').disabled = true;
   el('phase').textContent = '正在请求停止并核对停稳…';
   try {

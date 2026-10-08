@@ -23,17 +23,21 @@
 
     configure(data) {
       const options = data.llm_options;
-      if (
-          !options?.models?.length || !options?.reasoning_efforts?.length
-      ) return;
+      if (!options?.models?.length || !options?.reasoning_efforts?.length) {
+        return;
+      }
       const signature = JSON.stringify([
         options, data.model, data.reasoning_effort
       ]);
-      if (this.ready && signature === this.signature) return;
+      if (this.ready && signature === this.signature) {
+        return;
+      }
       let saved = this.ready ? this.selection() : null;
-      if (!saved) try {
-        saved = JSON.parse(this.storage?.getItem('saydo.task-llm') || 'null');
-      } catch (_) {}
+      if (!saved) {
+        try {
+          saved = JSON.parse(this.storage?.getItem('saydo.task-llm') || 'null');
+        } catch (_) {}
+      }
       const fill = (
           element, values, format
       ) => element.replaceChildren(...values.map(value => {
@@ -53,9 +57,9 @@
         'gpt-5.6-terra': 'gpt-6-sol',
         'gpt-5.6-luna': 'gpt-6-luna',
       }[saved?.model];
-      if (
-          migratedModel && options.models.includes(migratedModel)
-      ) saved = {...saved, model: migratedModel};
+      if (migratedModel && options.models.includes(migratedModel)) {
+        saved = {...saved, model: migratedModel};
+      }
       const defaultModel =
           options.models.includes(data.model) ? data.model : options.models[0];
       const defaultEffort =

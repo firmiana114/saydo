@@ -50,34 +50,41 @@
     completed: '已完成',
   };
   function requestDetails(d) {
-    if (!d) return '';
+    if (!d) {
+      return '';
+    }
     const parts = [requestPhases[d.phase] || '请求处理中'];
-    if (Number.isFinite(d.request_bytes)) parts.push(
-        `请求 ${(d.request_bytes/1024).toFixed(1)} KB`
-    );
-    if (Number.isFinite(d.request_sent_s)) parts.push(
-        `上传完成 ${seconds(d.request_sent_s)}`
-    );
-    if (Number.isFinite(d.first_byte_s)) parts.push(
-        `首字节 ${seconds(d.first_byte_s)}`
-    );
-    if (Number.isFinite(d.http_status)) parts.push(`HTTP ${d.http_status}`);
-    if (d.usage?.input_tokens !== undefined) parts.push(
-        `输入 ${d.usage.input_tokens} tokens`
-    );
-    if (d.usage?.output_tokens !== undefined) parts.push(
-        `输出 ${d.usage.output_tokens} tokens`
-    );
-    if (d.exception_type) parts.push(d.exception_type);
+    if (Number.isFinite(d.request_bytes)) {
+      parts.push(`请求 ${(d.request_bytes/1024).toFixed(1)} KB`);
+    }
+    if (Number.isFinite(d.request_sent_s)) {
+      parts.push(`上传完成 ${seconds(d.request_sent_s)}`);
+    }
+    if (Number.isFinite(d.first_byte_s)) {
+      parts.push(`首字节 ${seconds(d.first_byte_s)}`);
+    }
+    if (Number.isFinite(d.http_status)) {
+      parts.push(`HTTP ${d.http_status}`);
+    }
+    if (d.usage?.input_tokens !== undefined) {
+      parts.push(`输入 ${d.usage.input_tokens} tokens`);
+    }
+    if (d.usage?.output_tokens !== undefined) {
+      parts.push(`输出 ${d.usage.output_tokens} tokens`);
+    }
+    if (d.exception_type) {
+      parts.push(d.exception_type);
+    }
     return '\n' + parts.join(' · ');
   }
   function entries(run, now = Date.now() / 1000) {
-    if (run.timeline_version !== 1) return legacy(run);
-    const events =
-        run.events || [], ends =
-        new Map(
-            events.filter(e => e.event === 'llm').map(e => [e.invocation, e])
-        );
+    if (run.timeline_version !== 1) {
+      return legacy(run);
+    }
+    const events = run.events || [];
+    const ends = new Map(
+        events.filter(e => e.event === 'llm').map(e => [e.invocation, e])
+    );
     const rows = [];
     for (const event of events) {
       let row = {
@@ -94,10 +101,10 @@
             pending ?
             `等待响应 · 已用 ${seconds(Math.max(0,now-event.at))}` :
             '已中断 · 耗时未完整记录';
-        if (
-            event.connection_attempt > 1
-        ) row.title +=
-            ` · 请求尝试 ${event.connection_attempt}/${event.max_connection_attempts}`;
+        if (event.connection_attempt > 1) {
+          row.title +=
+              ` · 请求尝试 ${event.connection_attempt}/${event.max_connection_attempts}`;
+        }
         row.text += requestDetails(end?.diagnostics || event.diagnostics);
         row.kind = pending ? 'llm-pending' : 'llm';
       } else if (event.event === 'llm') {
@@ -114,16 +121,16 @@
       } else if (event.event === 'planning_argument_error') {
         row.title = '规划参数需修正';
         row.text = event.text;
-        if (
-            event.retry_budget
-        ) row.text += ` 规划尝试 ${event.retry_budget.planning_attempts}/5。`;
+        if (event.retry_budget) {
+          row.text += ` 规划尝试 ${event.retry_budget.planning_attempts}/5。`;
+        }
       } else if (event.event === 'motion_recovery') {
         row.title = '调姿恢复检查';
         row.text = event.text;
-        if (
-            event.retry_budget
-        ) row.text +=
-            ` 规划 ${event.retry_budget.planning_attempts}/5，执行 ${event.retry_budget.execution_attempts}/3。`;
+        if (event.retry_budget) {
+          row.text +=
+              ` 规划 ${event.retry_budget.planning_attempts}/5，执行 ${event.retry_budget.execution_attempts}/3。`;
+        }
       } else if (event.event === 'model_message') {
         row.title = '模型说明';
         row.text = event.text;
@@ -153,7 +160,9 @@
       ) {
         row.title = '执行状态';
         row.text = event.text;
-      } else continue;
+      } else {
+        continue;
+      }
       rows.push(row);
     }
     return rows;
@@ -165,7 +174,8 @@
       title: '历史记录',
       text: '此任务由旧版执行器完成，未记录过程说明和完整时间线。以下保留已有调用耗时与结果。',
     }];
-    const calls = run.calls || [], used = new Set();
+    const calls = run.calls || [];
+    const used = new Set();
     const addCall = call => {
       used.add(call.call_id);
       rows.push({
@@ -177,27 +187,37 @@
       });
     };
     for (const event of run.events || []) {
-      if (event.event !== 'llm') continue;
+      if (event.event !== 'llm') {
+        continue;
+      }
       rows.push({
         id: 'old-llm-' + event.turn,
         kind: 'llm',
         title: `LLM 调用 · 第 ${event.turn} 轮`,
         text: `调用耗时 ${seconds(event.seconds)} · ${event.model||run.model}`,
       });
-      for (const call of calls) if (
-          Number(call.request_id?.match(/-step-(\d+)$/)?.[1]) === event.turn
-      ) addCall(call);
+      for (const call of calls) {
+        if (
+            Number(call.request_id?.match(/-step-(\d+)$/)?.[1]) === event.turn
+        ) {
+          addCall(call);
+        }
+      }
     }
     calls.filter(c => !used.has(c.call_id)).forEach(addCall);
-    if (run.summary) rows.push({
-      id: 'old-final', kind: 'final', title: '完整总结', text: run.summary
-    });
+    if (run.summary) {
+      rows.push({
+        id: 'old-final', kind: 'final', title: '完整总结', text: run.summary
+      });
+    }
     return rows;
   }
   function render(container, run, now) {
     const rows = entries(run, now);
     const signature = JSON.stringify([run.run_id, rows]);
-    if (container.dataset.signature === signature) return;
+    if (container.dataset.signature === signature) {
+      return;
+    }
     const scroller =
         container.parentElement?.id === 'progress-scroll' ?
         container.parentElement :
@@ -221,15 +241,12 @@
     for (const row of rows) {
       let entry = container._timelineNodes.get(row.id);
       if (!entry) {
-        const node = document.createElement(
-            'li'
-        ), head = document.createElement('div');
+        const node = document.createElement('li');
+        const head = document.createElement('div');
         head.className = 'timeline-head';
-        const title = document.createElement(
-            'strong'
-        ), stamp = document.createElement(
-            'time'
-        ), body = document.createElement('div');
+        const title = document.createElement('strong');
+        const stamp = document.createElement('time');
+        const body = document.createElement('div');
         body.className = 'timeline-text';
         head.append(title, stamp);
         node.append(head, body);
@@ -238,21 +255,25 @@
         container._timelineNodes.set(row.id, entry);
       }
       entry.node.className = 'timeline-item ' + row.kind;
-      if (
-          entry.title.textContent !== row.title
-      ) entry.title.textContent = row.title;
-      if (
-          entry.body.textContent !== row.text
-      ) entry.body.textContent = row.text;
+      if (entry.title.textContent !== row.title) {
+        entry.title.textContent = row.title;
+      }
+      if (entry.body.textContent !== row.text) {
+        entry.body.textContent = row.text;
+      }
       entry.stamp.hidden = !Number.isFinite(row.at);
       if (Number.isFinite(row.at)) {
         const date = new Date(row.at * 1000);
         entry.stamp.dateTime = date.toISOString();
         const text = date.toLocaleTimeString('zh-CN', {hour12: false});
-        if (entry.stamp.textContent !== text) entry.stamp.textContent = text;
+        if (entry.stamp.textContent !== text) {
+          entry.stamp.textContent = text;
+        }
       }
     }
-    if (follow) scroller.scrollTop = scroller.scrollHeight;
+    if (follow) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
   }
 
   root.SaydoTimeline = {entries, render};

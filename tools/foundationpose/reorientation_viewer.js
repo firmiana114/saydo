@@ -22,13 +22,13 @@ const ReorientationMath = {
     return p.map(x => x / n);
   },
   euler(x, y, z) {
-    const [a, b, c] = [x, y, z].map(
-        v => v * Math.PI / 180
-    ), cx = Math.cos(
-        a
-    ), sx = Math.sin(
-        a
-    ), cy = Math.cos(b), sy = Math.sin(b), cz = Math.cos(c), sz = Math.sin(c);
+    const [a, b, c] = [x, y, z].map(v => v * Math.PI / 180);
+    const cx = Math.cos(a);
+    const sx = Math.sin(a);
+    const cy = Math.cos(b);
+    const sy = Math.sin(b);
+    const cz = Math.cos(c);
+    const sz = Math.sin(c);
     return [
       [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
       [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
@@ -36,9 +36,8 @@ const ReorientationMath = {
     ];
   },
   angles(r) {
-    const y =
-        Math.asin(Math.max(-1, Math.min(1, -r[2][0]))), regular =
-        Math.abs(Math.cos(y)) > 1e-6;
+    const y = Math.asin(Math.max(-1, Math.min(1, -r[2][0])));
+    const regular = Math.abs(Math.cos(y)) > 1e-6;
     return [
       (regular ? Math.atan2(r[2][1], r[2][2]) : 0),
       y,
@@ -72,11 +71,10 @@ const ReorientationMath = {
     return this.apply(rotation, pivot).map((v, k) => translation[k] - v);
   },
   axisAngle(axis, angle) {
-    const [x, y, z] =
-        this.unit(axis), c =
-        Math.cos(angle), s =
-        Math.sin(angle), t =
-        1 - c;
+    const [x, y, z] = this.unit(axis);
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const t = 1 - c;
     return [
       [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
       [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
@@ -84,10 +82,9 @@ const ReorientationMath = {
     ];
   },
   ball(x, y, width, height) {
-    const radius =
-        Math.min(width, height) * .42, p =
-        [(x - width / 2) / radius, (height / 2 - y) / radius], d =
-        Math.hypot(...p);
+    const radius = Math.min(width, height) * .42;
+    const p = [(x - width / 2) / radius, (height / 2 - y) / radius];
+    const d = Math.hypot(...p);
     return d <= 1 ? [...p, Math.sqrt(1 - d * d)] : [p[0] / d, p[1] / d, 0];
   },
   drag(start, end, width, height, basis, mode = 'free', fine = false) {
@@ -97,14 +94,14 @@ const ReorientationMath = {
       axis['xyz'.indexOf(mode)] = 1;
       return this.axisAngle(axis, (end[0] - start[0]) * .006 * factor);
     }
-    const a = this.ball(
-        ...start, width, height
-    ), b = this.ball(
-        ...end, width, height
-    ), cross = this.cross(a, b), length = Math.hypot(...cross), dot = Math.max(
-        -1, Math.min(1, this.dot(a, b))
-    );
-    if (length < 1e-8 && dot > 0) return this.identity();
+    const a = this.ball(...start, width, height);
+    const b = this.ball(...end, width, height);
+    const cross = this.cross(a, b);
+    const length = Math.hypot(...cross);
+    const dot = Math.max(-1, Math.min(1, this.dot(a, b)));
+    if (length < 1e-8 && dot > 0) {
+      return this.identity();
+    }
     const axis =
         length < 1e-8 ?
         this.unit(this.cross(a, Math.abs(a[0]) < .8 ? [1, 0, 0] : [0, 1, 0])) :
@@ -120,9 +117,8 @@ const ReorientationRings = {
     return mode === 'base-ring' ? ReorientationMath.identity() : rotation;
   },
   ray(pixel, width, height, basis, scale, center) {
-    const x =
-        (pixel[0] - width / 2) * 2 * scale / height, y =
-        (height / 2 - pixel[1]) * 2 * scale / height;
+    const x = (pixel[0] - width / 2) * 2 * scale / height;
+    const y = (height / 2 - pixel[1]) * 2 * scale / height;
     return {
       origin: center.map(
           (v, i) =>
@@ -135,21 +131,24 @@ const ReorientationRings = {
     const M = ReorientationMath;
     const hit = ray => {
       const denominator = M.dot(ray.direction, normal);
-      if (Math.abs(denominator) < .08) return null;
+      if (Math.abs(denominator) < .08) {
+        return null;
+      }
       const t =
           M.dot(center.map((v, i) => v - ray.origin[i]), normal) / denominator;
       return ray.origin.map((v, i) => v + ray.direction[i] * t - center[i]);
     };
-    const a = hit(start), b = hit(end);
-    if (
-        !a || !b || Math.hypot(...a) < 1e-6 || Math.hypot(...b) < 1e-6
-    ) return null;
+    const a = hit(start);
+    const b = hit(end);
+    if (!a || !b || Math.hypot(...a) < 1e-6 || Math.hypot(...b) < 1e-6) {
+      return null;
+    }
     return Math.atan2(M.dot(normal, M.cross(a, b)), M.dot(a, b));
   },
   distance(p, a, b) {
-    const d =
-        b.map((v, i) => v - a[i]), n =
-        ReorientationMath.dot(d, d), t =
+    const d = b.map((v, i) => v - a[i]);
+    const n = ReorientationMath.dot(d, d);
+    const t =
         n ?
         Math.max(
             0,
@@ -176,9 +175,8 @@ const ReorientationRings = {
 // Depth cues describe direction relative to the view, independently of axis sign.
 const AxisDepthCue = {
   describe(vector, depth) {
-    const n =
-        Math.hypot(...vector) || 1, value =
-        ReorientationMath.dot(vector, depth) / n;
+    const n = Math.hypot(...vector) || 1;
+    const value = ReorientationMath.dot(vector, depth) / n;
     const kind = value > .12 ? 'front' : value < -.12 ? 'back' : 'plane';
     return {
       value,
@@ -197,10 +195,9 @@ const AxisDepthCue = {
   segment(
       add, a, b, color, cue, {arrow = true, badge = true, minor = false} = {}
   ) {
-    const opacity =
-        cue.opacity * (minor ? .7 : 1), width =
-        cue.width * (minor ? .65 : 1), distance =
-        Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const opacity = cue.opacity * (minor ? .7 : 1);
+    const width = cue.width * (minor ? .65 : 1);
+    const distance = Math.hypot(b[0] - a[0], b[1] - a[1]);
     const line = {
       x1: a[0],
       y1: a[1],
@@ -214,7 +211,8 @@ const AxisDepthCue = {
     add('line', {...line, stroke: '#071017', 'stroke-width': width + 3});
     add('line', {...line, stroke: color, 'stroke-width': width});
     if (arrow && distance > 8) {
-      const angle = Math.atan2(b[1] - a[1], b[0] - a[0]), ends = [-.5, .5].map(
+      const angle = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      const ends = [-.5, .5].map(
           d => [b[0] - 9 * Math.cos(angle + d), b[1] - 9 * Math.sin(angle + d)]
       );
       add(
@@ -244,19 +242,23 @@ const AxisDepthCue = {
             'data-depth': cue.kind,
           }
       );
-      if (cue.kind === 'front') add(
-          'circle', {cx: b[0], cy: b[1], r: minor ? 1.2 : 1.8, fill: color}
-      ); else for (const sign of [-1, 1]) add(
-          'line',
-          {
-            x1: b[0] - r * .5,
-            y1: b[1] - sign * r * .5,
-            x2: b[0] + r * .5,
-            y2: b[1] + sign * r * .5,
-            stroke: color,
-            'stroke-width': 1.5,
-          }
-      );
+      if (cue.kind === 'front') {
+        add('circle', {cx: b[0], cy: b[1], r: minor ? 1.2 : 1.8, fill: color});
+      } else {
+        for (const sign of [-1, 1]) {
+          add(
+              'line',
+              {
+                x1: b[0] - r * .5,
+                y1: b[1] - sign * r * .5,
+                x2: b[0] + r * .5,
+                y2: b[1] + sign * r * .5,
+                stroke: color,
+                'stroke-width': 1.5,
+              }
+          );
+        }
+      }
     }
   },
 };
@@ -274,14 +276,16 @@ class ReorientationViewer {
     this.basis = ReorientationMath.defaultView();
     this.viewControl = viewControl;
     const gl = this.gl = canvas.getContext('webgl', {antialias: true});
-    if (!gl) throw Error('浏览器未启用三维绘图，请开启硬件加速后刷新。');
+    if (!gl) {
+      throw Error('浏览器未启用三维绘图，请开启硬件加速后刷新。');
+    }
     const shader = (type, source) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, source);
       gl.compileShader(s);
-      if (
-          !gl.getShaderParameter(s, gl.COMPILE_STATUS)
-      ) throw Error(gl.getShaderInfoLog(s));
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        throw Error(gl.getShaderInfoLog(s));
+      }
       return s;
     };
     const program = this.program = gl.createProgram();
@@ -300,19 +304,21 @@ class ReorientationViewer {
         )
     );
     gl.linkProgram(program);
-    if (
-        !gl.getProgramParameter(program, gl.LINK_STATUS)
-    ) throw Error(gl.getProgramInfoLog(program));
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw Error(gl.getProgramInfoLog(program));
+    }
     this.u = {};
     for (
         const key of [
           'rotation', 'origin', 'view', 'color', 'shaded', 'textured', 'image'
         ]
-    ) this.u[key] = gl.getUniformLocation(program, key);
+    ) {
+      this.u[key] = gl.getUniformLocation(program, key);
+    }
     this.a = {};
-    for (
-        const key of ['p', 'n', 'uv', 'tint']
-    ) this.a[key] = gl.getAttribLocation(program, key);
+    for (const key of ['p', 'n', 'uv', 'tint']) {
+      this.a[key] = gl.getAttribLocation(program, key);
+    }
     this.buffer = gl.createBuffer();
     this.lines = gl.createBuffer();
     this.white = gl.createTexture();
@@ -346,8 +352,8 @@ class ReorientationViewer {
   }
 
   ringRay(point) {
-    const center =
-        this.translation.map(v => v / 2), scale =
+    const center = this.translation.map(v => v / 2);
+    const scale =
         Math.max(.1, this.radius * 1.55 + Math.hypot(...this.translation) / 2) /
         this.zoom;
     return ReorientationRings.ray(
@@ -361,8 +367,13 @@ class ReorientationViewer {
   }
 
   setModel(model) {
-    const gl = this.gl, version = ++this.version;
-    for (const texture of this.textures) if (texture) gl.deleteTexture(texture);
+    const gl = this.gl;
+    const version = ++this.version;
+    for (const texture of this.textures) {
+      if (texture) {
+        gl.deleteTexture(texture);
+      }
+    }
     this.textures = [];
     this.model = model;
     this.translation = [0, 0, 0];
@@ -375,8 +386,8 @@ class ReorientationViewer {
             ),
             .04
         );
-    const appearance =
-        model.appearance || {}, materials =
+    const appearance = model.appearance || {};
+    const materials =
         appearance.materials?.length ?
         appearance.materials :
         [{color: [.64, .79, .87, 1]}];
@@ -390,23 +401,25 @@ class ReorientationViewer {
         '基础材质（源模型无可用纹理）';
     const rows = materials.map(() => []);
     model.faces.forEach((face, fi) => {
-      const [a, b, c] = face.map(
-          i => model.vertices[i]
-      ), normal = ReorientationMath.unit(
+      const [a, b, c] = face.map(i => model.vertices[i]);
+      const normal = ReorientationMath.unit(
           ReorientationMath.cross(
               b.map((v, k) => v - a[k]), c.map((v, k) => v - a[k])
           )
-      ), row = rows[appearance.face_materials?.[fi] || 0];
-      for (const vi of face) row.push(
-          ...model.vertices[vi],
-          ...normal,
-          ...(appearance.uv?.[vi] || [0, 0]),
-          ...(
-              appearance.vertex_colors?.[vi] ||
-              appearance.face_colors?.[fi] ||
-              [1, 1, 1, 1]
-          )
       );
+      const row = rows[appearance.face_materials?.[fi] || 0];
+      for (const vi of face) {
+        row.push(
+            ...model.vertices[vi],
+            ...normal,
+            ...(appearance.uv?.[vi] || [0, 0]),
+            ...(
+                appearance.vertex_colors?.[vi] ||
+                appearance.face_colors?.[fi] ||
+                [1, 1, 1, 1]
+            )
+        );
+      }
     });
     let offset = 0;
     const data = new Float32Array(model.faces.length * 3 * 12);
@@ -418,13 +431,20 @@ class ReorientationViewer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
     this.rotation = model.initial_rotation.map(row => row.slice());
-    let pending = materials.filter(m => m.texture).length, failed = 0;
-    if (pending) this.textureState = '正在加载纹理…';
+    let pending = materials.filter(m => m.texture).length;
+    let failed = 0;
+    if (pending) {
+      this.textureState = '正在加载纹理…';
+    }
     materials.forEach((material, i) => {
-      if (!material.texture) return;
+      if (!material.texture) {
+        return;
+      }
       const image = new Image();
       image.onload = () => {
-        if (version !== this.version) return;
+        if (version !== this.version) {
+          return;
+        }
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -449,7 +469,9 @@ class ReorientationViewer {
         this.draw();
       };
       image.onerror = () => {
-        if (version !== this.version) return;
+        if (version !== this.version) {
+          return;
+        }
         failed++;
         finish();
       };
@@ -487,30 +509,36 @@ class ReorientationViewer {
   }
 
   draw() {
-    if (!this.model) return;
-    const gl = this.gl, canvas = this.canvas, ratio = Math.min(
-        window.devicePixelRatio || 1, 2
-    ), width = canvas.clientWidth, height = canvas.clientHeight;
-    if (!width || !height) return;
-    const pw = Math.round(width * ratio), ph = Math.round(height * ratio);
+    if (!this.model) {
+      return;
+    }
+    const gl = this.gl;
+    const canvas = this.canvas;
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height) {
+      return;
+    }
+    const pw = Math.round(width * ratio);
+    const ph = Math.round(height * ratio);
     if (canvas.width !== pw || canvas.height !== ph) {
       canvas.width = pw;
       canvas.height = ph;
     }
-    const origin =
-        ReorientationMath.objectOrigin(
-            this.rotation, this.pivot, this.translation
-        ), center =
-        this.translation.map(v => v / 2), scale =
+    const origin = ReorientationMath.objectOrigin(
+        this.rotation, this.pivot, this.translation
+    );
+    const center = this.translation.map(v => v / 2);
+    const scale =
         Math.max(.1, this.radius * 1.55 + Math.hypot(...this.translation) / 2) /
-        this.zoom, aspect =
-        width / height;
-    const [right, up, depth] =
-        this.basis, dot =
-        ReorientationMath.dot, sx =
-        1 / (scale * aspect), sy =
-        1 / scale, sz =
-        -1 / (this.radius * 16);
+        this.zoom;
+    const aspect = width / height;
+    const [right, up, depth] = this.basis;
+    const dot = ReorientationMath.dot;
+    const sx = 1 / (scale * aspect);
+    const sy = 1 / scale;
+    const sz = -1 / (this.radius * 16);
     const view = new Float32Array([
       right[0] * sx,
       up[0] * sy,
@@ -543,7 +571,8 @@ class ReorientationViewer {
     gl.uniform3f(this.u.origin, 0, 0, 0);
     gl.uniform1f(this.u.shaded, 0);
     gl.uniform1i(this.u.textured, 0);
-    const grid = Math.max(.15, scale * 2), step = .05;
+    const grid = Math.max(.15, scale * 2);
+    const step = .05;
     for (let i = -Math.ceil(grid / step); i <= Math.ceil(grid / step); i++) {
       this.line(
           [i * step, -grid, -this.radius * 1.2],
@@ -584,20 +613,24 @@ class ReorientationViewer {
   }
 
   drawOverlay(width, height, offset, project) {
-    const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(
-        ns, 'svg'
-    );
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
     const add = (tag, attrs, text) => {
       const el = document.createElementNS(ns, tag);
-      for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
-      if (text) el.textContent = text;
+      for (const [k, v] of Object.entries(attrs)) {
+        el.setAttribute(k, v);
+      }
+      if (text) {
+        el.textContent = text;
+      }
       svg.appendChild(el);
       return el;
     };
-    const colors = ['#ff6b72', '#69e795', '#69aaff'], names = ['X', 'Y', 'Z'];
+    const colors = ['#ff6b72', '#69e795', '#69aaff'];
+    const names = ['X', 'Y', 'Z'];
     const label = (text, x, y, color, size = 15) => add(
         'text',
         {
@@ -640,9 +673,8 @@ class ReorientationViewer {
           }
       );
       if (!dashed) {
-        const angle = Math.atan2(
-            b[1] - a[1], b[0] - a[0]
-        ), ends = [-.5, .5].map(
+        const angle = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        const ends = [-.5, .5].map(
             d =>
             [b[0] - 10 * Math.cos(angle + d), b[1] - 10 * Math.sin(angle + d)]
         );
@@ -661,27 +693,29 @@ class ReorientationViewer {
     };
     this.ringHandles = [];
     if (this.dragMode === 'object-ring' || this.dragMode === 'base-ring') {
-      const frame = ReorientationRings.basis(
-          this.rotation, this.dragMode
-      ), length = Math.max(
-          .035, Math.min(.09, this.radius * .8)
-      ), strokes = [], labels = [];
+      const frame = ReorientationRings.basis(this.rotation, this.dragMode);
+      const length = Math.max(.035, Math.min(.09, this.radius * .8));
+      const strokes = [];
+      const labels = [];
       for (let axis = 0; axis < 3; axis++) {
         if (
             this.model?.pose_mode === '5d' &&
             this.dragMode === 'object-ring' &&
             axis === 2
-        ) continue;
-        const normal = frame.map(row => row[axis]), u = frame.map(
-            row => row[(axis + 1) % 3]
-        ), v = frame.map(row => row[(axis + 2) % 3]), points = [], vectors = [];
+        ) {
+          continue;
+        }
+        const normal = frame.map(row => row[axis]);
+        const u = frame.map(row => row[(axis + 1) % 3]);
+        const v = frame.map(row => row[(axis + 2) % 3]);
+        const points = [];
+        const vectors = [];
         for (let k = 0; k <= 64; k++) {
-          const theta =
-              k * Math.PI / 32, relative =
-              u.map(
-                  (value, i) =>
-                  (value * Math.cos(theta) + v[i] * Math.sin(theta)) * length
-              );
+          const theta = k * Math.PI / 32;
+          const relative = u.map(
+              (value, i) =>
+              (value * Math.cos(theta) + v[i] * Math.sin(theta)) * length
+          );
           vectors.push(relative);
           points.push(
               project(relative.map((value, i) => value + this.translation[i]))
@@ -691,7 +725,8 @@ class ReorientationViewer {
         for (let k = 0; k < 64; k++) {
           const middle = vectors[k].map(
               (value, i) => (value + vectors[k + 1][i]) / 2
-          ), cue = AxisDepthCue.describe(middle, this.basis[2]);
+          );
+          const cue = AxisDepthCue.describe(middle, this.basis[2]);
           strokes.push({axis, k, a: points[k], b: points[k + 1], cue});
         }
         const p = points[8 + axis * 5];
@@ -712,7 +747,9 @@ class ReorientationViewer {
               (a, b) => a.cue.value - b.cue.value
           )
       ) {
-        if (cue.kind === 'back' && k % 2) continue;
+        if (cue.kind === 'back' && k % 2) {
+          continue;
+        }
         const attrs = {
           x1: a[0],
           y1: a[1],
@@ -734,25 +771,29 @@ class ReorientationViewer {
             }
         );
       }
-      for (const item of labels) label(
-          item.text, ...item.p, colors[item.axis], 12
-      );
+      for (const item of labels) {
+        label(item.text, ...item.p, colors[item.axis], 12);
+      }
     }
     if (this.showAxes) {
       const origin = project(offset);
       const axes = [];
-      for (let i = 0; i < 3; i++) for (const sign of [-1, 1]) {
-        const axis = [0, 0, 0];
-        axis[i] = .05 * sign * (sign < 0 ? .45 : 1);
-        const vector = ReorientationMath.apply(this.rotation, axis);
-        if (this.model?.pose_mode === '5d' && i !== 2) continue;
-        axes.push({
-          i,
-          sign,
-          vector,
-          end: project(vector.map((v, k) => v + offset[k])),
-          cue: AxisDepthCue.describe(vector, this.basis[2]),
-        });
+      for (let i = 0; i < 3; i++) {
+        for (const sign of [-1, 1]) {
+          const axis = [0, 0, 0];
+          axis[i] = .05 * sign * (sign < 0 ? .45 : 1);
+          const vector = ReorientationMath.apply(this.rotation, axis);
+          if (this.model?.pose_mode === '5d' && i !== 2) {
+            continue;
+          }
+          axes.push({
+            i,
+            sign,
+            vector,
+            end: project(vector.map((v, k) => v + offset[k])),
+            cue: AxisDepthCue.describe(vector, this.basis[2]),
+          });
+        }
       }
       axes.sort((a, b) => a.cue.value - b.cue.value);
       for (const {i, sign, end, cue} of axes) {
@@ -765,19 +806,18 @@ class ReorientationViewer {
             cue,
             {minor, arrow: !minor, badge: !minor}
         );
-        if (
-            minor && Math.hypot(end[0] - origin[0], end[1] - origin[1]) < 16
-        ) continue;
+        if (minor && Math.hypot(end[0] - origin[0], end[1] - origin[1]) < 16) {
+          continue;
+        }
         const text = (minor ? '−' : '物品 +') + names[i] + ' ' + cue.symbol;
-        const left =
-            end[0] < origin[0], x =
-            Math.max(
-                8,
-                Math.min(
-                    width - (minor ? 45 : 95),
-                    end[0] + (left ? -(minor ? 35 : 80) : 10)
-                )
-            );
+        const left = end[0] < origin[0];
+        const x = Math.max(
+            8,
+            Math.min(
+                width - (minor ? 45 : 95),
+                end[0] + (left ? -(minor ? 35 : 80) : 10)
+            )
+        );
         label(
             text,
             x,
@@ -844,12 +884,11 @@ class ReorientationViewer {
         '#ffe19b',
         12
     );
-    const small =
-        width < 450, cardW =
-        small ? 112 : 146, cardH =
-        small ? 98 : 115, anchor =
-        [small ? 62 : 80, height - (small ? 54 : 65)], length =
-        small ? 30 : 42;
+    const small = width < 450;
+    const cardW = small ? 112 : 146;
+    const cardH = small ? 98 : 115;
+    const anchor = [small ? 62 : 80, height - (small ? 54 : 65)];
+    const length = small ? 30 : 42;
     if (this.viewControl) {
       this.viewControl.style.width = cardW + 'px';
       this.viewControl.style.height = cardH + 'px';
@@ -915,18 +954,24 @@ class ReorientationPanel {
     this.axisInputs = ['tilt', 'heading'].map(
         name => document.querySelector('#reorientation-axis-' + name)
     );
-    for (const input of this.axisInputs) input.oninput = () => {
-      if (this.disabled) return;
-      if (!this.anglesValid()) {
-        this.preview.disabled = true;
-        this.execute.disabled = true;
-        return;
-      }
-      this.viewer.rotation = ReorientationMath.euler(
-          0, Number(this.axisInputs[0].value), Number(this.axisInputs[1].value)
-      );
-      this.changed(false, true);
-    };
+    for (const input of this.axisInputs) {
+      input.oninput = () => {
+        if (this.disabled) {
+          return;
+        }
+        if (!this.anglesValid()) {
+          this.preview.disabled = true;
+          this.execute.disabled = true;
+          return;
+        }
+        this.viewer.rotation = ReorientationMath.euler(
+            0,
+            Number(this.axisInputs[0].value),
+            Number(this.axisInputs[1].value)
+        );
+        this.changed(false, true);
+      };
+    }
     this.cameraControl = document.querySelector(
         '#reorientation-camera-control'
     );
@@ -940,20 +985,24 @@ class ReorientationPanel {
       this.info.textContent = e.message;
       return;
     }
-    for (const input of this.inputs) input.oninput = () => {
-      if (this.disabled) return;
-      if (!this.anglesValid()) {
-        this.preview.disabled = true;
-        this.execute.disabled = true;
-        this.feedback.textContent =
-            '请填写三个有效角度，每项在 −180 到 180 度之间。';
-        return;
-      }
-      this.viewer.rotation = ReorientationMath.euler(
-          ...this.inputs.map(x => Number(x.value))
-      );
-      this.changed();
-    };
+    for (const input of this.inputs) {
+      input.oninput = () => {
+        if (this.disabled) {
+          return;
+        }
+        if (!this.anglesValid()) {
+          this.preview.disabled = true;
+          this.execute.disabled = true;
+          this.feedback.textContent =
+              '请填写三个有效角度，每项在 −180 到 180 度之间。';
+          return;
+        }
+        this.viewer.rotation = ReorientationMath.euler(
+            ...this.inputs.map(x => Number(x.value))
+        );
+        this.changed();
+      };
+    }
     this.restore.onclick = () => {
       this.viewer.rotation = this.viewer.model.initial_rotation.map(
           row => row.slice()
@@ -973,7 +1022,8 @@ class ReorientationPanel {
       this.viewer.draw();
     };
     this.viewReset = document.querySelector('#reorientation-view-reset');
-    let anchor = null, viewAnchor = null;
+    let anchor = null;
+    let viewAnchor = null;
     const canvas = this.viewer.canvas;
     const point = e => {
       const r = canvas.getBoundingClientRect();
@@ -986,10 +1036,13 @@ class ReorientationPanel {
           e.button !== 0 ||
           anchor ||
           viewAnchor
-      ) return;
+      ) {
+        return;
+      }
       e.preventDefault();
       canvas.focus();
-      const p = point(e), mode = this.dragMode.value;
+      const p = point(e);
+      const mode = this.dragMode.value;
       const ring =
           mode === 'free' ?
           null :
@@ -999,7 +1052,9 @@ class ReorientationPanel {
             '请拖动彩色圆环；左下角坐标卡片用于旋转观察视角。';
         return;
       }
-      if (ring) this.selectedRingAxis = ring.axis;
+      if (ring) {
+        this.selectedRingAxis = ring.axis;
+      }
       anchor = {
         id: e.pointerId,
         point: p,
@@ -1032,12 +1087,16 @@ class ReorientationPanel {
           this.fiveD &&
           this.dragMode.value === 'object-ring' &&
           this.selectedRingAxis === 2
-      ) this.selectedRingAxis = 0;
+      ) {
+        this.selectedRingAxis = 0;
+      }
       this.viewer.dragMode = this.dragMode.value;
       this.viewer.draw();
     };
     canvas.onpointermove = e => {
-      if (!anchor || e.pointerId !== anchor.id) return;
+      if (!anchor || e.pointerId !== anchor.id) {
+        return;
+      }
       if (this.disabled) {
         release();
         return;
@@ -1065,15 +1124,17 @@ class ReorientationPanel {
         delta = ReorientationMath.axisAngle(
             axis, anchor.totalAngle * (anchor.fine ? .2 : 1)
         );
-      } else delta = ReorientationMath.drag(
-          anchor.point,
-          point(e),
-          canvas.clientWidth,
-          canvas.clientHeight,
-          this.viewer.basis,
-          'free',
-          anchor.fine
-      );
+      } else {
+        delta = ReorientationMath.drag(
+            anchor.point,
+            point(e),
+            canvas.clientWidth,
+            canvas.clientHeight,
+            this.viewer.basis,
+            'free',
+            anchor.fine
+        );
+      }
       this.viewer.rotation = ReorientationMath.rotate(
           anchor.rotation, delta, anchor.mode
       );
@@ -1082,11 +1143,15 @@ class ReorientationPanel {
       this.changed(!!anchor.ring);
     };
     canvas.onpointerup = canvas.onpointercancel = e => {
-      if (anchor?.id === e.pointerId) release();
+      if (anchor?.id === e.pointerId) {
+        release();
+      }
     };
     canvas.onlostpointercapture = release;
     canvas.addEventListener('wheel', e => {
-      if (this.disabled) return;
+      if (this.disabled) {
+        return;
+      }
       e.preventDefault();
       this.viewer.zoom = Math.max(
           .6, Math.min(2.8, this.viewer.zoom * Math.exp(-e.deltaY * .001))
@@ -1103,12 +1168,14 @@ class ReorientationPanel {
       if (
           this.disabled ||
           !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
-      ) return;
+      ) {
+        return;
+      }
       e.preventDefault();
       release();
-      const sign =
-          ['ArrowLeft', 'ArrowDown'].includes(e.key) ? -1 : 1, mode =
-          this.dragMode.value, axis =
+      const sign = ['ArrowLeft', 'ArrowDown'].includes(e.key) ? -1 : 1;
+      const mode = this.dragMode.value;
+      const axis =
           mode === 'free' ?
           (
               e.key === 'ArrowUp' || e.key === 'ArrowDown' ?
@@ -1135,12 +1202,14 @@ class ReorientationPanel {
       const id = viewAnchor?.id;
       viewAnchor = null;
       camera.classList.remove('dragging');
-      if (
-          id !== undefined && camera.hasPointerCapture(id)
-      ) camera.releasePointerCapture(id);
+      if (id !== undefined && camera.hasPointerCapture(id)) {
+        camera.releasePointerCapture(id);
+      }
     };
     camera.onpointerdown = e => {
-      if (!this.viewer.model || e.button !== 0 || viewAnchor || anchor) return;
+      if (!this.viewer.model || e.button !== 0 || viewAnchor || anchor) {
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       camera.focus();
@@ -1157,7 +1226,9 @@ class ReorientationPanel {
       camera.classList.add('dragging');
     };
     camera.onpointermove = e => {
-      if (!viewAnchor || e.pointerId !== viewAnchor.id) return;
+      if (!viewAnchor || e.pointerId !== viewAnchor.id) {
+        return;
+      }
       e.preventDefault();
       this.viewer.orbitView(
           viewAnchor.basis,
@@ -1169,7 +1240,9 @@ class ReorientationPanel {
       );
     };
     camera.onpointerup = camera.onpointercancel = e => {
-      if (viewAnchor?.id === e.pointerId) releaseView();
+      if (viewAnchor?.id === e.pointerId) {
+        releaseView();
+      }
     };
     camera.onlostpointercapture = releaseView;
     const resetView = () => {
@@ -1182,7 +1255,9 @@ class ReorientationPanel {
     };
     this.viewReset.onclick = resetView;
     camera.onkeydown = e => {
-      if (!this.viewer.model) return;
+      if (!this.viewer.model) {
+        return;
+      }
       if (e.key === 'Home') {
         e.preventDefault();
         resetView();
@@ -1190,12 +1265,14 @@ class ReorientationPanel {
       }
       if (
           !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)
-      ) return;
+      ) {
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       releaseView();
-      const sign =
-          ['ArrowLeft', 'ArrowDown'].includes(e.key) ? -1 : 1, axis =
+      const sign = ['ArrowLeft', 'ArrowDown'].includes(e.key) ? -1 : 1;
+      const axis =
           ['ArrowUp', 'ArrowDown'].includes(e.key) ?
           this.viewer.basis[0] :
           this.viewer.basis[1];
@@ -1239,9 +1316,13 @@ class ReorientationPanel {
           Math.acos(Math.max(-1, Math.min(1, z[2]))) * 180 / Math.PI,
           Math.atan2(z[1], z[0]) * 180 / Math.PI
       );
-      if (!preserveAxisInputs) this.syncAngles();
+      if (!preserveAxisInputs) {
+        this.syncAngles();
+      }
     }
-    if (!keepPreviewPosition) this.viewer.translation = [0, 0, 0];
+    if (!keepPreviewPosition) {
+      this.viewer.translation = [0, 0, 0];
+    }
     this.viewer.draw();
     this.feedback.textContent =
         '目标已调整；预览可查看位移和终点离桌高度，执行时重新检查。';
@@ -1255,13 +1336,20 @@ class ReorientationPanel {
     try {
       const response = await fetch(
           '/api/reorient/model?object_id=' + encodeURIComponent(id)
-      ), model = await response.json();
-      if (!response.ok) throw Error(model.error);
-      if (generation !== this.generation) return;
+      );
+      const model = await response.json();
+      if (!response.ok) {
+        throw Error(model.error);
+      }
+      if (generation !== this.generation) {
+        return;
+      }
       this.fiveD = model.pose_mode === '5d';
       document.querySelector('#reorientation-full-angles').hidden = this.fiveD;
       document.querySelector('#reorientation-axis-angles').hidden = !this.fiveD;
-      if (this.fiveD) this.selectedRingAxis = 0;
+      if (this.fiveD) {
+        this.selectedRingAxis = 0;
+      }
       this.viewer.setModel(model);
       this.poseDirty = false;
       this.syncAngles();
@@ -1291,38 +1379,45 @@ class ReorientationPanel {
         this.info.textContent = '模型加载失败：' + e.message;
       }
     } finally {
-      if (generation === this.generation) this.loading = false;
+      if (generation === this.generation) {
+        this.loading = false;
+      }
     }
   }
 
   update(state, otherPending) {
-    if (!this.viewer) return;
+    if (!this.viewer) {
+      return;
+    }
     const g = state.grasp || {};
     this.held = g.held_object;
     this.motionEnabled = g.motion_enabled;
-    const id =
-        this.held?.object_id || state.object_id, key =
+    const id = this.held?.object_id || state.object_id;
+    const key = [
+      id,
+      this.held?.hold_id || '',
+      this.held?.model_sha256 || state.model_sha256,
+      this.held?.orientation_version || 0,
+    ].concat(
+        state.pose_mode_revision || this.held?.pose_mode ?
         [
-          id,
-          this.held?.hold_id || '',
-          this.held?.model_sha256 || state.model_sha256,
-          this.held?.orientation_version || 0,
-        ].concat(
-            state.pose_mode_revision || this.held?.pose_mode ?
-            [
-              this.held?.pose_mode || state.pose_mode || '6d',
-              state.pose_mode_revision || '',
-            ] :
-            []
-        ).join(':');
-    if (id && key !== this.key) this.load(id, key);
+          this.held?.pose_mode || state.pose_mode || '6d',
+          state.pose_mode_revision || '',
+        ] :
+        []
+    ).join(':');
+    if (id && key !== this.key) {
+      this.load(id, key);
+    }
     this.disabled =
         !!g.busy ||
         otherPending ||
         this.pending ||
         this.loading ||
         !this.viewer.model;
-    if (this.disabled) this.cancelDrag();
+    if (this.disabled) {
+      this.cancelDrag();
+    }
     this.dragMode.disabled = this.disabled;
     this.viewReset.disabled = !this.viewer.model;
     this.cameraControl.disabled = !this.viewer.model;
@@ -1330,9 +1425,9 @@ class ReorientationPanel {
     this.positionMode.disabled = this.disabled;
     this.inputs.forEach(x => x.disabled = this.disabled);
     this.restore.disabled = this.disabled;
-    if (this.axisInputs) this.axisInputs.forEach(
-        x => x.disabled = this.disabled || !this.fiveD
-    );
+    if (this.axisInputs) {
+      this.axisInputs.forEach(x => x.disabled = this.disabled || !this.fiveD);
+    }
     const ready =
         !this.disabled &&
         this.anglesValid() &&
@@ -1341,9 +1436,9 @@ class ReorientationPanel {
         this.viewer.model?.model_sha256 === this.held.model_sha256;
     this.preview.disabled = !ready;
     this.execute.disabled = !ready || !g.motion_enabled;
-    if (
-        g.operation === 'reorient' && g.busy
-    ) this.feedback.textContent = g.message;
+    if (g.operation === 'reorient' && g.busy) {
+      this.feedback.textContent = g.message;
+    }
     if (
         g.operation === 'reorient' &&
         !g.busy &&
@@ -1376,14 +1471,15 @@ class ReorientationPanel {
           );
     } else if (
         g.operation === 'reorient' && !g.busy && !this.poseDirty && g.error
-    ) this.feedback.textContent =
-        g.message || g.error;
+    ) {
+      this.feedback.textContent = g.message || g.error;
+    }
   }
 
   async request(preview) {
-    if (
-        this.pending || this.disabled || !this.held || !this.anglesValid()
-    ) return;
+    if (this.pending || this.disabled || !this.held || !this.anglesValid()) {
+      return;
+    }
     this.pending = true;
     this.preview.disabled = true;
     this.execute.disabled = true;

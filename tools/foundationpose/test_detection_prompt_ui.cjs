@@ -1,5 +1,7 @@
 'use strict';
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
 
 function element(tag) {
   return {
@@ -38,7 +40,9 @@ function element(tag) {
   };
 }
 
-const fixed = new Map(), posts = [], rows = [
+const fixed = new Map();
+const posts = [];
+const rows = [
   {
     id: 'cup',
     name: '纸杯',
@@ -68,12 +72,15 @@ const fixed = new Map(), posts = [], rows = [
 ];
 const document = {
   querySelector(id) {
-    if (!fixed.has(id)) fixed.set(id, element(id));
+    if (!fixed.has(id)) {
+      fixed.set(id, element(id));
+    }
     return fixed.get(id);
   },
   createElement: element,
 };
-let failMode = false, failSwitch = false;
+let failMode = false;
+let failSwitch = false;
 const context = vm.createContext({
   document,
   fetch: async() => ({ok: true, json: async() => ({objects: rows})}),
@@ -87,9 +94,13 @@ const context = vm.createContext({
     posts.push({path, body});
     if (
         body.prompt === 'conflict' || (path.endsWith('pose-mode') && failMode)
-    ) throw Error('版本冲突');
+    ) {
+      throw Error('版本冲突');
+    }
     if (path === '/api/object') {
-      if (failSwitch) throw Error('忙碌中');
+      if (failSwitch) {
+        throw Error('忙碌中');
+      }
       return {};
     }
     const row = rows.find(x => x.id === body.id);
@@ -124,19 +135,16 @@ const byClass =
     root.children.map(x => byClass(x, cls)).find(Boolean);
 (async() => {
   await fixed.get('#objects-open').onclick();
-  const panels = fixed.get(
-      '#object-details'
-  ).children, buttons = fixed.get('#object-list').children, apply = fixed.get(
-      '#objects-apply'
-  );
+  const panels = fixed.get('#object-details').children;
+  const buttons = fixed.get('#object-list').children;
+  const apply = fixed.get('#objects-apply');
   assert.equal(panels[0].hidden, false);
   assert.equal(panels[1].hidden, true);
   assert(apply.disabled, 'current object is not switched again');
-  const prompt = byClass(
-      panels[0], 'object-prompt'
-  ), save = byClass(panels[0], 'object-save'), status = byClass(
-      panels[0], 'object-feedback'
-  ), mode = byClass(panels[0], 'object-mode-toggle');
+  const prompt = byClass(panels[0], 'object-prompt');
+  const save = byClass(panels[0], 'object-save');
+  const status = byClass(panels[0], 'object-feedback');
+  const mode = byClass(panels[0], 'object-mode-toggle');
   assert.equal(prompt.placeholder, '纸杯');
   assert.equal(prompt.maxLength, 2000);
   prompt.value = '白色纸杯，不要带把手的马克杯';

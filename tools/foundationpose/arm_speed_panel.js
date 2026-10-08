@@ -22,7 +22,9 @@
       };
       this.saveButton.onclick = () => this.save();
       this.reloadButton.onclick = () => {
-        if (this.reloadButton.disabled) return;
+        if (this.reloadButton.disabled) {
+          return;
+        }
         this.dirty = false;
         this.revision = null;
         this.update(this.state);
@@ -32,7 +34,8 @@
 
     update(state, otherPending = false) {
       this.state = state;
-      const g = state?.grasp || {}, config = g.motion_speed_config;
+      const g = state?.grasp || {};
+      const config = g.motion_speed_config;
       if (
           !this.pending &&
           !this.dirty &&
@@ -43,9 +46,9 @@
         this.input.value = String(config.value);
         this.revision = config.revision;
       }
-      if (
-          config?.error && !this.dirty && !this.pending
-      ) this.feedback.textContent = config.error;
+      if (config?.error && !this.dirty && !this.pending) {
+        this.feedback.textContent = config.error;
+      }
       const disabled =
           this.pending ||
           otherPending ||
@@ -61,7 +64,9 @@
     }
 
     async save() {
-      if (this.pending || this.saveButton.disabled) return;
+      if (this.pending || this.saveButton.disabled) {
+        return;
+      }
       const value = Number(this.input.value);
       if (
           this.input.value.trim() === '' ||
