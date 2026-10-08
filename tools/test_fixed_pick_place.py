@@ -2,7 +2,7 @@ import argparse
 import tempfile
 import unittest
 from unittest.mock import Mock,patch
-from tools.fixed_pick_place import workflow,wait_task,box
+from tools.fixed_pick_place import workflow,wait_task,box,main
 from tools.robot_agent.client import BackendError
 
 
@@ -49,6 +49,15 @@ class WorkflowTests(unittest.TestCase):
             workflow(self.backend,self.args)
         self.assertIsNone(wait.call_args_list[0].args[2]['targets'][0]['box'])
         self.assertEqual(wait.call_args_list[0].args[2]['targets'][1]['box'],self.args.rack_box)
+
+    def test_omitted_rack_box_is_accepted_and_requests_automatic_detection(self):
+        with patch('sys.argv',['fixed_pick_place','--empty-rack']),patch('tools.fixed_pick_place.RobotBackend'),\
+             patch('tools.fixed_pick_place.workflow') as run:main()
+        self.assertIsNone(run.call_args.args[1].rack_box);self.assertIsNone(run.call_args.args[1].tube_box)
+        self.args.tube_box=self.args.rack_box=None
+        with patch('tools.fixed_pick_place.wait_task',side_effect=[{'scene_id':'s'},{'fixed_pick_place_plan':self.plan}]) as wait:
+            workflow(self.backend,self.args)
+        self.assertEqual([t['box'] for t in wait.call_args_list[0].args[2]['targets']],[None,None])
 
     def test_ambiguous_submission_queries_same_id_without_resending(self):
         self.backend.action.side_effect=BackendError({'code':'REQUEST_UNCERTAIN'})

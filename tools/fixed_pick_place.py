@@ -83,7 +83,7 @@ def main():
     p.add_argument('--tube',default='transparent_test_tube_150mm')
     p.add_argument('--rack',default='test_tube_rack_40_272x112x85')
     p.add_argument('--tube-box',type=box,help='可选试管框；省略时使用后端已配置的自动检测器，本地模式不调用LLM')
-    p.add_argument('--rack-box',type=box,required=True,help='同一眼在手图像中的试管架框')
+    p.add_argument('--rack-box',type=box,help='可选试管架框；省略时同样由后端自动检测，未得到唯一候选则采集失败并提示改为传框')
     free=p.add_mutually_exclusive_group(required=True)
     free.add_argument('--free-slots',help='明确确认空闲的模型孔位，例如A01,A02,B03')
     free.add_argument('--empty-rack',action='store_true',help='声明架子所有候选孔均为空；不自动检测占用')

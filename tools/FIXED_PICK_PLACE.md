@@ -4,9 +4,15 @@
 
 ## 运行
 
-在MSI项目根目录执行，8089须运行新版后端。眼在手画面为640×360；试管和试管架必须同时可见且保持静止。框只用于目标分割初始化，位姿由同一份新RGB-D画面的SAM和FoundationPose重新求解。透明试管配置本地Grounding DINO后可省略--tube-box，由本地视觉模型自动给框；试管架仍需--rack-box。未配置本地检测的其他物品须提供框；不能使用D405全局图片的坐标。
+在MSI项目根目录执行，8089须运行新版后端。眼在手画面为640×360；试管和试管架必须同时可见且保持静止。框只用于目标分割初始化，位姿由同一份新RGB-D画面的SAM和FoundationPose重新求解。`--tube-box`和`--rack-box`均可省略：省略时由8089当前的自动检测器在同一冻结画面中给框（缺省为常驻本地Qwen3-VL，读取各物品目录的`qwen_detection.json`；以`--detector ssdlite`启动时读取`local_detection.json`走Grounding DINO；以`--detector llm`启动时调用远端模型）。自动检测必须恰好得到一个可靠候选，否则本次采集失败并提示改为传框，不会猜测。物品没有对应检测配置时须提供框；不能使用D405全局图片的坐标。
 
-以下 `x0,y0,x1,y1` 是须替换的实际框坐标，不是可直接运行的实机参数：
+全部自动找框：
+
+```sh
+work/task_runner_env/bin/python -m tools.fixed_pick_place --empty-rack
+```
+
+自动找框失败或有多个同类物品时手动传框，以下 `x0,y0,x1,y1` 是须替换的实际框坐标，不是可直接运行的实机参数：
 
 ```sh
 work/task_runner_env/bin/python -m tools.fixed_pick_place \
