@@ -64,6 +64,27 @@ LIBRARY_HOOK_NAME = re.compile(
 LONE_STRING = re.compile(r'''^\s*(\w+\s*=\s*)?[rbfuRBFU]*(['"])\S+\2[,)]?$''')
 HUNK_HEADER = re.compile(r'^@@ -\S+ \+(\d+)(?:,(\d+))? @@')
 
+# 规范第 5.7 节：核心后端由低到高的分层，只允许上层导入下层。
+CORE_LAYERS = (
+    'geometry', 'robot', 'perception', 'objects', 'scene', 'manipulation',
+    'workbench',
+)
+# 核心分层之外的包各自允许导入的包；contracts 不依赖任何包。
+SIDE_PACKAGES = {
+    'contracts': frozenset(),
+    'agent': frozenset({'contracts'}),
+    'task_runner': frozenset({'agent', 'contracts'}),
+    'camera_monitor': frozenset({'agent'}),
+    'calibration': frozenset(),
+    'modeling': frozenset({'calibration'}),
+}
+# 已知的越层导入：两处都在用任务执行器里的模型服务配置。
+# TODO: 把这份配置移到公共位置后删除这两项（见 HANDOFF_REPORT.md）。
+KNOWN_LAYER_EXCEPTIONS = frozenset({
+    ('saydo/perception/llm_detection.py', 'task_runner'),
+    ('saydo/agent/codex_launcher.py', 'task_runner'),
+})
+
 STDLIB_DIRECTORY = pathlib.Path(sysconfig.get_paths()['stdlib'])
 
 
@@ -274,6 +295,52 @@ def _is_sys_path_mutation(node: ast.Call) -> bool:
     )
 
 
+def _allowed_packages(package: str) -> Optional[frozenset]:
+    """返回 saydo 下某个包允许导入的其他包；包未登记时返回 None。"""
+    if package in CORE_LAYERS:
+        lower = CORE_LAYERS[:CORE_LAYERS.index(package)]
+        return frozenset(lower) | {'contracts'}
+    return SIDE_PACKAGES.get(package)
+
+
+def _layer_findings(path: str, tree: ast.AST) -> List[Finding]:
+    """检查 saydo 各包之间的导入方向：只允许上层导入下层。"""
+    parts = pathlib.PurePosixPath(path).parts
+    if len(parts) < 3 or parts[0] != 'saydo':
+        return []
+    package = parts[1]
+    allowed = _allowed_packages(package)
+    if allowed is None:
+        message = f'包 {package} 未在分层表里登记，见规范第 5.7 节'
+        return [Finding(path, 1, 1, '分层', message)]
+    findings = []
+    for node in ast.walk(tree):
+        imported = []
+        if isinstance(node, ast.ImportFrom) and node.module:
+            names = node.module.split('.')
+            if names[0] == 'saydo':
+                imported = (names[1:2] if len(names) > 1
+                            else [alias.name for alias in node.names])
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names = alias.name.split('.')
+                if names[0] == 'saydo' and len(names) > 1:
+                    imported.append(names[1])
+        for other in imported:
+            if other in (package, 'paths') or other in allowed:
+                continue
+            if (path, other) in KNOWN_LAYER_EXCEPTIONS:
+                continue
+            message = (
+                f'{package} 不能导入 {other}：只允许上层导入下层，'
+                '见规范第 5.7 节'
+            )
+            findings.append(
+                Finding(path, node.lineno, node.lineno, '分层', message)
+            )
+    return findings
+
+
 def _import_findings(
     path: str, tree: ast.AST, root: pathlib.Path
 ) -> List[Finding]:
@@ -438,6 +505,7 @@ def python_findings(
     findings = _semicolon_findings(path, source)
     findings += _statement_findings(path, tree, lines)
     findings += _import_findings(path, tree, root)
+    findings += _layer_findings(path, tree)
     findings += _definition_findings(path, tree)
     if not is_test_file(path):
         findings += _public_api_findings(path, tree)

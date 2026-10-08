@@ -287,6 +287,41 @@ class PythonRuleTest(RepositoryTestCase):
         findings = self.check('test_a.py', 'def broken(:\n')
         self.assertEqual(rules(findings), ['语法'])
 
+    def test_lower_layer_importing_higher_layer_is_reported(self):
+        self.write('saydo/manipulation/grasp_control.py', '"""抓取。"""\n')
+        findings = self.check(
+            'saydo/geometry/transforms.py',
+            '"""变换。"""\n\nfrom saydo.manipulation import grasp_control\n',
+        )
+        self.assertEqual(rules(findings), ['分层'])
+        self.assertIn('geometry 不能导入 manipulation', findings[0].message)
+
+    def test_higher_layer_importing_lower_layers_is_accepted(self):
+        self.write('saydo/geometry/transforms.py', '"""变换。"""\n')
+        self.write('saydo/contracts/motion_contract.py', '"""约定。"""\n')
+        self.write('saydo/paths.py', '"""路径。"""\n')
+        findings = self.check('saydo/manipulation/grasp_control.py', """\
+            \"\"\"抓取。\"\"\"
+
+            from saydo import paths
+            from saydo.contracts import motion_contract
+            from saydo.geometry import transforms
+            """)
+        self.assertEqual(findings, [])
+
+    def test_side_package_may_only_import_its_listed_packages(self):
+        self.write('saydo/workbench/live_tracker.py', '"""服务。"""\n')
+        findings = self.check(
+            'saydo/agent/server.py',
+            '"""接口。"""\n\nfrom saydo.workbench import live_tracker\n',
+        )
+        self.assertEqual(rules(findings), ['分层'])
+
+    def test_unregistered_package_is_reported(self):
+        findings = self.check('saydo/newpackage/module.py', '"""新包。"""\n')
+        self.assertEqual(rules(findings), ['分层'])
+        self.assertIn('未在分层表里登记', findings[0].message)
+
     def test_javascript_var_is_reported(self):
         findings = self.check('panel.js', """\
             var count = 0;
