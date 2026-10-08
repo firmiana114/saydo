@@ -51,6 +51,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(wait.call_args_list[0].args[2]['targets'][0]['box'])
         self.assertEqual(wait.call_args_list[0].args[2]['targets'][1]['box'],self.args.rack_box)
 
+    def test_backend_rejecting_the_request_format_explains_the_version_mismatch(self):
+        import contextlib,io
+        rejected=BackendError({'code':'INVALID_ARGUMENTS','message':'未知的动作或参数。'});output=io.StringIO()
+        with patch('sys.argv',['fixed_pick_place','--empty-rack']),patch('tools.fixed_pick_place.RobotBackend'),\
+             patch('tools.fixed_pick_place.workflow',side_effect=rejected),contextlib.redirect_stderr(output),\
+             self.assertRaises(SystemExit) as stopped:main()
+        self.assertEqual(stopped.exception.code,2)
+        self.assertIn('restart_tracker.py',output.getvalue());self.assertIn('未发送机械臂或夹爪动作',output.getvalue())
+        other=BackendError({'code':'REQUEST_UNCERTAIN'})
+        with patch('sys.argv',['fixed_pick_place','--empty-rack']),patch('tools.fixed_pick_place.RobotBackend'),\
+             patch('tools.fixed_pick_place.workflow',side_effect=other),self.assertRaises(BackendError):main()
+
     def test_omitted_rack_box_is_accepted_and_requests_automatic_detection(self):
         with patch('sys.argv',['fixed_pick_place','--empty-rack']),patch('tools.fixed_pick_place.RobotBackend'),\
              patch('tools.fixed_pick_place.workflow') as run:main()

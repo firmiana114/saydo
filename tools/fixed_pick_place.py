@@ -94,7 +94,12 @@ def main():
     p.add_argument('--output',type=Path,default=Path('work/fixed_pick_place'))
     args=p.parse_args()
     if not 0<=args.release_gap_mm<=5:p.error('释放间隙须为0至5毫米')
-    workflow(RobotBackend(args.base_url,args.token_file),args)
+    try:workflow(RobotBackend(args.base_url,args.token_file),args)
+    except BackendError as error:
+        if error.payload.get('code')!='INVALID_ARGUMENTS':raise
+        # The backend validates requests before starting anything, so nothing was planned or moved.
+        p.exit(2,'后端不接受本脚本的请求格式（INVALID_ARGUMENTS：'+str(error)+'）。请求在开始前即被拒绝，未发送机械臂或夹爪动作。\n'
+                 '最常见的原因是8089仍在运行更新之前的代码，与本脚本版本不一致：先运行 tools/foundationpose/restart_tracker.py 重启后再试。\n')
 
 
 if __name__=='__main__':main()
