@@ -1,6 +1,6 @@
 # 固定试管抓放脚本
 
-入口：`python -m tools.fixed_pick_place`。单臂、静态场景、无LLM决策；每次运行先定位试管和试管架，再检查完整抓取/调姿/搬运/下降/松爪后退出路线。先把操作员确认的空孔按“孔口到试管当前位置的水平距离”由近到远排序（距离相同按孔位名），取第一个全程通过的候选，即最近且可行的孔位；开动后不更换孔位或目标，不自动重试失败动作。
+入口：`python -m scripts.fixed_pick_place`。单臂、静态场景、无LLM决策；每次运行先定位试管和试管架，再检查完整抓取/调姿/搬运/下降/松爪后退出路线。先把操作员确认的空孔按“孔口到试管当前位置的水平距离”由近到远排序（距离相同按孔位名），取第一个全程通过的候选，即最近且可行的孔位；开动后不更换孔位或目标，不自动重试失败动作。
 
 ## 运行
 
@@ -9,13 +9,13 @@
 全部自动找框：
 
 ```sh
-work/task_runner_env/bin/python -m tools.fixed_pick_place --empty-rack
+work/task_runner_env/bin/python -m scripts.fixed_pick_place --empty-rack
 ```
 
 自动找框失败或有多个同类物品时手动传框，以下 `x0,y0,x1,y1` 是须替换的实际框坐标，不是可直接运行的实机参数：
 
 ```sh
-work/task_runner_env/bin/python -m tools.fixed_pick_place \
+work/task_runner_env/bin/python -m scripts.fixed_pick_place \
   --tube-box x0,y0,x1,y1 \
   --rack-box x0,y0,x1,y1 \
   --empty-rack

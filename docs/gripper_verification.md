@@ -30,4 +30,4 @@
 
 8089 页面力度输入范围为原始值 1–100。执行模式按回车或离开输入框立即下发；预览模式只保存配置。抓取期间及夹爪运动时拒绝修改，写入与抓取共享设备锁。页面区分指令应答与数值读回；通信失败显示结果未确认，不假报成功。日志位于 `work/grasp/force_commands/`。重启服务只重置服务配置，不自动写设备。
 
-离线检查：`python3 -m unittest discover -s tools/foundationpose -p 'test_grasp.py' -v`。
+离线检查：`work/foundationpose_env/bin/python -m unittest tests.manipulation.test_grasp -v`。

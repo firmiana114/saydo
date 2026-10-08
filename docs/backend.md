@@ -2,7 +2,7 @@
 
 ## Codex 机械臂工具
 
-`tools/robot_agent/` 提供专用 MCP 工具，包括最新相机画面、带坐标系/时间戳的物品位姿、机械臂只读状态、抓取/放置预览与执行、两种复位、停止和持久化任务查询。后端通过 `--agent-token-file` 显式启用认证路由；未传入时保持原网页行为。执行仍复用现有运动检查与设备锁。配置、工具说明和失败语义见 [机械臂 Agent 接入说明](../robot_agent/README.md)。
+`saydo/agent/` 提供专用 MCP 工具，包括最新相机画面、带坐标系/时间戳的物品位姿、机械臂只读状态、抓取/放置预览与执行、两种复位、停止和持久化任务查询。后端通过 `--agent-token-file` 显式启用认证路由；未传入时保持原网页行为。执行仍复用现有运动检查与设备锁。配置、工具说明和失败语义见 [机械臂 Agent 接入说明](agent.md)。
 
 ## 网页工作台
 
@@ -14,7 +14,7 @@
 
 “将物品摆至指定姿态”的拖拽方式有三种：自由旋转、绕物品 X/Y/Z 圆环、绕基座 X/Y/Z 圆环。物品圆环随物品朝向转动，基座圆环固定于基座方向；红/绿/蓝分别对应 X/Y/Z，均围绕当前夹持中心（未抓取时模型原点）。物品模式右乘旋转增量，基座模式左乘，观察视角不改变此含义。拖动按圆环平面计算角度，支持跨越 180° 和 Shift 精调；方向键微调最近点击的圆环轴，默认 Z。旧方案存在预览位移时，圆环拖动期间保持该预览中心，结束后清除旧位移并等待重新规划。切换模式仅改变控件，不发送动作或重新设定目标朝向。
 
-第5页通过同源嵌入显示任务界面，8089 将限定的任务路由转接到本机8091编排进程；不向浏览器暴露模型密钥。默认模型为 `gpt-6-sol / medium`。任务执行器需独立启动，详见 [安装及运行说明](../task_runner/README.md)。工作台右侧“停止运动”会同时取消自然语言任务；任务服务不可用时保留原后端停止尝试，并明确显示停止未确认。
+第5页通过同源嵌入显示任务界面，8089 将限定的任务路由转接到本机8091编排进程；不向浏览器暴露模型密钥。默认模型为 `gpt-6-sol / medium`。任务执行器需独立启动，详见 [安装及运行说明](task_runner.md)。工作台右侧“停止运动”会同时取消自然语言任务；任务服务不可用时保留原后端停止尝试，并明确显示停止未确认。
 
 ## 统一机械臂运动速度
 
@@ -58,8 +58,8 @@
 迁移工具 `migrate_model_grasps.py` 默认仅列出计划。停下网页服务且没有正在执行任务或需要保留的夹持记录后运行（使用相同的 `--models-root`）：
 
 ```sh
-python tools/foundationpose/migrate_model_grasps.py --root .
-python tools/foundationpose/migrate_model_grasps.py --root . --apply
+python -m scripts.migrate_model_grasps --root .
+python -m scripts.migrate_model_grasps --root . --apply
 ```
 
 迁移会拆分集中式夹法、历史备份及可归属物品的示教/编辑记录；先检查冲突，再以原子文件方式写入，可重复执行。`work/grasp/grasp_profiles.json`、`taught_profiles.json` 及旧历史保持原样作回退来源，迁移后的物品不再使用它们；旧部署尚未迁移的物品仅作只读兼容，首次保存直接写物品目录。回滚程序之前需先将模型目录中的后续修改合并回旧格式，不能直接启用过时集中库。
@@ -148,8 +148,8 @@ python tools/foundationpose/migrate_model_grasps.py --root . --apply
 离线验证（不连接实机）：
 
 ```bash
-SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q
-node tools/foundationpose/test_placement_panel.cjs
+scripts/run_tests.sh backend
+node tests/workbench/test_placement_panel.cjs
 ```
 
 ## D435i 实时跟踪接入
@@ -157,10 +157,10 @@ node tools/foundationpose/test_placement_panel.cjs
 `live_tracker.py` 是官方 FoundationPose 的相机和网页适配层：直接调用运行时 `FoundationPose.register(iteration=5)` 和 `track_one(iteration=2)`，不修改官方位姿网络、算法源码或上游快照。SAM ViT-B 负责首帧像素分割，提示可来自手动框选或自动检测。受保护的试抓接口见本文“首轮视觉抓取接入”；默认点击抓取按钮并通过检查后执行。
 
 ```bash
-source tools/foundationpose/runtime_env.sh
+source scripts/runtime_env.sh
 # RealSense SDK 独立放在 work/，不替换已有 Python 环境依赖。
 python -m pip install --no-deps --target work/foundationpose_realsense_py311 pyrealsense2==2.58.4.10922
-python tools/foundationpose/live_tracker.py --mesh work/object_models/ob_yibao_350ml/model/model.obj --auto-start
+python -m saydo.workbench.live_tracker --mesh work/object_models/ob_yibao_350ml/model/model.obj --auto-start
 ```
 
 页面默认仅监听 MSI 的 `http://127.0.0.1:8089`；远端浏览器可用 `ssh -N -L 18889:127.0.0.1:8089 msi`，然后打开本机 `http://127.0.0.1:18889`。选择目标会冻结一张 RGB-D 图；拖框后初始化，出现跟踪结果后可缓慢移动目标。框坐标绑定冻结帧，旧选择会被拒绝。默认丢失后会自动重新检测和初始化，手动重新框选也可恢复。暂停仅停跟踪，停止按钮或 SIGTERM 会释放相机并退出服务。
@@ -168,7 +168,7 @@ python tools/foundationpose/live_tracker.py --mesh work/object_models/ob_yibao_3
 用户需要直接通过局域网访问时，指定 MSI 的局域网地址（无需 SSH 隧道）：
 
 ```bash
-python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start
+python -m saydo.workbench.live_tracker --host 192.168.101.65 --port 8089 --auto-start
 ```
 
 此时使用 `http://192.168.101.65:8089/`。服务只绑定指定网卡地址；该地址变化时需相应调整启动参数。
@@ -178,7 +178,7 @@ python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --
 `restart_tracker.py` 在 MSI 上先停止正在监听 8089 的跟踪服务（连同常驻检测子进程），再按固定参数后台启动、更新 `work/foundationpose_live/server.pid` 并等待模型就绪。它只管理进程，不发送机械臂或夹爪指令。
 
 ```bash
-ssh msi /home/pc/saydo/tools/foundationpose/restart_tracker.py
+ssh msi /home/pc/saydo/scripts/restart_tracker.py
 ```
 
 - 停止前检查 8089 无执行中的机械臂任务、无夹持记录，且 8091 没有未结束的任务；任一不满足则拒绝并说明原因。读不到服务状态时同样拒绝。确认可以丢弃这些状态后加 `--force` 跳过检查。
@@ -200,7 +200,7 @@ ssh msi /home/pc/saydo/tools/foundationpose/restart_tracker.py
 
 每次运行记录在 `work/foundationpose_live/<时间>/`：模型哈希、实际流配置、初始化 RGB-D/mask、连续帧位姿与质量指标、最新预览。怡宝模型高度 170 mm、直径 60 mm 是待实测的假设，近似旋转对称与透明瓶身会影响深度和朝向判断。
 
-离线检查：`python -m unittest discover -s tools/foundationpose -p 'test_live_*.py' -v`。相机与实物跟踪的实际结果按每次运行单独记录。
+离线检查：`scripts/run_tests.sh backend`。相机与实物跟踪的实际结果按每次运行单独记录。
 
 2026-09-17 实测：4 项输入/深度/跳变/多目标候选检查通过。350 mL 怡宝实物完成连续视频跟踪，用户确认缓慢移动时框贴合；过程中曾触发丢失，重新初始化可恢复。自动初始化已在真实相机帧完成，未手动提供初始框。低延迟版本运行记录 `work/foundationpose_live/20260917_112942_816874/`；抽样最近 200 帧实际处理约 15 fps，中位推理约 34 ms、服务端结果年龄约 118 ms。经 SSH 隧道连续解码 20 个 MJPEG 帧约 15 fps，平均约 38 KB/帧。结果年龄不含浏览器显示延迟，局部深度残差不等于定位精度，未验证实机抓取。
 
@@ -213,8 +213,8 @@ ssh msi /home/pc/saydo/tools/foundationpose/restart_tracker.py
 **结果不合格**：模型明显分裂，未形成可靠完整胶带。原始 register 的三组留出 IoU 为 0.188、0.171、0.166；没有根据这些结果调整算法或重新拟合。不用于实时跟踪、抓取或机器人控制。组数增加没有解决胶带本体深度缺失，后续应先诊断采集质量。
 
 ```bash
-source tools/foundationpose/runtime_env.sh
-python tools/foundationpose/reconstruct_scan.py \
+source scripts/runtime_env.sh
+python -m saydo.modeling.reconstruct_scan \
   --session tape_20260915_set3 \
   --segmentation work/object_scan/tape_20260915_set3/segmentation_final \
   --reference-view 140609_a4cda5d8 \
@@ -237,16 +237,16 @@ python tools/foundationpose/reconstruct_scan.py \
 
 ```bash
 cd /home/pc/saydo
-source tools/foundationpose/runtime_env.sh
-python tools/foundationpose/check_source.py
-python tools/foundationpose/check_gpu.py
+source scripts/runtime_env.sh
+python scripts/check_source.py
+python scripts/check_gpu.py
 ```
 
 独立环境为 `work/foundationpose_env/`，运行副本为 `work/foundationpose_runtime/`，日志和包清单在 `work/foundationpose_setup/`。采集仍使用原 `.venv`。源码检查只验证上游文件；GPU 检查才执行运算和权重加载。
 
 已验证：Python 3.11、PyTorch 2.5.1+cu124、torchvision 0.20.1+cu124、CUDA Toolkit 12.4.131、PyTorch3D 0.7.9、NVDiffRast 0.3.3、Kaolin 0.18.0、Warp 1.6.2、NumPy 2.1.3、OpenCV 4.11.0.86、Open3D 0.19.0。显卡 RTX 4060 Laptop 8 GB，驱动 595.84。nvidia-smi 的 CUDA 13.2 是驱动能力，不是 nvcc 版本。
 
-版本及验证记录：`config/foundationpose/environment_state.json`。环境声明和 Python 约束在本目录 `environment_msi.yml`、`constraints_msi.txt`。
+版本及验证记录：`config/foundationpose/environment_state.json`。环境声明和 Python 约束在 `scripts/` 目录的 `environment_msi.yml`、`constraints_msi.txt`。
 
 Warp 1.6.2 在此驱动上有设备 UUID API 兼容警告，但深度 CUDA 核函数、重建和离线推理实际执行通过。它与下述已修复的退出异常不同。
 
@@ -268,13 +268,13 @@ Warp 1.6.2 在此驱动上有设备 UUID API 兼容警告，但深度 CUDA 核�
 - NVDiffRast：`729261dc64c4241ea36efda84fbf532cc8b425b8`（v0.3.3）。
 - Segment Anything：`dca509fe793f601edb92606367a655c15ac00fdf`。
 
-它们位于 `work/foundationpose_deps/{pytorch3d-source,nvdiffrast-source,sam-source}/`。源码及环境备齐后，运行 `bash tools/foundationpose/install_extensions.sh` 构建并检查。系统还安装了 libegl-dev 和 libgl-dev。
+它们位于 `work/foundationpose_deps/{pytorch3d-source,nvdiffrast-source,sam-source}/`。源码及环境备齐后，运行 `bash scripts/install_extensions.sh` 构建并检查。系统还安装了 libegl-dev 和 libgl-dev。
 
 基础 Python 包安装命令：
 
 ```bash
 python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
-python -m pip install -r third_party/FoundationPose/requirements.txt -c tools/foundationpose/constraints_msi.txt xatlas rtree einops
+python -m pip install -r third_party/FoundationPose/requirements.txt -c scripts/constraints_msi.txt xatlas rtree einops
 ```
 
 ## 权重来源
@@ -291,10 +291,10 @@ python -m pip install -r third_party/FoundationPose/requirements.txt -c tools/fo
 
 ```bash
 # 新建分割输出，不覆盖已有目录
-python tools/foundationpose/segment_views.py
+python -m saydo.modeling.segment_views
 
 # 重建：默认新建运行目录
-python tools/foundationpose/reconstruct_scan.py \
+python -m saydo.modeling.reconstruct_scan \
   --segmentation work/object_scan/tape_20260915/segmentation_sam_v3 \
   --heldout 102616_65d32a20 102905_faba178f \
   --steps 1000 --texture --include-rgb-only-rays
@@ -305,7 +305,7 @@ python tools/foundationpose/reconstruct_scan.py \
 物体坐标轴平行基座，原点是第一视角有效表面的稳健中值，不是抓取中心。run.json 保存参考变换及视角名单。图像缩放到 640×360 时同步缩放 K；无效深度保持无效，没有用圆环原始几何替代神经重建。旧 nerf_v1、nerf_v2_geometry 保留了退出异常记录，不视为完整运行通过。
 
 ```bash
-python tools/foundationpose/evaluate_mesh.py \
+python -m saydo.modeling.evaluate_mesh \
   --run work/foundationpose_runs/tape_20260915/nerf_v3_rgb \
   --segmentation work/object_scan/tape_20260915/segmentation_sam_v3
 ```
@@ -348,7 +348,7 @@ python tools/foundationpose/evaluate_mesh.py \
 ## 视觉抓取接入（默认执行模式，用户已确认首次纸杯夹取成功）
 
 同型号、同安装位置和朝向的替换相机可按用户确认复用手眼关系，配置见
-`config/calibration/camera_reuse.yaml` 和 [标定说明](../../config/calibration/README.md)。
+`config/calibration/camera_reuse.yaml` 和 [标定说明](../config/calibration/README.md)。
 启动不带 `--serial` 时自动选择唯一 D435I，多台时要求指定序列号。
 每台相机使用自身内参（像素到空间方向的换算参数），不再要求等于旧相机内参；
 抓取和记录夹法仍核对实际型号、观测来源、成像配置和原标定来源。
@@ -367,11 +367,11 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 
 点击时要求目标连续稳定至少半秒、位姿新鲜，并立即复制当前目标身份、相机坐标下的位置与朝向及图像时刻。任务开始时连续查询机械臂状态验证静止，将这份固定快照换算为机械臂基座下的抓取点；绑定时快照不得超过 0.6 秒。之后不再读取目标位置，视觉丢失、目标移动或规划耗时不会触发重新选点，也不会单独阻塞执行。页面视觉预览可以继续更新，但不参与本次抓取；请保持物品原位。任务日志保存锁定快照与最终固定抓取点。检查型号、固件、关节使能/错误、工具/负载与 Base 工作坐标系及标定来源哈希。首次运动使用 movej_p 直接到沿目标工具 +Z 反向退开的预抓点，同时调整到目标朝向；随后保持该朝向沿 +Z 接近夹持点；闭合并连续确认夹持反馈后，沿机械臂基座的竖直方向抬升 0.10 米（10 厘米）。配置为 action=grasp_and_lift、lift_height_m=0.10。已删除固定的预抓上方必经点及 clearance_height_m 配置；不会自动绕过障碍。开始前检查起始点及预抓、夹持、抬升航点的工作区与离桌间距，并对三个目标逐个做逆解与正解回验；每段发令前再按实际关节角重查该目标。不生成抓取中间点，也不声称检查过完整路径。空夹、故障或闭合超时不进入抬升；抬升期间不再轮询夹持状态。软件不提供中间路径的环境碰撞检查。
 
-抓取与姿态调整共同使用 `motion_validation.py` 和离线工具 `grasp_ik.cpp`。使用 `bash tools/foundationpose/build_ik_checker.sh` 构建配置 `ik_checker` 对应的默认可执行文件；工具仅调用算法接口，不连接机械臂。新版输出 `PROTOCOL IK_FK_V1` 和每个逆解的正向位姿；Python 独立重算误差，缺少协议、结果不完整或误差超出 2 毫米/2° 均拒绝。
+抓取与姿态调整共同使用 `motion_validation.py` 和离线工具 `grasp_ik.cpp`。使用 `bash scripts/build_ik_checker.sh` 构建配置 `ik_checker` 对应的默认可执行文件；工具仅调用算法接口，不连接机械臂。新版输出 `PROTOCOL IK_FK_V1` 和每个逆解的正向位姿；Python 独立重算误差，缺少协议、结果不完整或误差超出 2 毫米/2° 均拒绝。
 
 执行模式为默认值。夹爪力度设置和位置开合已由用户实测确认，不再以版本门槛、数值读回或旧的夹爪验收标记阻塞。采用写入 1220 力度上限、`hand_follow_pos` 按 open_position 张开 / closed_position 夹取的链路（前端独立“打开夹爪”按钮固定为 1000）；不写 1180，不使用 1470。设备状态、开始时的视觉时效和航点工作区检查继续执行。停止请求及异常超时处理保留，不自动松开或抬起；状态 3 仅表明力控停止，仍需观察是否抓牢。每次任务记录于 `work/grasp/jobs`。 再次抓取前以实际开度判断人工复位：夹爪停稳且位置距配置的抓取张开目标或完全张开位置 1000 不超过 3 个原始位置单位时，允许残留的力控停止状态；未张开且存在力控停止或非零力度反馈时仍拒绝自动张开。故障和运动状态继续拦截，任务日志保存初始夹爪状态以便排查。
 
-2026-09-18 用户实测确认：原始力度 10、目标位置 0 可以轻夹纸杯，力度 50 会使纸杯轻微变形；目标位置 1000 为张开。适用于当前控制器 V1.7.0 / 夹爪 V1.154。配置记录 `force_control_verified=true` 和用户证据，默认力度 10。原始数值尚不能换算为牛顿，寄存器数值读回仍不可用；这不否定已确认的力度设置效果。完整范围见 [夹爪验证记录](GRIPPER_VERIFICATION.md)。
+2026-09-18 用户实测确认：原始力度 10、目标位置 0 可以轻夹纸杯，力度 50 会使纸杯轻微变形；目标位置 1000 为张开。适用于当前控制器 V1.7.0 / 夹爪 V1.154。配置记录 `force_control_verified=true` 和用户证据，默认力度 10。原始数值尚不能换算为牛顿，寄存器数值读回仍不可用；这不否定已确认的力度设置效果。完整范围见 [夹爪验证记录](gripper_verification.md)。
 
 夹持反馈判定依据 RM Plus 状态 3（力控到位）、停止速度和尚未全闭的位置连续出现；正力反馈标记为 force_contact，零力反馈标记为 force_stop，两者均可进入配置的抬升阶段；状态 2 仅表示位置到位，状态 5 是电流保护，均不能当作抓到物体。该判据仍需本设备验证；即使触发也只表示疑似力控接触，不证明抓牢。
 
@@ -384,7 +384,7 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 - https://develop.realman-robotics.com/robot/json/motionConfig/
 - https://www.changingtek.com/diandong/147
 
-检查：`python -m unittest discover -s tools/foundationpose -p 'test_grasp.py' -v`。不以模拟执行测试代替实机验收。
+检查：`work/foundationpose_env/bin/python -m unittest tests.manipulation.test_grasp -v`。不以模拟执行测试代替实机验收。
 
 ### 记录夹法的力度、张开位置与机械臂复位
 
@@ -395,8 +395,8 @@ base_T_object = base_T_grip_tcp @ inverse(flange_T_grip_tcp)
 现有夹法批量绑定使用 `bind_gripper_parameters.py`，默认预览，`--apply` 才写入。上线时先确认没有活动任务并处理夹持状态，再停止服务、持有设备锁迁移。四个物品共 22 条夹法写入指定值；保留 ID、几何、选择方式和历史，修改参数后清除当前版本的实测成功标记，原文件备份及编辑记录留在各物品目录。缺少绑定值的旧条目会显示 `parameter_error` 并拒绝执行，不静默沿用全局值。
 
 ```sh
-python tools/foundationpose/bind_gripper_parameters.py --root .
-python tools/foundationpose/bind_gripper_parameters.py --root . --apply
+python -m scripts.bind_gripper_parameters --root .
+python -m scripts.bind_gripper_parameters --root . --apply
 ```
 
 原全局夹爪参数表单已移除。“打开夹爪”按钮仍固定完全张开至 1000。为兼容已有维护调用，旧 `/api/gripper/open-position` 和 `/api/gripper/force-config` 路由仍保留，其中力度路由在执行模式下仍可能立即写入硬件；它们不再决定已绑定夹法的实际抓取力度/开度，也不作为 MCP 工具暴露。
@@ -429,7 +429,7 @@ Agent 输出过滤旧 `force_config` / `open_position_config` 全局字段，避
 
 仍直接调用官方 FoundationPose `register` 和 `track_one`；没有放宽深度/轮廓/位姿跳变质量阈值，也未改变机械臂运动授权。初始输入过旧或计算持续慢于实时需求仍会明确失败，不发布陈旧位姿。
 
-最新夹爪验证结论以 [2026-09-18 用户实测记录](GRIPPER_VERIFICATION.md) 为准，旧版“无法写入”的诊断已撤销。
+最新夹爪验证结论以 [2026-09-18 用户实测记录](gripper_verification.md) 为准，旧版“无法写入”的诊断已撤销。
 
 自适应抓取（2026-09-18）：机械臂速度比例保留用户设置 100%，预抓距离 0.05 米（5 厘米），夹持后沿底座竖直方向抬升 0.10 米（10 厘米）。用户确认工具 +Z 是夹爪前进方向。本轮只有模拟验证，未下发实机动作；多朝向精度、控制器实际旋转轨迹及物品/环境碰撞检查尚待验证。
 
@@ -493,7 +493,7 @@ Agent 输出过滤旧 `force_config` / `open_position_config` 全局字段，避
 
 日志 `work/grasp/reorient_jobs/` 保存规划前真实关节/位姿、工具参数、请求模式、各候选结果、起终点/位移、目标端点、控制器响应、段末反馈及最小观测物品高度。候选日志只保留最初和最近各 64 条，并附候选序号，避免扩大搜索时产生无界日志。旧放置接口、落点和释放流程继续保持删除状态。
 
-验证：`python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`；`node tools/foundationpose/test_reorientation_viewer.cjs`。软件和离线验证不发送真实动作。端点检查不等于完整关节轨迹或环境碰撞证明，控制器可能选择不同的关节解；预览连线只表示端点位移；夹指/外部障碍与物品滑动未被完整建模，需现场验证实际运动。
+验证：`scripts/run_tests.sh backend`；`node tests/workbench/test_reorientation_viewer.cjs`。软件和离线验证不发送真实动作。端点检查不等于完整关节轨迹或环境碰撞证明，控制器可能选择不同的关节解；预览连线只表示端点位移；夹指/外部障碍与物品滑动未被完整建模，需现场验证实际运动。
 
 ### 正解回验与稳定到位
 
@@ -501,7 +501,7 @@ Agent 输出过滤旧 `force_config` / `open_position_config` 全局字段，避
 - 控制器完成反馈后，位置误差大于 10 毫米或朝向误差大于 10° 立即报错，由任务异常路径发停止指令。较小偏差最多等待约 0.8 秒（不含无法避免的阻塞查询耗时），每 50 毫秒读取一次；至少连续三次满足最终容差，并覆盖至少 100 毫秒、相邻位置变化 ≤0.5 毫米、朝向变化 ≤0.5° 才继续。
 - 抓取最终容差仍为 2 毫米/2°；姿态调整使用其现有配置容差。稳定窗口未形成、误差持续、取消或状态查询失败都停止后续动作，不增加重试运动，不放宽最终容差。姿态调整采用 movej_p，运动期间不再做假定直线路径偏差监测，仍检查实际状态和夹持反馈。
 - `kinematics_checks` 记录每段发令前的实际状态与正解回验；`arrival_checks[].samples` 记录有界采样、误差和耗时，`settled` 标明是否完成稳定到位。自适应搜索日志也保留具体正解失败原因。
-- 包含历史错误解的完整回归：`SAYDO_IK_CHECKER=$PWD/work/grasp/rm75_ik_check python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`。未设置此环境变量时，仅跳过调用实际离线 SDK 可执行文件的历史回归项；其余均为模拟测试。
+- 包含历史错误解的完整回归：`scripts/run_tests.sh backend`。未设置此环境变量时，仅跳过调用实际离线 SDK 可执行文件的历史回归项；其余均为模拟测试。
 
 ## 本地开放类别检测（透明试管）
 
@@ -524,7 +524,7 @@ MSI的试管架 `test_tube_rack_40_272x112x85` 也已配置同一检测器，描
 ```sh
 work/foundationpose_env/bin/python -m pip install --no-deps \
   --target work/local_detection_deps \
-  -r tools/foundationpose/requirements-local-detection.txt
+  -r scripts/requirements-local-detection.txt
 ```
 
 首次部署需从上述固定revision下载 `model.safetensors`、处理器/模型配置JSON及分词器JSON/vocab.txt至权重目录，并创建source.json；运行阶段不会下载权重。可用huggingface_hub.snapshot_download，明确revision并仅下载上述文件，不需要pytorch_model.bin。完整权重约658MiB；现有基础环境还需requests、PyYAML、filelock、tqdm、fsspec、NumPy。更换模型或修改物品本地检测配置后，重新选择物品或空闲重启服务加载。

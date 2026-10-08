@@ -12,7 +12,7 @@
 已有 `.venv` 需包含 `pyrealsense2`、`opencv-python-headless`、`numpy`，系统需提供 `fuser`。在项目根目录执行：
 
 ```sh
-./tools/camera_monitor/run.sh --port 8088 \
+./scripts/run_camera_monitor.sh --port 8088 \
   --tracker-url http://192.168.101.65:8089
 ```
 
@@ -49,9 +49,9 @@
 ## 验证
 
 ```sh
-python3 -m unittest tools.camera_monitor.test_monitor -v
-PYTHONPATH=tools/robot_agent python3 -m unittest discover -s tools/robot_agent -p test_global_camera.py -v
-node tools/camera_monitor/test_panel.cjs
+python3 -m unittest tests.camera_monitor.test_monitor -v
+python3 -m unittest tests.agent.test_global_camera -v
+node tests/camera_monitor/test_panel.cjs
 ```
 
 测试覆盖双路独立生命周期、旧接口、相机身份/时效、共享原始图像、全局观察新帧、最后观看者释放、单路故障隔离与跨站请求拒绝。实机验证结果见项目 `HANDOFF_REPORT.md`。

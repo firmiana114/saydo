@@ -1,5 +1,7 @@
 # MSI 睿尔曼机械臂驱动验证
 
+> 说明（2026-10-08）：本文件是 2026 年 9 月硬件接入阶段的历史记录。文中提到的 `tools/` 目录已迁移到 `saydo/`、`scripts/`、`tests/`、`docs/`，当前的目录结构与命令以根目录 `HANDOFF_REPORT.md` 为准。
+
 2026-09-18 修复缩小预张开值后的复位误判：用户 open_position=300，连续失败日志及实时读回均为 pos=[1000]、speed=[0]、force=[0]、dof_state=[3]，原逻辑仅认可距 300 不超过 3 单位而误拦截。check_gripper_start 现同时认可配置张开目标和完全张开 1000 附近，仍拒绝故障、运动中及其他位置的夹持迹象；错误增加实际位置、配置值、状态和力度。54 项模拟回归通过，并用当前实机只读状态调用新判断通过；未发送任何运动。需重启 8089 生效。用户 trial.json（含 300 配置）和相机独立改动未改写或提交。
 
 2026-09-18 完善抓取运动诊断：任务日志 work/grasp/jobs/*.json 新增 active_stage、motion_events（完整运动指令、发送完成标记、接受/完成反馈、限长原始应答及顺序耗时、结果和异常类型）、arrival_checks（目标及段后反馈）、异常调用栈；停止错误独立保留。前端区分拒绝、缺少接受确认、控制器报告失败、超时和断连，并显示具体阶段。原运动决策及查询频率不变；原始应答每段最多保留最近 32 条、每条 2048 字符，接受/完成应答单独保留。53 项模拟回归及 git diff --check 通过，未发送实机运动；需重启 8089 生效，旧日志不能追补原始应答。保留用户 trial.json 和相机独立改动。
@@ -16,7 +18,7 @@
 
 2026-09-18 抬升后返回：只读采集用户摆好的七关节角度 [-43.681,-71.382,0.763,132.967,-2.416,67.927,120.559] 度，三次读取稳定且无错误；保存于 config/grasp/trial.json 的 return_after_lift，原始来源 work/grasp/return_pose_capture_1789712701618801073.json。新增抬升 10 厘米后的 movej 返回阶段，保持夹爪闭合，沿用 arm_speed_percent；记录目标已通过离线检查。新版 grasp_ik.cpp --joint-path 在规划时及抬升后实际执行前检查返回路径的关节采样、自碰撞/限位、工具工作区和桌面间距，返回中继续监测夹持与取消，到位误差不超过 0.5 度。已重建本地检查器；其他环境也需重建并重启 8089。关节插值检查不覆盖完整控制器轨迹或环境碰撞，未实机执行返回。本轮 47 项测试、前端脚本语法、离线目标通过/越界拒绝、记录来源哈希及 git diff --check 均通过；未修改 bi_he.py，原有相机独立改动保留。
 
-2026-09-18 当前交接：feature/foundationpose-adaptive-grasp 分支实现物品相对抓取朝向与指定位置；用户已确认工具 +Z 是前进方向。默认 follow_object，首次通过页面“记录当前夹法”保存相对朝向，可勾选保存当前夹持位置；不勾选采用记录时文件中的模型抓取点。每个物品一份，持久化于 work/grasp/taught_profiles.json，模型/工具/手眼变换变化要求重新记录。无记录且未提供相对旋转矩阵时拒绝猜测。首次直接到沿目标工具方向退开 5 厘米的预抓点并调整朝向，再接近、闭合、竖直抬升 10 厘米；删除固定上方点和 clearance_height_m。开始时冻结视觉，执行中不跟踪；旋转与平移共同采样检查，新增 2 度到位朝向检查。页面新增独立只读方案预览，记录日志在 work/grasp/teach_commands/；抓取日志保存实际使用夹法。速度保留用户的 100%，工具偏移保留 200.5 毫米、负载 1.061 千克；用户先前已确认纸杯首次夹取与力度 10/50 效果。新自适应流程未实机运动，未重启服务，需重启 8089 后记录并预览；对称物品的方向歧义、旋转轨迹实机核对及完整环境碰撞检查仍待处理。work/ 数据不纳入 Git，需另行备份；bi_he.py 和此前独立的 tools/camera_monitor/、tools/object_scan/capture_view.py 保留。本轮 43 项测试通过，覆盖物品旋转带动偏移点/接近方向、纯转动采样、角度跨界/奇异位置换算、只读记录与预览、配置失效及朝向到位拦截；前端脚本编译语法检查和 git diff --check 通过。使用步骤见 tools/foundationpose/README.md。
+2026-09-18 当前交接：feature/foundationpose-adaptive-grasp 分支实现物品相对抓取朝向与指定位置；用户已确认工具 +Z 是前进方向。默认 follow_object，首次通过页面“记录当前夹法”保存相对朝向，可勾选保存当前夹持位置；不勾选采用记录时文件中的模型抓取点。每个物品一份，持久化于 work/grasp/taught_profiles.json，模型/工具/手眼变换变化要求重新记录。无记录且未提供相对旋转矩阵时拒绝猜测。首次直接到沿目标工具方向退开 5 厘米的预抓点并调整朝向，再接近、闭合、竖直抬升 10 厘米；删除固定上方点和 clearance_height_m。开始时冻结视觉，执行中不跟踪；旋转与平移共同采样检查，新增 2 度到位朝向检查。页面新增独立只读方案预览，记录日志在 work/grasp/teach_commands/；抓取日志保存实际使用夹法。速度保留用户的 100%，工具偏移保留 200.5 毫米、负载 1.061 千克；用户先前已确认纸杯首次夹取与力度 10/50 效果。新自适应流程未实机运动，未重启服务，需重启 8089 后记录并预览；对称物品的方向歧义、旋转轨迹实机核对及完整环境碰撞检查仍待处理。work/ 数据不纳入 Git，需另行备份；bi_he.py 和此前独立的 tools/camera_monitor/、saydo/modeling/capture_view.py 保留。本轮 43 项测试通过，覆盖物品旋转带动偏移点/接近方向、纯转动采样、角度跨界/奇异位置换算、只读记录与预览、配置失效及朝向到位拦截；前端脚本编译语法检查和 git diff --check 通过。使用步骤见 docs/backend.md。
 
 验证日期：2026-09-11。工作区：`/home/pc/saydo/ros2_rm_ws`，SSH 别名：`msi`。
 
@@ -121,15 +123,15 @@ cd /home/pc/saydo/ros2_rm_ws
 
 ## 2026-09-14：单次自动去重与验证集采集
 
-新增 `../tools/handeye/collect.py`，每次运行仅进行一次检查/采集并退出。手动调整后运行 `.venv/bin/python tools/handeye/collect.py --session he_ref_calibration_20260914`（从项目根目录执行）。不发送运动命令、不循环或自动重试、不恢复预览。采集前后均按位置差 <10 mm 且旋转差 <5° 筛查重复，沿用原始采集质量检查，并核对设备/坐标系一致性。通过的样本只登记到独立验证候选集，不改变冻结的前 20 组求解名单。
+新增 `../saydo/calibration/collect.py`，每次运行仅进行一次检查/采集并退出。手动调整后运行 `.venv/bin/python -m saydo.calibration.collect --session he_ref_calibration_20260914`（从项目根目录执行）。不发送运动命令、不循环或自动重试、不恢复预览。采集前后均按位置差 <10 mm 且旋转差 <5° 筛查重复，沿用原始采集质量检查，并核对设备/坐标系一致性。通过的样本只登记到独立验证候选集，不改变冻结的前 20 组求解名单。
 
 19 项测试通过，包括去重跳过、采集后去重、拒收不重试、冻结分组不变、满额不访问硬件及中断登记恢复。实机只运行一次，成功新增 `171206_e8bee9d1`，88 角点、RMS 0.5103 px；现有求解候选 20 组、验证候选 1/5 组、拒收记录 4 次。后续质量审阅与独立验收尚未完成。现有未提交 `tools/camera_monitor/` 保留。
 
 ## 2026-09-14：25 组数据的离线求解与独立验证
 
-已核对求解候选 20 组、独立验证候选 5 组，另有 4 次拒收；源图像哈希、角点、相机和坐标系配置检查通过。新增 `../tools/handeye/solve.py`，固定 PARK 方法，只用冻结的 20 组拟合及建立棋盘参考位姿，验证集不用于拟合、算法选择或调参。
+已核对求解候选 20 组、独立验证候选 5 组，另有 4 次拒收；源图像哈希、角点、相机和坐标系配置检查通过。新增 `../saydo/calibration/solve.py`，固定 PARK 方法，只用冻结的 20 组拟合及建立棋盘参考位姿，验证集不用于拟合、算法选择或调参。
 
-求解环境单独位于项目根目录 `work/handeye_solver_venv`（OpenCV 4.14.0），原采集 `.venv` 保持 OpenCV 5.0.0。求解测试 6 项通过；采集环境回归测试 19 项通过，求解专用测试在采集环境按预期跳过。依赖见 `tools/handeye/requirements-solve.txt`。
+求解环境单独位于项目根目录 `work/handeye_solver_venv`（OpenCV 4.14.0），原采集 `.venv` 保持 OpenCV 5.0.0。求解测试 6 项通过；采集环境回归测试 19 项通过，求解专用测试在采集环境按预期跳过。依赖见 `saydo/calibration/requirements-solve.txt`。
 
 初步结果保存在 `work/handeye/he_ref_calibration_20260914/solutions/172825_bd2eabc9/result.json`（路径相对项目根目录）。独立验证位置 RMS 6.859 mm、最大 8.911 mm，朝向 RMS 0.319 度、最大 0.494 度；求解集位置 RMS 6.183 mm、最大 10.580 mm。留一法最大变换变化 1.835 mm / 0.094 度。矩阵方向为彩色光学坐标系到法兰，平移单位米。
 
@@ -149,7 +151,7 @@ cd /home/pc/saydo/ros2_rm_ws
 
 ## 2026-09-15：胶带无 CAD 建模的单视角采集入口
 
-用户选择从照片建模，并明确要求每次脚本只采一个视角，由现场手动拖动机械臂改变相机视角。新增 `../tools/object_scan/`；项目根目录运行 `.venv/bin/python tools/object_scan/capture_view.py --session tape_20260915`。胶带和机械臂基座须保持固定，采集结束不自动恢复相机预览。它复用已有只读 Robot 查询和静止检查，不发送运动或夹爪命令。
+用户选择从照片建模，并明确要求每次脚本只采一个视角，由现场手动拖动机械臂改变相机视角。新增 `../tools/object_scan/`；项目根目录运行 `.venv/bin/python -m saydo.modeling.capture_view --session tape_20260915`。胶带和机械臂基座须保持固定，采集结束不自动恢复相机预览。它复用已有只读 Robot 查询和静止检查，不发送运动或夹爪命令。
 
 入口校验已接受手眼矩阵及来源哈希、当前完整 grip_tcp 工具/负载、零偏移 Base、相机序列号与内参。先按 TCP 逆变换还原法兰，再求 base_T_camera；静止采集原始彩色、对齐深度原值/毫米 PNG/米制 NPY、K、时间戳、配置与数据哈希。会话冻结标定配置/相机参数；前后两次去重，重复或拒收只退出、不重试。
 
@@ -159,13 +161,13 @@ FoundationPose 官方 `bundlesdf/run_nerf.py` 支持带相机位姿的多视角�
 
 ## 2026-09-15：接入 FoundationPose 官方源码
 
-用户明确要求接入源码。完整上游快照位于 `../third_party/FoundationPose/`，固定提交 `a1b694b83e633c2cb6115b9063d940a687759392`，含 54 个原文件及许可证；未修改上游代码。来源及 SHA-256 清单位于 `../third_party/FoundationPose.upstream.json`，项目根目录运行 `python3 tools/foundationpose/check_source.py` 校验。说明见 `../tools/foundationpose/README.md`。
+用户明确要求接入源码。完整上游快照位于 `../third_party/FoundationPose/`，固定提交 `a1b694b83e633c2cb6115b9063d940a687759392`，含 54 个原文件及许可证；未修改上游代码。来源及 SHA-256 清单位于 `../third_party/FoundationPose.upstream.json`，项目根目录运行 `python3 scripts/check_source.py` 校验。说明见 `../docs/backend.md`。
 
 本次接入包含 estimater/register/track_one 与 bundlesdf/run_nerf 神经重建入口，不包括 GPU 环境、权重安装或胶带重建运行。当前无 CAD 路线还需 bundlesdf/mycuda 和 Kaolin，不能把只构建 mycpp 的 build_all_conda.sh 当作完整重建环境。相机采集环境、既有数据、机器人参数和未提交 camera_monitor 未修改。
 
 ## 2026-09-15：GPU 环境、胶带重建和离线推理
 
-当前入口与复现命令以 `../tools/foundationpose/README.md` 为准。独立环境 `work/foundationpose_env` 和运行副本 `work/foundationpose_runtime` 均在项目根目录；保留原相机 `.venv`。实际版本为 PyTorch 2.5.1+cu124、nvcc 12.4.131、PyTorch3D 0.7.9、NVDiffRast 0.3.3、Kaolin 0.18.0、Warp 1.6.2；RTX 4060 Laptop 8 GB。完整记录在 `config/foundationpose/environment_state.json`，Conda 包 URL 清单为 `conda-linux-64.lock`。pip check、54 文件源码校验及 GPU 核函数/权重检查通过。
+当前入口与复现命令以 `../docs/backend.md` 为准。独立环境 `work/foundationpose_env` 和运行副本 `work/foundationpose_runtime` 均在项目根目录；保留原相机 `.venv`。实际版本为 PyTorch 2.5.1+cu124、nvcc 12.4.131、PyTorch3D 0.7.9、NVDiffRast 0.3.3、Kaolin 0.18.0、Warp 1.6.2；RTX 4060 Laptop 8 GB。完整记录在 `config/foundationpose/environment_state.json`，Conda 包 URL 清单为 `conda-linux-64.lock`。pip check、54 文件源码校验及 GPU 核函数/权重检查通过。
 
 运行副本应用可追溯的 C++17、scalar_type 兼容补丁及 mycuda 包路径统一。曾出现模型已保存但解释器退出 SIGABRT；GDB 定位到同一 common 扩展以两个名字加载，释放静态 pybind11_module_def_common 时异常。统一导入后，实际 ray_trace 回归和完整神经重建均正常退出，原始上游快照未改动。Warp 设备 UUID API 仍有非阻塞兼容警告，实际深度 CUDA 运算已通过。
 
@@ -189,7 +191,7 @@ FoundationPose 官方 `bundlesdf/run_nerf.py` 支持带相机位姿的多视角�
 
 ## 2026-09-15：统一采集深度预览
 
-按用户确认保留全部数值深度，新增 `depth_color.png` 并将 `preview.jpg` 改为左右 RGB/深度对照。`tools/object_scan/depth_preview.py` 统一固定 TURBO 0.15～0.80 米色阶，无效值为黑色；未来采集与历史重导共用实现。预览不是测量数据，不叠加分割边界。
+按用户确认保留全部数值深度，新增 `depth_color.png` 并将 `preview.jpg` 改为左右 RGB/深度对照。`saydo/modeling/depth_preview.py` 统一固定 TURBO 0.15～0.80 米色阶，无效值为黑色；未来采集与历史重导共用实现。预览不是测量数据，不叠加分割边界。
 
 MSI 已重导 5 个会话的 52 组 candidate：原始胶带 13、jiazhua 1、set3 21、set4 5、zhibei 12；另 1 组非 candidate 未改动。旧预览、sample.json 和已有彩色深度预览在各会话 `preview_backups/<时间>/<视角>/` 备份，更新后的 sample.json 包含显示参数及新哈希。数值深度、原始彩色、内参和位姿哈希不变；历史归档 ZIP 保留原版本。
 
@@ -197,9 +199,9 @@ MSI 离线 7 项测试通过，包括色阶/无效值、备份与数值文件保
 
 ## 2026-09-17：怡宝水瓶实时跟踪接入
 
-入口 `tools/foundationpose/live_tracker.py --auto-start`，在官方 FoundationPose 之上接入 D435i 与网页。官方 `register`/`track_one` 负责定位跟踪，Torchvision SSDLite COCO bottle 检测和 SAM 负责外部首帧初始化；不修改上游核心源码。单个明显前景瓶子自动启动，多个相近候选点选确认，保留手动框选。按用户要求，丢失后默认进入自动重新检测/初始化，默认不加等待，立即在最新帧重试（`--recovery-interval 0`）；无新帧时等待下一帧，恢复任务串行执行；多个相近候选仍需点选。暂停及手动选择期间不会自动恢复；`--no-auto-recover` 可关闭。
+入口 `saydo/workbench/live_tracker.py --auto-start`，在官方 FoundationPose 之上接入 D435i 与网页。官方 `register`/`track_one` 负责定位跟踪，Torchvision SSDLite COCO bottle 检测和 SAM 负责外部首帧初始化；不修改上游核心源码。单个明显前景瓶子自动启动，多个相近候选点选确认，保留手动框选。按用户要求，丢失后默认进入自动重新检测/初始化，默认不加等待，立即在最新帧重试（`--recovery-interval 0`）；无新帧时等待下一帧，恢复任务串行执行；多个相近候选仍需点选。暂停及手动选择期间不会自动恢复；`--no-auto-recover` 可关闭。
 
-网页已按用户要求改为直接绑定 MSI `192.168.101.65:8089`，Mac 的 `18889` SSH 隧道已关闭，局域网页面和状态接口实际访问通过。启动命令先 source `tools/foundationpose/runtime_env.sh`，再运行 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --auto-start`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_live_preview.log`；页面停止按钮或 SIGTERM 会释放相机。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。重启后是否检测到目标依赖现场画面，可通过页面重新触发自动识别。
+网页已按用户要求改为直接绑定 MSI `192.168.101.65:8089`，Mac 的 `18889` SSH 隧道已关闭，局域网页面和状态接口实际访问通过。启动命令先 source `scripts/runtime_env.sh`，再运行 `python -m saydo.workbench.live_tracker --host 192.168.101.65 --port 8089 --auto-start`。最新后台 PID 文件为 `work/foundationpose_live/server.pid`，当前日志 `server_live_preview.log`；页面停止按钮或 SIGTERM 会释放相机。独立 RealSense Python 3.11 SDK 位于 `work/foundationpose_realsense_py311`，版本 2.58.4.10922。重启后是否检测到目标依赖现场画面，可通过页面重新触发自动识别。
 
 实物静态和缓慢移动跟踪已运行，用户确认移动时框贴合；较大变化时观察到不可靠状态，重新初始化后恢复。已验证的低延迟运行记录在 `work/foundationpose_live/20260917_112942_816874`，自动初始化成功后持续处理真实新帧。最近 200 帧实测约 15 fps、中位推理 34 ms、服务端结果年龄 118 ms；20 帧 MJPEG 当时经隧道解码约 15 fps。页面已由 400 ms 单帧轮询改为最新帧持续推流，未测量屏幕光学端到端延迟。
 

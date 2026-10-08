@@ -10,12 +10,25 @@
 2. 接入 D435i RGB-D 相机与 [FoundationPose](https://github.com/NVlabs/FoundationPose)，持续跟踪被抓取物体的位置和朝向。
 3. 后续接入 LLM、Agent 和语音交互，实现语音指令到机械臂操作的完整流程。
 
+## 目录结构
+
+| 目录 | 内容 |
+| --- | --- |
+| `saydo/` | 被导入的库和服务，唯一的 Python 包。核心后端按 workbench → manipulation → scene → objects → perception → robot → geometry 分层，上层可以用下层，反过来不行 |
+| `scripts/` | 可直接运行的入口与运维脚本：固定抓放、重启 8089、运行测试、规范自检、环境安装等 |
+| `tests/` | 全部自动测试，目录与 `saydo/` 的包一一对应；用 `scripts/run_tests.sh` 运行 |
+| `docs/` | 说明文档与编码规范 |
+| `config/`、`work/` | 各机器本地的配置，以及模型、权重、运行环境、日志；不入 Git |
+| `third_party/`、`ros2_rm_ws/` | 第三方源码快照：FoundationPose 与睿尔曼 ROS 2 驱动 |
+
+所有 `python -m saydo...` 命令都在项目根目录运行。常用命令见 [交接报告](HANDOFF_REPORT.md) 第 5 节，编码规范见 [docs/CODING_STANDARD.md](docs/CODING_STANDARD.md)。
+
 ## 当前目录与状态
 
-- 固定试管抓放脚本先采集场景并核验完整路线，再按一次性方案执行，不依赖LLM。默认只规划，使用说明及验证边界见 [固定抓放流程](tools/FIXED_PICK_PLACE.md)。
-- 静态场景支持动作前采集全部目标，将同一RGB-D画面中的物品固定为基座位姿；执行期间相机移动后无需重跟踪参照物。见 [场景快照](tools/foundationpose/SCENE_SNAPSHOTS.md)。
-- 通用持物工具支持指定物品位置/朝向、分段调姿、夹持移动、松爪和退出，供MCP及SayDo执行器使用。接口与验证边界见 [通用持物运动](tools/foundationpose/OBJECT_MOTION.md)。
-- 自然语言任务执行器位于 `tools/task_runner/`，通过 LLM API 调用既有后端，集成于8089工作台第5页，提供串行工具调用、取消与运行记录。安装、模式和验证边界见 [任务执行器说明](tools/task_runner/README.md)。
+- 固定试管抓放脚本先采集场景并核验完整路线，再按一次性方案执行，不依赖LLM。默认只规划，使用说明及验证边界见 [固定抓放流程](docs/fixed_pick_place.md)。
+- 静态场景支持动作前采集全部目标，将同一RGB-D画面中的物品固定为基座位姿；执行期间相机移动后无需重跟踪参照物。见 [场景快照](docs/scene_snapshots.md)。
+- 通用持物工具支持指定物品位置/朝向、分段调姿、夹持移动、松爪和退出，供MCP及SayDo执行器使用。接口与验证边界见 [通用持物运动](docs/object_motion.md)。
+- 自然语言任务执行器位于 `saydo/task_runner/`，通过 LLM API 调用既有后端，集成于8089工作台第5页，提供串行工具调用、取消与运行记录。安装、模式和验证边界见 [任务执行器说明](docs/task_runner.md)。
 
 - `ros2_rm_ws/`：睿尔曼 ROS 2 工作区，包括源码、原有编译产物、MSI 的 Jazzy 编译产物和验证记录。
 - 已验证硬件：RM75-BI，7 自由度，三代控制器，IP `192.168.1.19`。
@@ -28,10 +41,10 @@
 
 ## FoundationPose 源码与物体采集
 
-官方源码已按固定版本接入 `third_party/FoundationPose/`，含多视角神经重建代码。使用 [单视角 RGB-D 采集](tools/object_scan/README.md) 的胶带数据，已完成 GPU 部署、分割、草模重建和离线 register/同帧 track_one 检查；模型与定位质量尚未验收。版本、命令、权重来源和实际验证范围见 [FoundationPose 接入说明](tools/foundationpose/README.md)。
+官方源码已按固定版本接入 `third_party/FoundationPose/`，含多视角神经重建代码。使用 [单视角 RGB-D 采集](docs/object_scan.md) 的胶带数据，已完成 GPU 部署、分割、草模重建和离线 register/同帧 track_one 检查；模型与定位质量尚未验收。版本、命令、权重来源和实际验证范围见 [FoundationPose 接入说明](docs/backend.md)。
 
 ```bash
-python3 tools/foundationpose/check_source.py
+python3 scripts/check_source.py
 ```
 
 ## 相机、夹爪与官方资料

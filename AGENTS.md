@@ -17,14 +17,16 @@
 - 带量纲的名字以单位结尾（`_m`、`_mm`、`_deg`、`_rad`、`_s`、`_percent`）；变换矩阵写成 `base_T_object` 的形式。
 - 会让机械臂或夹爪动作的函数，文档字符串第一段必须写明；规划、查询、测试一律使用 `writes=False`。
 - 测试替身只放在系统边界（控制器、相机、大模型接口、子进程），不得把被测流程的整个阶段替换成假函数。
-- 只改排版、不改逻辑的整文件改写单独提交，提交前用 `python3 tools/style_check.py --same-ast` 证明程序结构未变。
-- 提交前运行 `python3 tools/style_check.py --changed`，输出里的“错误”必须清零。
+- 只改排版、不改逻辑的整文件改写单独提交，提交前用 `python3 scripts/style_check.py --same-ast` 证明程序结构未变。
+- 提交前运行 `python3 scripts/style_check.py --changed`，输出里的“错误”必须清零。
+- 代码放在哪：被导入的库和服务放 `saydo/`，可直接运行的入口放 `scripts/`，测试放 `tests/` 下与被测包同名的目录，说明文档放 `docs/`。`saydo/` 内部按 workbench → manipulation → scene → objects → perception → robot → geometry 分层，只允许上层导入下层。
+- 运行测试用 `scripts/run_tests.sh`；所有 `python -m saydo...` 命令都在项目根目录运行。
 
 ## 从本机 Chrome 访问机械臂示教器
 
 ### 已验证的连接方式（2026-09-21）
 
-通过本机 SSH 别名 `msi` 访问远端电脑，再由该电脑连接机械臂控制器 `192.168.1.19`。本机运行 `tools/teach_pendant_gateway.py`，Chrome 打开：
+通过本机 SSH 别名 `msi` 访问远端电脑，再由该电脑连接机械臂控制器 `192.168.1.19`。本机运行 `scripts/teach_pendant_gateway.py`，Chrome 打开：
 
 <http://127.0.0.1:18081/#/login>
 
@@ -52,14 +54,14 @@
 2. 如果本机已有项目副本，在项目根目录启动：
 
    ```sh
-   python3 tools/teach_pendant_gateway.py
+   python3 scripts/teach_pendant_gateway.py
    ```
 
    如果本机没有项目副本，可以仅复制此脚本后启动：
 
    ```sh
    mkdir -p "$HOME/saydo-teach-pendant"
-   scp msi:/home/pc/saydo/tools/teach_pendant_gateway.py "$HOME/saydo-teach-pendant/"
+   scp msi:/home/pc/saydo/scripts/teach_pendant_gateway.py "$HOME/saydo-teach-pendant/"
    python3 "$HOME/saydo-teach-pendant/teach_pendant_gateway.py"
    ```
 

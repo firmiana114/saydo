@@ -1,6 +1,6 @@
 # Saydo 自然语言任务执行器
 
-一个 Python 编排进程通过 Responses API 完成“观察 → 选择工具 → 等待结果 → 再判断”的任务循环。已有 MCP、视觉算法、夹法参数和机械臂后端保持独立；执行器复用 `tools/robot_agent/client.py` 的认证 HTTP 客户端，不通过 Codex，不执行模型生成的代码。
+一个 Python 编排进程通过 Responses API 完成“观察 → 选择工具 → 等待结果 → 再判断”的任务循环。已有 MCP、视觉算法、夹法参数和机械臂后端保持独立；执行器复用 `saydo/agent/client.py` 的认证 HTTP 客户端，不通过 Codex，不执行模型生成的代码。
 
 ## 运行
 
@@ -8,11 +8,11 @@
 
 ```sh
 python3 -m venv work/task_runner_env
-work/task_runner_env/bin/python -m pip install -r tools/task_runner/requirements.txt
+work/task_runner_env/bin/python -m pip install -r saydo/task_runner/requirements.txt
 cp .env.example .env
 chmod 600 .env
 # 在本机编辑 .env，填写模型密钥、后端地址及后端令牌路径。
-work/task_runner_env/bin/python -m tools.task_runner.api
+work/task_runner_env/bin/python -m saydo.task_runner.api
 ```
 
 已有 `.env` 时保留并修改，不要用示例覆盖。`.env` 由 Git 忽略，安装及同步必须单独提供；密钥不进入网页或普通日志。模型密钥与机械臂 MCP 后端令牌分开。`.env` 支持 `KEY=value`、JSON 双引号或单引号，不执行 shell 展开。可用 `--env` 指定另一文件。
@@ -39,7 +39,7 @@ ssh -N -L 18889:192.168.101.65:8089 msi
 
 ## 静态场景任务
 
-抓取前用capture_scene_snapshot一次声明本任务全部source和reference实例，所有目标固定为Base坐标后才抓取。相机移动后继续引用快照，无需重新跟踪放置参照。新增get_scene_snapshot及模型命名特征，详见 [场景快照说明](../foundationpose/SCENE_SNAPSHOTS.md)。SayDo要求抓取引用本任务生成的scene_id；未准备齐全时不派发抓取。
+抓取前用capture_scene_snapshot一次声明本任务全部source和reference实例，所有目标固定为Base坐标后才抓取。相机移动后继续引用快照，无需重新跟踪放置参照。新增get_scene_snapshot及模型命名特征，详见 [场景快照说明](scene_snapshots.md)。SayDo要求抓取引用本任务生成的scene_id；未准备齐全时不派发抓取。
 
 ## 模块与接口
 
@@ -62,9 +62,9 @@ POST /api/task-runs/stop                {}，工作台全局停止
 
 `finish_task` 的 `succeeded` 必须引用本轮全部真实成功动作，并在结束前核对后端状态；`answered` 只表示已回答问题或解释预览，不表示实际操作完成。页面显示“已核验的动作”，与模型给出的说明区分。控制器完成仍不能独立证明接触桌面、无滑动或长期放置稳定。
 
-姿态工具 `preview_reorient` / `reorient` 沿用 [MCP 参数约定](../robot_agent/README.md#姿态调整参数)，其中 `request_id` 由执行器生成。执行器等待任务后核对同一夹持身份、版本递增及实际朝向误差；预览不递增版本。成功结果提供新版本供后续放置使用；中断、版本不一致或核验失败不继续动作；后端明确返回可恢复的调姿失败时按下述有限重规划流程处理。
+姿态工具 `preview_reorient` / `reorient` 沿用 [MCP 参数约定](agent.md#姿态调整参数)，其中 `request_id` 由执行器生成。执行器等待任务后核对同一夹持身份、版本递增及实际朝向误差；预览不递增版本。成功结果提供新版本供后续放置使用；中断、版本不一致或核验失败不继续动作；后端明确返回可恢复的调姿失败时按下述有限重规划流程处理。
 
-通用持物链路使用 `plan_held_object_motion` / `plan_release` 生成方案，再用 `execute_plan` 执行。另提供 `get_object_geometry` 和 `get_task_diagnostics`；详见 [目标参数与执行边界](../foundationpose/OBJECT_MOTION.md)。规划失败以PLAN_FAILED证据交回模型，可在用户目标范围内更换路点重新规划；真实执行失败只在后端确认可恢复时继续重新规划；结果未知或客户端到位核验失败仍阻断。执行器核对物品参考点位置、朝向、夹持版本及松爪/退出结果，重启后不会重放未确认方案。preview模式允许生成方案，execute_plan只在execute模式开放。
+通用持物链路使用 `plan_held_object_motion` / `plan_release` 生成方案，再用 `execute_plan` 执行。另提供 `get_object_geometry` 和 `get_task_diagnostics`；详见 [目标参数与执行边界](object_motion.md)。规划失败以PLAN_FAILED证据交回模型，可在用户目标范围内更换路点重新规划；真实执行失败只在后端确认可恢复时继续重新规划；结果未知或客户端到位核验失败仍阻断。执行器核对物品参考点位置、朝向、夹持版本及松爪/退出结果，重启后不会重放未确认方案。preview模式允许生成方案，execute_plan只在execute模式开放。
 
 ## 有限调姿恢复
 
@@ -117,7 +117,7 @@ POST /api/task-runs/stop                {}，工作台全局停止
 操作员实际核对现场及原任务记录后，先停止执行器，再显式运行只读核对工具：
 
 ```sh
-work/task_runner_env/bin/python -m tools.task_runner.reconcile \
+work/task_runner_env/bin/python -m saydo.task_runner.reconcile \
   --run-id <运行编号> --confirm-scene-inspected
 ```
 
@@ -127,9 +127,9 @@ work/task_runner_env/bin/python -m tools.task_runner.reconcile \
 
 ```sh
 # 不连接设备的单元/集成测试
-work/task_runner_env/bin/python -m unittest discover -s tools/task_runner -t . -p 'test_*.py' -v
+scripts/run_tests.sh task_runner
 # 使用 .env 密钥；仅发送合成测试图片和无害的假工具，不连接机械臂
-work/task_runner_env/bin/python -m tools.task_runner.probe
+work/task_runner_env/bin/python -m saydo.task_runner.probe
 ```
 
 `probe` 使用 `fixtures/color_halves.jpg`（640×360 JPEG，左红右蓝）和随机校验码，检查严格函数调用、回传完整模型输出、工具结果续答、图片输入及初始模型回退，摘要保存到 `work/task_runner_validation/provider_probe.json`。先完成这些检查，再做真实查询和方案预览；真实抓放需另外进行现场验收。
@@ -151,7 +151,7 @@ work/task_runner_env/bin/python -m tools.task_runner.probe
 
 ## 不固定的全局相机观察
 
-`observe_global` 与 MCP 共用独立按需采集模块，配置和限制见 [不固定的全局相机观察](../robot_agent/README.md#不固定的全局相机观察)。三个运行模式均可调用，返回原生模型图片和相机身份/时间元数据；失败沿用有限观察恢复，不提交机械臂动作。`get_camera_frame` 和 `get_task_context.include_frame` 仍是眼在手图片，像素框不可跨机位使用。模型上下文分别保留眼在手和不固定的全局相机各自最新一张图片，旧图保留时间和证据说明；两个机位不是同步拍摄。
+`observe_global` 与 MCP 共用独立按需采集模块，配置和限制见 [不固定的全局相机观察](agent.md#不固定的全局相机观察)。三个运行模式均可调用，返回原生模型图片和相机身份/时间元数据；失败沿用有限观察恢复，不提交机械臂动作。`get_camera_frame` 和 `get_task_context.include_frame` 仍是眼在手图片，像素框不可跨机位使用。模型上下文分别保留眼在手和不固定的全局相机各自最新一张图片，旧图保留时间和证据说明；两个机位不是同步拍摄。
 
 只读持物规划（plan_held_object_motion、plan_release）已取消20秒后端总时限，执行器持续轮询到终态或取消，不套用120秒动作等待，并在等待期间暂停600秒整任务计时。真实动作、其他观察超时、模型单次请求时限以及5/3重试次数均保持原规则。
 

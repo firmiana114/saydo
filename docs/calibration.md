@@ -8,7 +8,7 @@
 
 ```bash
 cd /home/pc/saydo
-.venv/bin/python tools/handeye/collect.py --session he_ref_calibration_20260914
+.venv/bin/python -m saydo.calibration.collect --session he_ref_calibration_20260914
 ```
 
 脚本只运行一次，没有循环、交互等待或自动重试。无论保存、重复或拒收，本次处理完成即退出，不移动机械臂，不恢复相机预览。
@@ -36,7 +36,7 @@ cd /home/pc/saydo
 
 ```bash
 cd /home/pc/saydo
-.venv/bin/python tools/handeye/capture.py --session calibration_01
+.venv/bin/python -m saydo.calibration.capture --session calibration_01
 ```
 
 相机保持静止并完整看到棋盘；本程序不会移动机械臂。采集结束后相机设备会释放；如需恢复网页预览，请重新点击“开始预览”。
@@ -66,7 +66,7 @@ cd /home/pc/saydo
 ## 验证
 
 ```bash
-.venv/bin/python -m unittest discover -s tools/handeye -v
+.venv/bin/python -m unittest discover -s tests/calibration -t . -v
 ```
 
 覆盖 JSON 单位、坐标旋转、角度跨 ±π、运动后回到原点的拒收、错误状态、非零工具偏移、已知投影几何恢复以及运动指令的网络发送前拒绝。
@@ -88,9 +88,9 @@ cd /home/pc/saydo
 ```bash
 cd /home/pc/saydo
 python3 -m venv work/handeye_solver_venv
-work/handeye_solver_venv/bin/python -m pip install -r tools/handeye/requirements-solve.txt
-work/handeye_solver_venv/bin/python -m unittest discover -s tools/handeye -p test_solve.py -v
-work/handeye_solver_venv/bin/python tools/handeye/solve.py --session he_ref_calibration_20260914
+work/handeye_solver_venv/bin/python -m pip install -r saydo/calibration/requirements-solve.txt
+work/handeye_solver_venv/bin/python -m unittest tests.calibration.test_solve -v
+work/handeye_solver_venv/bin/python -m saydo.calibration.solve --session he_ref_calibration_20260914
 ```
 
 已配置好环境时，只需运行最后一条命令。采集仍使用原有 `.venv`。

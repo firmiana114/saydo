@@ -2,9 +2,9 @@
 
 通过标准输入/输出 MCP 将客户端连接到现有 Saydo 后端。MCP 进程只调用固定的 `/api/agent/` 接口；实际动作仍由 `GraspController`、原设备锁和运动检查执行，不接受任意机器人指令、文件路径或配置修改。
 
-项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。MCP服务现提供27个工具，执行器无需通过 MCP 或 Codex 启动。
+项目另提供直接调用 LLM API 的 [任务执行器](task_runner.md)，复用 `saydo/agent/client.py` 的认证 HTTP 客户端。MCP服务现提供27个工具，执行器无需通过 MCP 或 Codex 启动。
 
-模型选择可启用5D位姿：状态、模型、位姿及夹法接口返回 `pose_mode`，持物记录也保留该模式。5D的矩阵只有位置和Z轴有约束，绕物品自身Z轴的转角自由；抓取中心位于该轴，后端搜索符合已保存接近夹角的方位。`preview_reorient` / `reorient` 的 `target_rpy_deg` 接口保持兼容，但5D只约束该旋转对应的Z轴指向，后端搜索绕轴等价姿态。详见 [5D位姿说明](../foundationpose/README.md#绕物品-z-轴对称的-5d-位姿)。
+模型选择可启用5D位姿：状态、模型、位姿及夹法接口返回 `pose_mode`，持物记录也保留该模式。5D的矩阵只有位置和Z轴有约束，绕物品自身Z轴的转角自由；抓取中心位于该轴，后端搜索符合已保存接近夹角的方位。`preview_reorient` / `reorient` 的 `target_rpy_deg` 接口保持兼容，但5D只约束该旋转对应的Z轴指向，后端搜索绕轴等价姿态。详见 [5D位姿说明](backend.md#绕物品-z-轴对称的-5d-位姿)。
 
 ## 工具
 
@@ -37,11 +37,11 @@
 
 ## 静态场景快照
 
-新的grasp/preview_grasp工具要求scene_id和instance_id；先用capture_scene_snapshot声明全部源物品与参照物，再等待scene_ready。后续规划可用scene_object参考系及命名特征，参见 [场景快照参数与约束](../foundationpose/SCENE_SNAPSHOTS.md)。更新后已有Codex会话须重新启动以刷新工具参数。
+新的grasp/preview_grasp工具要求scene_id和instance_id；先用capture_scene_snapshot声明全部源物品与参照物，再等待scene_ready。后续规划可用scene_object参考系及命名特征，参见 [场景快照参数与约束](scene_snapshots.md)。更新后已有Codex会话须重新启动以刷新工具参数。
 
 ## 通用持物运动
 
-推荐链路为抓取 → plan_held_object_motion → execute_plan → plan_release → execute_plan。支持只旋转、只平移、完整物品位姿和分阶段路点；不再依赖旧place的固定矩形区域。参数、版本更新、坐标含义、执行限制及示例见 [通用持物运动说明](../foundationpose/OBJECT_MOTION.md)。新目标以物品参考点为准，与下面旧姿态接口固定TCP终点的语义不同。
+推荐链路为抓取 → plan_held_object_motion → execute_plan → plan_release → execute_plan。支持只旋转、只平移、完整物品位姿和分阶段路点；不再依赖旧place的固定矩形区域。参数、版本更新、坐标含义、执行限制及示例见 [通用持物运动说明](object_motion.md)。新目标以物品参考点为准，与下面旧姿态接口固定TCP终点的语义不同。
 
 ## 姿态调整参数
 
@@ -77,19 +77,19 @@ MCP 使用独立 Python 3.11+ 环境，不修改 FoundationPose 环境：
 
 ```sh
 python3 -m venv ~/.local/share/saydo-mcp/venv
-~/.local/share/saydo-mcp/venv/bin/python -m pip install -r tools/robot_agent/requirements.txt
-python3 tools/robot_agent/install.py --base-url http://127.0.0.1:8089
+~/.local/share/saydo-mcp/venv/bin/python -m pip install -r saydo/agent/requirements.txt
+python3 -m saydo.agent.install --base-url http://127.0.0.1:8089
 ```
 
 安装器默认在 `~/.codex/config.toml` 中登记 `mcp_servers.saydo_robot`；不存在配置时创建仅包含 MCP 的文件，不设置模型、模型服务商、推理强度、全局审批或 Skills。已有的其他设置保持原样。后端令牌独立于模型 API Key，保存为权限 600 的 `~/.local/share/saydo-mcp/robot-backend-token`，与客户端配置分开维护。重复安装保留令牌；MCP 不跟随 HTTP 重定向，不通过环境代理发送后端凭据。可用 `--agent-home`、`--python`、`--token-file` 指定路径。
 
-使用其他 MCP 客户端时，启动命令为 `~/.local/share/saydo-mcp/venv/bin/python`，参数为项目内 `tools/robot_agent/server.py` 的绝对路径、`--base-url`、实际后端 URL、`--token-file` 和上述令牌的绝对路径。工具本身不依赖 Codex 的模型配置或登录方式。
+使用其他 MCP 客户端时，启动命令为 `~/.local/share/saydo-mcp/venv/bin/python`，参数为项目内 `saydo/agent/server.py` 的绝对路径、`--base-url`、实际后端 URL、`--token-file` 和上述令牌的绝对路径。工具本身不依赖 Codex 的模型配置或登录方式。
 
 后端需显式启用 Agent 路由（按实际监听地址调整，安装器的 URL 必须一致）：
 
 ```sh
-source tools/foundationpose/runtime_env.sh
-python tools/foundationpose/live_tracker.py --host 127.0.0.1 --port 8089 --auto-start \
+source scripts/runtime_env.sh
+python -m saydo.workbench.live_tracker --host 127.0.0.1 --port 8089 --auto-start \
   --mesh work/object_models/ob_yibao_350ml/model/model.obj \
   --grasp-mode execute \
   --agent-token-file ~/.local/share/saydo-mcp/robot-backend-token
@@ -101,7 +101,7 @@ MSI 已恢复 `codex` 入口，当前专用配置为 `gpt-6-astra / low`（保�
 
 在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器固定使用 `~/.local/share/saydo-codex/codex-home` 作为 `CODEX_HOME`，配置文件、会话与普通 `~/.codex` 分开；切换至同级 `workspace`，不在源码目录启动。专用配置保存提供方、默认模型及MCP服务登记，工具目录由服务提供。
 
-`model_instructions_file` 指向本目录 `agent_instructions.md`，替换内置编程助手提示词，只保留机械臂任务规则。关闭AGENTS及其备用文件加载、主机Skills自动发现、已知内置Skills、记忆导入、插件和Hooks；不读取旧开发会话。启动时只枚举专用配置、工作目录及其祖先、用户和系统Skills目录中的文件名，刷新显式禁用列表，避免新增或符号链接的开发Skills进入上下文；不读取这些Skills的内容。项目本身的 `AGENTS.md`、开发Skills和其他coding agent内容继续保留给正常开发使用，不为隔离任务入口而删除。升级CLI后应重新核对实际模型上下文与新增内置Skills。
+`model_instructions_file` 指向 `saydo/agent/agent_instructions.md`，替换内置编程助手提示词，只保留机械臂任务规则。关闭AGENTS及其备用文件加载、主机Skills自动发现、已知内置Skills、记忆导入、插件和Hooks；不读取旧开发会话。启动时只枚举专用配置、工作目录及其祖先、用户和系统Skills目录中的文件名，刷新显式禁用列表，避免新增或符号链接的开发Skills进入上下文；不读取这些Skills的内容。项目本身的 `AGENTS.md`、开发Skills和其他coding agent内容继续保留给正常开发使用，不为隔离任务入口而删除。升级CLI后应重新核对实际模型上下文与新增内置Skills。
 
 该入口用于MCP验证：持久配置为只读沙箱，关闭终端执行、子Agent、插件、Apps、浏览器/计算机操作及项目指令加载；沙箱升级和请求写入权限被拒绝。按用户要求，专用配置现为 `approval_policy="never"`、`mcp_servers.saydo_robot.default_tools_approval_mode="approve"`，MCP读写工具无需手动审批；这不会授予文件写入权限。文件编辑工具即使仍出现在本版本工具定义中，也必须被只读权限拒绝，不能靠提示词代替权限检查。不要用 `--yolo`、`--sandbox`、其他配置目录或配置覆盖绕过限制；这些是当前入口的运行限制，不是对机器账户所有者的系统权限隔离。已有会话需退出后重新启动。非交互验证用 `codex exec --skip-git-repo-check "任务"`。
 
@@ -114,8 +114,8 @@ SayDo网页执行器仍独立运行，模型选择及execute模式不受影响�
 ## 验证
 
 ```sh
-SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q
-~/.local/share/saydo-mcp/venv/bin/python -m unittest discover -s tools/robot_agent -p 'test_*.py' -v
+scripts/run_tests.sh backend
+scripts/run_tests.sh agent
 ```
 
 动作测试使用模拟控制器；覆盖实际 HTTP 认证、任务去重/冲突/重启、物品和夹持绑定、停止失败锁定、最新画面和过期位姿。MCP SDK 测试覆盖原生图片块、19 个工具的模式和参数、任务查询及错误语义。实机联调仅调用观察/状态工具，不以真实抓取、放置、复位或停止作为自动验收。

@@ -4,10 +4,10 @@
 
 ```bash
 cd /home/pc/saydo
-.venv/bin/python tools/object_scan/capture_view.py --session tape_20260915
+.venv/bin/python -m saydo.modeling.capture_view --session tape_20260915
 ```
 
-首次安装新增依赖：`.venv/bin/python -m pip install -r tools/object_scan/requirements.txt`。
+首次安装新增依赖：`.venv/bin/python -m pip install -r saydo/modeling/requirements.txt`。
 
 ## 现场操作
 
@@ -38,9 +38,9 @@ cd /home/pc/saydo
 ### 重导历史预览
 
 ```bash
-.venv/bin/python tools/object_scan/reexport_previews.py
+.venv/bin/python -m saydo.modeling.reexport_previews
 # 也可只选择指定会话：
-.venv/bin/python tools/object_scan/reexport_previews.py --sessions tape_20260915_zhibei
+.venv/bin/python -m saydo.modeling.reexport_previews --sessions tape_20260915_zhibei
 ```
 
 默认处理 `work/object_scan` 下所有含 `session.json` 的会话，仅更新 `candidate` 视角。工具取得与采集相同的会话锁，先校验已有文件哈希，将旧 `preview.jpg`、`sample.json` 和已有 `depth_color.png` 备份至该会话 `preview_backups/<时间>/<视角>/`，再写入预览并更新 `sample.json` 的对应哈希。`color.png`、三份数值深度、内参、位姿保持字节不变。备份目录的 `reexport.json` 记录处理范围；既有归档 ZIP 不会被改写。
@@ -68,7 +68,7 @@ FoundationPose 自带 `bundlesdf/run_nerf.py` 的 `run_neural_object_field` 接�
 ## 验证
 
 ```bash
-.venv/bin/python -m unittest discover -s tools/object_scan -p 'test_*.py' -v
+.venv/bin/python -m unittest discover -s tests/modeling -t . -v
 ```
 
-2026-09-15 MSI 实机验证：4 项几何/深度测试通过；首个视角 `101121_b43524bc` 保存成功，7 个数据文件哈希及回读检查通过，整幅图深度有效率 95.57%。重复运行在打开相机前跳过同一姿态，没有新增候选。后续使用 13 组视角完成分割和第一轮神经重建；模型质量与新视角定位尚未验收，进度见 `tools/foundationpose/README.md`。
+2026-09-15 MSI 实机验证：4 项几何/深度测试通过；首个视角 `101121_b43524bc` 保存成功，7 个数据文件哈希及回读检查通过，整幅图深度有效率 95.57%。重复运行在打开相机前跳过同一姿态，没有新增候选。后续使用 13 组视角完成分割和第一轮神经重建；模型质量与新视角定位尚未验收，进度见 `docs/backend.md`。

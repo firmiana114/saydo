@@ -35,7 +35,7 @@
 
 | 条款 | Google 的要求 | 本项目的做法 | 理由 |
 | --- | --- | --- | --- |
-| 检查与排版工具 | Python 运行 pylint，建议用自动排版工具 | 不引入第三方工具，改用 `tools/style_check.py`（仅标准库） | 项目约定非必需不引入依赖 |
+| 检查与排版工具 | Python 运行 pylint，建议用自动排版工具 | 不引入第三方工具，改用 `scripts/style_check.py`（仅标准库） | 项目约定非必需不引入依赖 |
 | JavaScript 模块 | 新文件用 ES 模块（`import`/`export`） | 沿用 `<script>` 标签加载的普通脚本 | 改加载方式要同时改页面与全部前端测试，与可读性关系不大 |
 | C++ 异常 | 禁用异常 | 允许 | 该条是 Google 为兼容自家旧代码而定；逆解检查器是独立小程序 |
 | 许可证头 | 每个文件带许可证声明 | 不加 | 私有仓库，无对外许可证 |
@@ -102,8 +102,11 @@
 
 - 禁止 `sys.path.insert` / `sys.path.append`。跨目录引用一律用从项目根开始的完整包名。
 - 禁止写死 `/home/pc/...` 等机器相关的绝对路径。
-- 项目根目录、`work/`、`config/` 下的路径只从一个公共模块取（结构重构阶段建立；
-  在它建立之前，旧代码里的 `ROOT = ...parents[2]` 写法暂时保留，不新增）。
+- 项目根目录、`work/`、`config/` 下的路径只从 `saydo/paths.py` 取。例外是被当作
+  独立脚本直接启动的文件（`scripts/` 下按路径运行的脚本、`qwen_worker.py`、
+  `global_camera.py`），它们不能导入 `saydo`，各自保留一行按 `__file__` 推算的写法。
+- 例外：把 `work/` 下第三方库的目录加入搜索路径的 4 处 `sys.path.insert` 暂时保留，
+  它们加的不是项目代码。
 - 与某个物品绑定的数据只放 `work/object_models/<物品ID>/`（同 `AGENTS.md`）。
 
 ### 5.5 错误信息与日志
@@ -118,11 +121,24 @@
 
 ### 5.6 测试
 
+- 测试放在 `tests/` 下与被测包同名的目录，例如 `saydo/manipulation/` 的测试在
+  `tests/manipulation/`。用 `scripts/run_tests.sh` 运行，它会为每个套件选对解释器。
 - 测试替身只放在系统边界：控制器通信、相机、大模型接口、子进程、时钟。
 - **不得把被测流程里的整个阶段替换成假函数。** 每条执行路径至少要有一个测试走过
   真实的流程代码。（教训：固定抓放的放置阶段曾被整体替换，三处缺陷直到实机才暴露。）
 - 测试函数名写明被验证的行为：`test_stops_before_motion_when_path_unsolvable`。
 - 测试文件不强制文档字符串和类型标注，其余规则照常适用。
+
+### 5.7 目录与分层
+
+- `saydo/` 是被导入的库和服务，`scripts/` 是可直接运行的入口与运维脚本，`tests/`
+  是测试，`docs/` 是说明文档。
+- 核心后端按下面的顺序分层，**只允许上层导入下层**：
+  `workbench` → `manipulation` → `scene` → `objects` → `perception` → `robot`
+  → `geometry`。新增模块先确定它属于哪一层；需要反向引用时，说明设计有问题，
+  应把被引用的部分下移，而不是加一条反向导入。
+- `contracts` 放各进程共用的数据约定，不依赖任何其他包。
+- 服务和带项目内导入的脚本一律在项目根目录以 `python -m 包.模块` 启动。
 
 ## 6. Python
 
@@ -142,7 +158,7 @@
 
   ```python
   import pathlib                      # 合规
-  from tools.task_runner import config  # 合规：config 是模块
+  from saydo.task_runner import config  # 合规：config 是模块
   from pathlib import Path            # 不合规：Path 是类
   ```
 
@@ -253,19 +269,19 @@ def descent_side_offset_m(depth_m: float, tilt_deg: float) -> float:
 
 ## 10. 自检脚本
 
-`tools/style_check.py` 只用 Python 标准库和 git，不修改文件，不连接任何服务。
+`scripts/style_check.py` 只用 Python 标准库和 git，不修改文件，不连接任何服务。
 在项目根目录运行：
 
 | 命令 | 用途 |
 | --- | --- |
-| `python3 tools/style_check.py --changed` | 提交前必跑：只报告相对上次提交改动过的部分 |
-| `python3 tools/style_check.py 路径...` | 检查给定的文件或目录 |
-| `python3 tools/style_check.py` | 检查全部自写源码，用于了解重排进度 |
-| `python3 tools/style_check.py --same-ast` | 证明相对上次提交的改动只是排版 |
+| `python3 scripts/style_check.py --changed` | 提交前必跑：只报告相对上次提交改动过的部分 |
+| `python3 scripts/style_check.py 路径...` | 检查给定的文件或目录 |
+| `python3 scripts/style_check.py` | 检查全部自写源码，用于了解重排进度 |
+| `python3 scripts/style_check.py --same-ast` | 证明相对上次提交的改动只是排版 |
 
 - 输出每行一条：`路径:行号: 错误 [规则] 说明`，或把“错误”换成“提示”。
 - “错误”必须改掉，存在错误时脚本以退出码 1 结束；“提示”由作者判断，不影响退出码。
-- 脚本自身的测试：`python3 -m unittest tools.test_style_check`。
+- 脚本自身的测试：`python3 -m unittest tests.scripts.test_style_check`。
 - 脚本能判断的：行宽、制表符、行尾空白、分号、同行语句、导入写法、`sys.path`、
   公开函数的文档字符串与类型标注、命名形式、可变默认参数、裸 `except`、函数与文件规模。
 
