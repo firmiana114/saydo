@@ -1,0 +1,9 @@
+# 纯排版提交：只改空白与换行，已用 tools/style_check.py --same-ast 证明语法树不变。
+# 查看逐行历史时跳过它们：git blame --ignore-revs-file .git-blame-ignore-revs <文件>
+fffdbe3ec34086ac982869fd502aebfd86e69096 # 纯排版：重排 tools 根目录的 Python 脚本
+2363acb6cf86b0ca4df9b55e03733f657183743e # 纯排版：重排相机预览 camera_monitor 的 Python 代码
+d40cc08bf0f39013079f86ee3f9531fbce53d144 # 纯排版：重排手眼标定 handeye 与物品采集 object_scan 的 Python 代码
+25c964b33a7192a2d2bda93f0bb92b084467f025 # 纯排版：重排 MCP 服务 robot_agent 的 Python 代码
+6e4ec66194ed4daede60427fa989efd157512d23 # 纯排版：重排任务执行器 task_runner 的 Python 代码
+1112f75b75b4a658e42eb1e2a00fa8ee109a8831 # 纯排版：重排定位与抓取后端 foundationpose 的 Python 代码
+21f4f838ccd3f036f7ebf9cd92a3ac84d84b7bc2 # 纯排版：重排 foundationpose 测试的 Python 代码
