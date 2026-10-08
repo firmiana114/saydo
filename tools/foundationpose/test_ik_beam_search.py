@@ -1,4 +1,5 @@
 """Exercise the exact SDK-independent native search with a branching fixture."""
+
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,10 +10,14 @@ import unittest
 class BeamSearchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        compiler=shutil.which('g++') or shutil.which('clang++')
-        if not compiler:raise unittest.SkipTest('C++ compiler unavailable')
-        cls.folder=tempfile.TemporaryDirectory();cls.addClassCleanup(cls.folder.cleanup)
-        root=Path(cls.folder.name);source=root/'test.cpp';cls.binary=root/'test'
+        compiler = shutil.which('g++') or shutil.which('clang++')
+        if not compiler:
+            raise unittest.SkipTest('C++ compiler unavailable')
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.folder.cleanup)
+        root = Path(cls.folder.name)
+        source = root / 'test.cpp'
+        cls.binary = root / 'test'
         source.write_text(r'''
 #include "ik_beam_search.hpp"
 #include <cassert>
@@ -34,7 +39,20 @@ int main(){
  assert(!search(start,{10},invalid,[]{}).complete);
 }
 ''')
-        subprocess.run([compiler,'-std=c++17','-O2','-I',str(Path(__file__).parent),str(source),'-o',str(cls.binary)],check=True,capture_output=True)
+        subprocess.run(
+            [
+                compiler,
+                '-std=c++17',
+                '-O2',
+                '-I',
+                str(Path(__file__).parent),
+                str(source),
+                '-o',
+                str(cls.binary),
+            ],
+            check=True,
+            capture_output=True,
+        )
 
     def test_branch_survives_greedy_dead_end_and_constraints_remain(self):
-        subprocess.run([str(self.binary)],check=True,capture_output=True)
+        subprocess.run([str(self.binary)], check=True, capture_output=True)
