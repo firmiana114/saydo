@@ -24,11 +24,14 @@ def camera_binding(handeye, camera, policy):
                        and policy.get('handeye_source_sha256') == handeye['source']['sha256']
                        and policy.get('installation_id') == handeye['installation']['id']):
         raise ValueError(f"相机与手眼标定不匹配：当前 {camera['serial']}，标定 {original['serial']}；未配置同型号同安装复用")
+    # Only an explicit boolean in the machine-local policy marks the replacement as verified.
+    verified = reused and policy.get('replacement_accuracy_verified') is True
     return {'mode': 'same_model_same_mount' if reused else 'original_camera',
             'active_serial': camera['serial'], 'calibration_serial': original['serial'],
             'camera_model': camera['name'], 'intrinsics_source': 'active_camera',
             'mount_basis': 'user_confirmed_unchanged' if reused else 'original_calibration',
-            'replacement_accuracy_verified': False if reused else None}
+            'replacement_accuracy_verified': verified if reused else None,
+            'replacement_accuracy_basis': policy.get('accuracy_source') if verified else None}
 
 
 def check_camera_observation(handeye, observation):

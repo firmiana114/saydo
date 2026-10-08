@@ -45,6 +45,23 @@ class CameraChecksTests(unittest.TestCase):
         with self.assertRaises(ValueError):camera_binding(self.handeye, None, self.policy)
         self.assertEqual(camera_binding(self.handeye, {**self.camera, 'serial': 'old'}, {})['mode'], 'original_camera')
 
+    def test_replacement_accuracy_is_verified_only_by_explicit_policy_flag(self):
+        binding = camera_binding(self.handeye, self.camera, self.policy)
+        self.assertIs(binding['replacement_accuracy_verified'], False)
+        self.assertIsNone(binding['replacement_accuracy_basis'])
+        confirmed = {**self.policy, 'replacement_accuracy_verified': True, 'accuracy_source': 'user_confirmation'}
+        binding = camera_binding(self.handeye, self.camera, confirmed)
+        self.assertIs(binding['replacement_accuracy_verified'], True)
+        self.assertEqual(binding['replacement_accuracy_basis'], 'user_confirmation')
+        for value in ('true', 1, None):
+            with self.subTest(value=value):
+                binding = camera_binding(self.handeye, self.camera, {**confirmed, 'replacement_accuracy_verified': value})
+                self.assertIs(binding['replacement_accuracy_verified'], False)
+                self.assertIsNone(binding['replacement_accuracy_basis'])
+        original = camera_binding(self.handeye, {**self.camera, 'serial': 'old'}, confirmed)
+        self.assertIsNone(original['replacement_accuracy_verified'])
+        self.assertIsNone(original['replacement_accuracy_basis'])
+
     def test_observation_uses_its_actual_camera_not_old_intrinsics(self):
         self.handeye['runtime_camera'] = self.camera
         observation = {'K': self.camera['K'], 'camera': self.camera}
