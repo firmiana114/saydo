@@ -18,6 +18,25 @@ READS = {
     'get_rm_plus_reg',
 }
 
+# 夹爪经末端 RM Plus 接口通信时，控制器应报告的模式值（即波特率）。
+# 报告 0 表示该接口未启用，此时读不到夹爪状态，也无法下发开合指令。
+RM_PLUS_MODE = 115200
+
+
+def rm_plus_mode_error(mode: object) -> str:
+    """返回夹爪通信模式不符时给操作者看的提示，写明当前值与要求值。
+
+    Args:
+        mode: 控制器对 get_rm_plus_mode 的应答里的 mode 字段。
+
+    Returns:
+        可直接作为异常信息的中文提示。
+    """
+    return (
+        f'夹爪 RM Plus 通信未就绪（当前模式 {mode}，要求 {RM_PLUS_MODE}）；'
+        '请在示教器恢复末端 RM Plus 模式后重试'
+    )
+
 
 class RobotClient:
     def __init__(self, ip, port=8080, writes=False):

@@ -289,7 +289,7 @@ class GraspController(
                 raise ValueError('当前工具/负载与记录不一致')
             mode = self.robot.query('get_rm_plus_mode').get('mode')
             report['rm_plus_mode'] = mode
-            if mode != 115200:
+            if mode != grasp_robot.RM_PLUS_MODE:
                 raise ValueError(
                     f'夹爪 RM Plus 通信未就绪（当前模式 {mode}，要求 115200）；'
                     '机械臂关节已通过使能检查，请恢复夹爪通信后重试'
@@ -419,8 +419,9 @@ class GraspController(
                     robot = grasp_robot.RobotClient(
                         config['robot_ip'], config['robot_port'], writes=True
                     )
-                    if robot.query('get_rm_plus_mode').get('mode') != 115200:
-                        raise ValueError('RM Plus 通信模式不匹配')
+                    mode = robot.query('get_rm_plus_mode').get('mode')
+                    if mode != grasp_robot.RM_PLUS_MODE:
+                        raise ValueError(grasp_robot.rm_plus_mode_error(mode))
                     base = robot.query('get_rm_plus_base_info')['base_info']
                     if (
                         (
@@ -485,8 +486,9 @@ class GraspController(
                     robot = grasp_robot.RobotClient(
                         config['robot_ip'], config['robot_port'], writes=True
                     )
-                    if robot.query('get_rm_plus_mode').get('mode') != 115200:
-                        raise ValueError('RM Plus 通信模式不匹配')
+                    mode = robot.query('get_rm_plus_mode').get('mode')
+                    if mode != grasp_robot.RM_PLUS_MODE:
+                        raise ValueError(grasp_robot.rm_plus_mode_error(mode))
                     base = robot.query('get_rm_plus_base_info')['base_info']
                     if (
                         (
@@ -962,8 +964,9 @@ class GraspController(
             or self.robot.query('get_joint_err_flag').get('err_flag') != [0] * 7
         ):
             raise ValueError('关节使能或错误状态异常')
-        if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
-            raise ValueError('RM Plus 通信模式不匹配')
+        mode = self.robot.query('get_rm_plus_mode').get('mode')
+        if mode != grasp_robot.RM_PLUS_MODE:
+            raise ValueError(grasp_robot.rm_plus_mode_error(mode))
         base = self.robot.query('get_rm_plus_base_info')['base_info']
         gripper_state = self.robot.query('get_rm_plus_state_info')['state_info']
         report['initial_gripper_state'] = copy.deepcopy(gripper_state)

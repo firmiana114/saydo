@@ -237,8 +237,9 @@ class ReorientationMixin:
         work = self.robot.query('get_current_work_frame')
         if work.get('frame_name') != 'Base' or work.get('pose') != [0] * 6:
             raise ValueError('姿态调整要求零偏移 Base 工作坐标系')
-        if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
-            raise ValueError('夹爪通信模式不匹配')
+        mode = self.robot.query('get_rm_plus_mode').get('mode')
+        if mode != grasp_robot.RM_PLUS_MODE:
+            raise ValueError(grasp_robot.rm_plus_mode_error(mode))
         base = self.robot.query('get_rm_plus_base_info')['base_info']
         grip = config['gripper']
         if (
@@ -316,8 +317,9 @@ class ReorientationMixin:
             work = self.robot.query('get_current_work_frame')
             if work.get('frame_name') != 'Base' or work.get('pose') != [0] * 6:
                 raise ValueError('当前不是零偏移 Base 坐标系')
-            if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
-                raise ValueError('夹爪通信未就绪')
+            mode = self.robot.query('get_rm_plus_mode').get('mode')
+            if mode != grasp_robot.RM_PLUS_MODE:
+                raise ValueError(grasp_robot.rm_plus_mode_error(mode))
             base = self.robot.query('get_rm_plus_base_info')['base_info']
             grip = config['gripper']
             if (
