@@ -19,8 +19,8 @@
 
 ## 3. 目录结构与主要模块
 
-- `tools/foundationpose/`：核心后端。`live_tracker.py`（8089 服务、相机采集、跟踪、网页）、`live_detection.py`/`local_qwen.py`/`qwen_worker.py`/`local_grounding.py`/`llm_detection.py`（找框）、`scene_*.py`（动作前多目标场景快照）、`grasp_*.py`（夹法库、抓取规划与执行、控制器通信）、`object_motion_*.py`（通用持物运动与释放）、`placement_*.py`、`reorientation_*.py`、`fixed_pick_place.py`（固定试管抓放后端）、`motion_validation.py` + `grasp_ik.cpp` + `ik_beam_search.hpp`（逆解/正解回验与多构型路径搜索）、`agent_api.py`（`/api/agent/` 认证接口）、各 `*.js`/`live_tracker.html`（六页工作台前端）。说明见同目录 `README.md`、`OBJECT_MOTION.md`、`SCENE_SNAPSHOTS.md`、`GRIPPER_VERIFICATION.md`。
-- `tools/task_runner/`：自然语言任务执行器（8091，工作台第 5 页）。`tools/robot_agent/`：MCP 服务、Codex 启动器与全局观察 `global_camera.py`。`tools/codex_terminal/`：网页 Codex 终端（8092，第 6 页）。
+- `tools/foundationpose/`：核心后端。`live_tracker.py`（8089 服务、相机采集、跟踪、网页）、`live_detection.py`/`local_qwen.py`/`qwen_worker.py`/`local_grounding.py`/`llm_detection.py`（找框）、`scene_*.py`（动作前多目标场景快照）、`grasp_*.py`（夹法库、抓取规划与执行、控制器通信）、`object_motion_*.py`（通用持物运动与释放）、`placement_*.py`、`reorientation_*.py`、`fixed_pick_place.py`（固定试管抓放后端）、`motion_validation.py` + `grasp_ik.cpp` + `ik_beam_search.hpp`（逆解/正解回验与多构型路径搜索）、`agent_api.py`（`/api/agent/` 认证接口）、各 `*.js`/`live_tracker.html`（五页工作台前端）。说明见同目录 `README.md`、`OBJECT_MOTION.md`、`SCENE_SNAPSHOTS.md`、`GRIPPER_VERIFICATION.md`。
+- `tools/task_runner/`：自然语言任务执行器（8091，工作台第 5 页）。`tools/robot_agent/`：MCP 服务、命令行 Codex 启动器 `codex_launcher.py` 与全局观察 `global_camera.py`。
 - `tools/camera_monitor/`：8088 双路相机预览。`tools/handeye/`：眼在手静态配对采集与手眼求解。`tools/object_scan/`：单视角 RGB-D 物品采集。
 - `tools/fixed_pick_place.py`：不经 LLM 的固定试管抓放命令行，说明见 `tools/FIXED_PICK_PLACE.md`。`tools/teach_pendant_gateway.py`：本机访问示教器的兼容入口。
 - `third_party/FoundationPose/`：固定版本上游源码。`ros2_rm_ws/`：睿尔曼 ROS 2 工作区与驱动启动脚本。
@@ -32,7 +32,6 @@
 | --- | --- | --- | --- |
 | 8089 | `tools/foundationpose/live_tracker.py` | 定位/抓取后端与工作台网页；启动时拉起常驻 Qwen 子进程 | `192.168.101.65` |
 | 8091 | `python -m tools.task_runner.api` | 任务执行器，经 8089 代理到第 5 页 | 回环 |
-| 8092 | `python -m tools.codex_terminal.api` | Codex 终端，经 8089 白名单代理到第 6 页 | 回环 |
 | 8088 | `tools/camera_monitor/server.py` | 相机预览；D435i 在 8089 运行时共享其画面 | 全部地址 |
 
 数据流：D435i RGB-D → 找框（默认本地 Qwen）→ SAM 分割 → FoundationPose 位姿 → 手眼/工具标定换算到 Base → 夹法库筛选与路径规划（逐采样点逆解→正解回验、10° 连续性、自碰撞、工作区/离桌）→ 控制器 movej/movel → 到位稳定窗口核验 → 执行器取动作后图像核验。任务与持物记录在 `work/agent/tasks.sqlite` 和 `work/grasp/`。
@@ -41,20 +40,21 @@
 
 - 启动 8089：`source tools/foundationpose/runtime_env.sh` 后 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --serial 405622073572 --agent-token-file ~/.local/share/saydo-mcp/robot-backend-token --mesh work/object_models/transparent_test_tube_150mm/model/model.obj --auto-start`。缺省找框方式为 qwen，`--detector llm/ssdlite` 可覆盖。启动不会自动抓取。
 - 启动 8088：`./tools/camera_monitor/run.sh --port 8088 --tracker-url http://192.168.101.65:8089`。
-- 启动 8091/8092：`work/task_runner_env/bin/python -m tools.task_runner.api`、`work/task_runner_env/bin/python -m tools.codex_terminal.api`。
+- 启动 8091：`work/task_runner_env/bin/python -m tools.task_runner.api`。
 - 后端测试：`work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q`（前置 `SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check"`）。执行器测试：`work/task_runner_env/bin/python -m unittest discover -s tools/task_runner -t . -p 'test_*.py' -v`。MCP 测试：`~/.local/share/saydo-mcp/venv/bin/python -m unittest discover -s tools/robot_agent -p 'test_*.py' -v`。预览测试：`.venv/bin/python -m unittest tools.camera_monitor.test_monitor`。MSI 未装 node，前端 `.cjs` 测试在本机运行。
 - 逆解检查器重建：`bash tools/foundationpose/build_ik_checker.sh`，须原子替换原路径二进制并保留备份。
 - Python 环境：`work/foundationpose_env`（FoundationPose/CUDA）、`.venv`（RealSense/OpenCV）、`work/task_runner_env`、`~/.local/share/saydo-mcp/venv`（MCP）、Qwen 使用的 `work/vlm_benchmark_20260930/hf_env` 及同目录 `models/Qwen3-VL-4B-Instruct`（torch 2.5.1+cu124、Transformers 5.17，路径由 `config/vision/qwen_local.json` 指定）。均为运行依赖，不要清理。
-- 各服务 PID/日志：`work/camera_monitor/`、`work/task_runner/`、`work/codex_terminal/` 下的 `server.pid`、`server.log`。均未配置开机自启。
+- 各服务 PID/日志：`work/foundationpose_live/server.pid`（8089，日志为同目录各次 `restart_*.log`）、`work/camera_monitor/`、`work/task_runner/` 下的 `server.pid` 与日志。均未配置开机自启。
 
 ## 6. 当前状态（2026-10-08）
 
-- 服务均在运行：8089（PID 272490，常驻 Qwen 子进程 PID 272609）、8088（PID 273955）、8091（PID 273957）、8092（PID 115425）。8089 于 2026-10-08 09:52 按第 5 节命令重新启动，日志 `work/foundationpose_live/restart_after_calibration_cleanup_20261008_095228.log`；8088、8091 随后为加载新说法再次重启，PID 文件均已更新。
+- 三个服务在运行：8089（PID 274951，常驻 Qwen 子进程 PID 275070）、8088（PID 273955）、8091（PID 273957）。8089 最近一次于 2026-10-08 10:04 按第 5 节命令重启，日志 `work/foundationpose_live/restart_remove_codex_terminal_20261008_100414.log`；PID 文件均已更新。8092 已随网页 Codex 终端一并删除。
 - 8089 读回：`model_ready=true`、`error=null`、找框方式 qwen、相机 D435i `405622073572` 640×360、帧龄约 0.11 秒、抓取模式 execute、`held_object=null`、不忙。当时画面内没有试管，状态为 `detecting`（持续寻找目标），不是故障。8091 重启后读回 execute、`gpt-6-sol`/medium、无停止中、无不确定阻断，20 条历史任务仍在。整卡显存占用约 3511 MiB。
 - 2026-10-08 按用户要求删除全部 D405 标定内容：`tools/handeye/capture_pair.py` 及其测试与说明、8088 的 `calibration-frame` 接口、两机 `work/dual_camera_calibration/` 数据（含两版未验收的候选外参）。原因：D405 已被拿走，原有标定作废。候选外参从未写入运行配置。9 月 30 日关停 8089 前的启动参数记录移至 MSI `work/camera_monitor/services_before_native_capture.json`。
 - 用户于 2026-10-08 确认：D435i 手眼标定是精准的，依据是换装后多次实机抓取均可靠执行。`camera_checks.camera_binding` 原先把 `replacement_accuracy_verified` 固定为 `False`，现改为读取 `camera_reuse.yaml` 的同名字段（仅显式 `true` 生效）；两机该配置已设为 `true` 并写明依据，原文件与标定说明备份在各自 `work/calibration/camera_reuse_accuracy_20261008/`。这是用户依据实际使用作出的确认，不是软件测得的误差数值；安装关系再变时应改回 `false`。
 - D405 重新接入验证（2026-10-08）：MSI `lsusb` 枚举到 `8086:0b5b`；用项目的 `observe_global` 入口实拍两次，均返回 `218622270784`、1280×720、帧龄约 1.02 秒（上限 2 秒）、耗时约 2.9 秒、`motion_sent=false`；画面可见桌面、两台机械臂和夹爪。证据在两机 `work/global_camera/reconnect_20261008/`。未经执行器跑完整任务验证动作后自动观察。
 - 说法统一为“不固定的全局相机”（2026-10-08）：模型提示词、MCP 指令、工具说明、8088 页面和文档中的“固定机位/固定相机”全部替换；相机角色标识由 `fixed_global` 改为 `movable_global`（8088、`global_camera.py`、MCP 服务、执行器校验同步）。采集方式、2 秒时效、身份核对和“未标定、仅供观察”的边界未变。旧任务记录里仍是 `fixed_global`，仅作历史展示。
+- 删除网页 Codex 终端（2026-10-08，按用户要求）：移除 `tools/codex_terminal/`（8092 服务）、8089 的 `codex_terminal_proxy.py` 代理与路由、工作台“06 Codex执行器”标签，工作台恢复为五页。MSI 上已停止 8092 并删除其运行目录 `work/codex_terminal/`（含访问码）。重启后读回：页面只有 01～05 五个标签、不含 codex 字样，`/codex-terminal/` 与 `/api/codex-terminal/output` 返回 404，第 5 页 200。保留的部分：MCP 服务、命令行 `~/.local/bin/codex` 与 `codex_launcher.py`、专用 `~/.local/share/saydo-codex/` 配置；历史验证记录 `work/codex_terminal_validation/` 未动。
 - 该配置文件的摘要参与场景快照与持物方案的绑定，修改后旧快照和旧方案自然失效；修改时 8089 处于停止状态，无夹持、无活动任务，无需额外处理。
 - 两机其余配置、物品模型、夹法数据未改动；MSI 未跟踪目录 `config/grasp/observation_pose_backups/` 保留。本轮未发送任何机械臂或夹爪动作。
 
@@ -68,7 +68,7 @@
 1. 试管入架路径：历史 4～5 个下降目标在多构型搜索（每层保留 8 个构型）下仍找不到满足 10° 连续性的完整解，尚需手动示教成功的完整 TCP/关节状态作对照。
 2. 夹指/架体碰撞模型缺失；试管架 180° 对称下的孔位编号需物理方向基准。
 3. 全局相机支架可能移动：不同时刻的全局图片视角不一定相同。目前只改了称呼，没有在提示词里额外写“不要假设前后视角一致”之类的约束，如实测发现模型误判再补。
-4. 已打开的 MCP/Codex 会话（含第 6 页终端）仍持有旧说法和旧角色标识，需重新连接才刷新；第 5 页刷新后新任务即使用新说法。
+4. 已打开的命令行 Codex/MCP 会话仍持有旧说法和旧角色标识，需重新启动才刷新；第 5 页刷新后新任务即使用新说法。
 5. `gpt-5.6-luna` 在服务商侧返回 503（上游负载），未恢复。
 
 ## 9. 注意事项
@@ -81,7 +81,7 @@
 
 ## 10. 历史工作索引（每项一行，详情见上述旧版报告与对应 `work/*_validation/` 证据）
 
-- 10-08 删除 D405 标定脚本、接口与数据；换装精度标记改为读取配置并按用户确认设为已验证；恢复 8089/8088；D405 以可变动支架重新接入并验证，说法统一为“不固定的全局相机”、角色标识改为 `movable_global`；`codex/task-runner` 合并回 `main` 并推送 GitHub。
+- 10-08 删除 D405 标定脚本、接口与数据；换装精度标记改为读取配置并按用户确认设为已验证；恢复 8089/8088；D405 以可变动支架重新接入并验证，说法统一为“不固定的全局相机”、角色标识改为 `movable_global`；删除第 6 页网页 Codex 终端与 8092 服务；`codex/task-runner` 合并回 `main` 并推送 GitHub。
 - 09-30 双相机标定：新增单组原生采集脚本并离线求解两版 D405 外参，均未验收（两版相差约 25 mm）；已于 10-08 全部删除。
 - 09-30 8088 改为 D435i + D405 并排预览，D435i 共享 8089 画面，D405 独立采集并与全局观察共用设备锁。
 - 09-30 Qwen3-VL-4B NF4 常驻找框接入 8089 并设为默认；评分前深度反投影按 32 个候选分批以避免显存保护。
@@ -102,7 +102,7 @@
 - 09-24 通用持物运动工具（`plan_held_object_motion`、`plan_release`、`execute_plan` 等）；全流程统一运动速度 25%；闭合接触诊断记录。
 - 09-24 工具原点改为 222.5 mm，每套夹法独立 TCP 偏移与最小离桌距离；横躺 5D 物品强制竖直抓取；桌面高度确认为 Base Z −0.02609 m。
 - 09-24 40 孔试管架参数模型（272×112×85 mm，孔径 20 mm，孔距 25 mm）；LLM 找框与每物品提示词；切换物品弹窗重排；越界提示区分工作区与桌面。
-- 09-24 第 6 页 Codex 终端上线（真实 PTY、只读沙箱、独立 CODEX_HOME）。
+- 09-24 第 6 页网页 Codex 终端上线（真实 PTY、只读沙箱、独立 CODEX_HOME）；已于 10-08 删除。
 - 09-23 自然语言任务执行器上线（第 5 页），默认 execute 模式，含时间线、模型与强度选择、调姿工具；按模型启用 5D 位姿。
 - 09-23 Codex 清理重装后恢复，MCP 独立环境与后端令牌迁至 `~/.local/share/saydo-mcp/`。
 - 09-22 机械臂 MCP 工具与 `/api/agent/` 认证接口；夹爪力度与张开位置绑定到每套夹法。
