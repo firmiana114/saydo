@@ -63,4 +63,4 @@ get_object_geometry新增features（每项id/kind/object_T_feature）、feature_
 - get_scene_snapshot返回最新实例状态；capture任务中的scene_snapshot只是采集完成时的历史证据。get_status不重复输出旧的实例状态，active_scene_id提供活动场景ID。
 - 尚未实现完整环境/夹指碰撞、孔位占用、插入力控和释放后独立定位。冻结场景不能替代这些检查；环境实际改变时应停止并重新安排任务。
 
-场景元数据及更新写入 `work/grasp/scenes/<scene_id>.json`，冻结RGB-D证据为同目录 `<scene_id>/frame.npz`。重启后历史场景明确标记不可执行，不自动恢复旧抓取。第5页的新任务采用新流程；第6页已有Codex会话需重启会话刷新MCP参数。
+场景元数据及更新写入 `work/grasp/scenes/<scene_id>.json`，冻结RGB-D证据为同目录 `<scene_id>/frame.npz`。重启后历史场景明确标记不可执行，不自动恢复旧抓取。第5页的新任务采用新流程；已有的独立Codex/MCP会话需重启会话刷新MCP参数。

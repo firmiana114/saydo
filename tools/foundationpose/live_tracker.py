@@ -32,7 +32,6 @@ from live_events import EventLog
 from camera_checks import select_camera
 from agent_api import AgentAPI, AgentError
 from task_runner_proxy import TaskRunnerProxy
-from codex_terminal_proxy import CodexTerminalProxy
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -806,7 +805,6 @@ def main():
     tracker = Tracker(args)
     agent_api = AgentAPI(tracker, args.agent_token_file) if args.agent_token_file else None
     task_runner = TaskRunnerProxy()
-    codex_terminal = CodexTerminalProxy()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *unused):
@@ -818,7 +816,7 @@ def main():
             self.send_response(status)
             self.send_header('Content-Type', mime)
             self.send_header('Cache-Control', 'no-store')
-            if self.path.startswith(('/task-runner/', '/codex-terminal/')):
+            if self.path.startswith('/task-runner/'):
                 self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'")
                 self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Content-Length', str(len(body)))
@@ -830,12 +828,6 @@ def main():
 
         def do_GET(self):
             path = self.path.split('?')[0]
-            if codex_terminal.matches(self.path):
-                try:
-                    self.reply(*codex_terminal.request('GET', self.path, authorization=self.headers.get('Authorization')))
-                except ValueError as error:
-                    self.reply(400, {'error': str(error)})
-                return
             if task_runner.matches(self.path):
                 try:
                     self.reply(*task_runner.request('GET', self.path))
@@ -933,15 +925,11 @@ def main():
             try:
                 size = int(self.headers.get('Content-Length', 0))
                 task_request = task_runner.matches(self.path)
-                terminal_request = codex_terminal.matches(self.path)
-                if (task_request or terminal_request) and self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                if task_request and self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                     raise ValueError('Task requests require application/json')
-                if not 0 <= size <= (26000 if terminal_request else 20000 if task_request or self.path == '/api/object/detection-prompt' else 4096):
+                if not 0 <= size <= (20000 if task_request or self.path == '/api/object/detection-prompt' else 4096):
                     raise ValueError('Invalid request size')
                 value = json.loads(self.rfile.read(size) or b'{}')
-                if terminal_request:
-                    self.reply(*codex_terminal.request('POST', self.path, value, self.headers.get('Authorization')))
-                    return
                 if task_request:
                     response = task_runner.request('POST', self.path, value)
                     if self.path == '/api/task-runs/stop' and response[0] >= 500:

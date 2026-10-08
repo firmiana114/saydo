@@ -1,7 +1,0 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex执行器</title><link rel="stylesheet" href="./vendor/xterm.css"><link rel="stylesheet" href="./style.css"></head><body>
-<header><div><h1>Codex执行器</h1><p>直接连接 MSI 的任务专用 Codex，在终端内输入任务。</p></div><span id="connection" role="status">未连接</span></header>
-<form id="connect-form"><label>终端访问码 <input id="token" type="password" autocomplete="off" placeholder="输入专用终端访问码" required></label><button id="connect" type="submit">启动 / 连接</button><button id="interrupt" type="button" disabled>中断 Ctrl+C</button><button id="clear" type="button">清屏</button><button id="close" class="secondary" type="button" disabled>结束会话</button></form>
-<p id="feedback" role="status">连接后可直接输入中文任务，Enter提交。切换标签不会关闭会话。</p>
-<div id="terminal" aria-label="MSI Codex交互终端"></div>
-<p class="note">访问码仅保留在本页内存中。刷新或断线后可重新连接现有会话。终端中断、清屏或结束会话不等于停止机械臂；停止运动请使用工作台右侧的“停止运动”。请勿同时通过两个执行器下发机械臂任务。</p>
-<script src="./vendor/xterm.js"></script><script src="./vendor/addon-fit.js"></script><script src="./app.js"></script></body></html>
