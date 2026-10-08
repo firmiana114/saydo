@@ -1,4 +1,5 @@
 """Bounded display-only material payload; never used for motion geometry."""
+
 import base64
 from functools import lru_cache
 from io import BytesIO
@@ -20,7 +21,11 @@ def mesh_appearance(mesh):
             raise ValueError('模型纹理坐标无效')
         result['uv'] = uv.tolist()
     material = getattr(visual, 'material', None)
-    materials = list(material.materials) if hasattr(material, 'materials') else [material]
+    materials = (
+        list(material.materials)
+        if hasattr(material, 'materials')
+        else [material]
+    )
     if len(materials) > 32:
         raise ValueError('预览模型材质数量超过 32')
     for material in materials:
@@ -43,9 +48,13 @@ def mesh_appearance(mesh):
             image.thumbnail((1024, 1024))
             buffer = BytesIO()
             image.save(buffer, format='PNG', optimize=True)
-            entry['texture'] = 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+            entry['texture'] = (
+                'data:image/png;base64,'
+                + base64.b64encode(buffer.getvalue()).decode('ascii')
+            )
             entry['size'] = list(image.size)
-            # OBJ Kd is often an exporter default; the diffuse map contains the color.
+            # OBJ Kd is often an exporter default; the diffuse map contains the
+            # color.
             if getattr(material, 'baseColorTexture', None) is None:
                 entry['color'] = [1., 1., 1., 1.]
             result['status'] = 'textured'
@@ -53,11 +62,21 @@ def mesh_appearance(mesh):
     indices = getattr(visual, 'face_materials', None)
     if indices is not None:
         indices = np.asarray(indices)
-        if indices.shape != (len(mesh.faces),) or not np.isfinite(indices).all() or np.any(indices != np.floor(indices)) or np.any(indices < 0) or np.any(indices >= len(materials)):
+        if (
+            indices.shape != (len(mesh.faces),)
+            or not np.isfinite(indices).all()
+            or np.any(indices != np.floor(indices))
+            or np.any(indices < 0)
+            or np.any(indices >= len(materials))
+        ):
             raise ValueError('模型材质索引无效')
         result['face_materials'] = indices.astype(int).tolist()
     if visual.kind in ('vertex', 'face'):
-        colors = np.asarray(visual.vertex_colors if visual.kind == 'vertex' else visual.face_colors)
+        colors = np.asarray(
+            visual.vertex_colors
+            if visual.kind == 'vertex'
+            else visual.face_colors
+        )
         result[visual.kind + '_colors'] = (colors.astype(float) / 255).tolist()
         result['status'] = 'colored'
         result['materials'] = [{'color': [1., 1., 1., 1.]}]
@@ -73,7 +92,14 @@ def _appearance(path, dependencies):
 def model_appearance(models_root, object_id):
     path = Path(select_object(models_root, object_id)['mesh'])
     # Include sidecars so changing a texture/MTL refreshes the cached payload.
-    extensions = {'.obj', '.glb', '.ply', '.mtl', '.png', '.jpg', '.jpeg', '.webp', '.bmp'}
-    dependencies = tuple(sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size)
-                                for p in path.parent.rglob('*') if p.is_file() and p.suffix.lower() in extensions))
+    extensions = {
+        '.obj', '.glb', '.ply', '.mtl', '.png', '.jpg', '.jpeg', '.webp', '.bmp'
+    }
+    dependencies = tuple(
+        sorted(
+            (str(p), p.stat().st_mtime_ns, p.stat().st_size)
+            for p in path.parent.rglob('*')
+            if p.is_file() and p.suffix.lower() in extensions
+        )
+    )
     return _appearance(str(path), dependencies)

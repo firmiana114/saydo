@@ -1,12 +1,22 @@
 """Narrow RealMan JSON transport. Motion requires an explicitly enabled client."""
+
 import json
 import socket
 import time
 
 
-READS = {'get_current_arm_state', 'get_current_tool_frame', 'get_current_work_frame', 'get_joint_en_state',
-         'get_joint_err_flag', 'get_arm_software_info', 'get_rm_plus_mode', 'get_rm_plus_base_info',
-         'get_rm_plus_state_info', 'get_rm_plus_reg'}
+READS = {
+    'get_current_arm_state',
+    'get_current_tool_frame',
+    'get_current_work_frame',
+    'get_joint_en_state',
+    'get_joint_err_flag',
+    'get_arm_software_info',
+    'get_rm_plus_mode',
+    'get_rm_plus_base_info',
+    'get_rm_plus_state_info',
+    'get_rm_plus_reg',
+}
 
 
 class RobotClient:
@@ -19,12 +29,21 @@ class RobotClient:
         if command not in READS:
             raise ValueError('只读接口拒绝写入命令')
         reply = self._request({'command': command, **values})
-        required = {'get_rm_plus_state_info': 'state_info', 'get_rm_plus_base_info': 'base_info'}
+        required = {
+            'get_rm_plus_state_info': 'state_info',
+            'get_rm_plus_base_info': 'base_info',
+        }
         if command in required:
             field = required[command]
-            if not isinstance(reply, dict) or reply.get('get_state') is False or not isinstance(reply.get(field), dict):
-                raise RuntimeError(f'夹爪 RM Plus 查询 {command} 未返回有效 {field}；'
-                                   '请检查末端通信模式、供电和连接')
+            if (
+                not isinstance(reply, dict)
+                or reply.get('get_state') is False
+                or not isinstance(reply.get(field), dict)
+            ):
+                raise RuntimeError(
+                    f'夹爪 RM Plus 查询 {command} 未返回有效 {field}；'
+                    '请检查末端通信模式、供电和连接'
+                )
         return reply
 
     def _request(self, payload):
@@ -39,37 +58,74 @@ class RobotClient:
                         raise RuntimeError('控制器断开连接')
                     reply = json.loads(line)
                     expected = command.removeprefix('get_')
-                    if reply.get('command') in (command, expected) or reply.get('state') == expected:
+                    if (
+                        reply.get('command') in (command, expected)
+                        or reply.get('state') == expected
+                    ):
                         return reply
         raise RuntimeError('未收到匹配的控制器响应')
 
     def register(self, address):
         reply = self.query('get_rm_plus_reg', addr=address, length=1)
         values = reply.get('plus_reg_data')
-        if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], int):
-            raise ValueError(f'寄存器 {address} 没有返回实际数值，不能验证限力/限速')
+        if (
+            not isinstance(values, list)
+            or len(values) != 1
+            or not isinstance(values[0], int)
+        ):
+            raise ValueError(
+                f'寄存器 {address} 没有返回实际数值，不能验证限力/限速'
+            )
         return values[0]
 
     def set_register(self, address, value):
         if not self.writes or address not in (1180, 1220, 1470, 1023):
             raise ValueError('寄存器写入未启用或不在许可范围')
-        if not isinstance(value, int) or not 0 <= value <= 1000 or address == 1023 and value != 1:
+        if (
+            not isinstance(value, int)
+            or not 0 <= value <= 1000
+            or address == 1023 and value != 1
+        ):
             raise ValueError('寄存器值越界')
-        reply = self._request({'command': 'set_rm_plus_reg', 'addr': address, 'length': 1, 'data': [value]})
+        reply = self._request(
+            {
+                'command': 'set_rm_plus_reg',
+                'addr': address,
+                'length': 1,
+                'data': [value],
+            }
+        )
         if reply.get('set_state') is not True:
             raise RuntimeError('夹爪命令未被接受')
 
     def move_gripper(self, position):
-        if not self.writes or not isinstance(position, int) or not 0 <= position <= 1000:
+        if (
+            not self.writes
+            or not isinstance(position, int)
+            or not 0 <= position <= 1000
+        ):
             raise ValueError('夹爪写入未启用或开度越界')
-        if self._request({'command': 'hand_follow_pos', 'hand_pos': [position]}).get('set_state') is not True:
+        if (
+            self._request(
+                {'command': 'hand_follow_pos', 'hand_pos': [position]}
+            ).get('set_state')
+            is not True
+        ):
             raise RuntimeError('夹爪开度命令未被接受')
 
     def stop(self):
         if not self.writes:
             return
         failures = []
-        for payload in [{'command': 'set_arm_stop'}, {'command': 'set_rm_plus_reg', 'addr': 1023, 'length': 1, 'data': [1]}]:
+        for payload in [
+            {'command': 'set_arm_stop'},
+            {
+                'command': 'set_rm_plus_reg',
+                'addr': 1023,
+                'length': 1,
+                'data': [1],
+            },
+        ]:
             try:
                 result = self._request(payload)
                 if result.get('arm_stop', result.get('set_state')) is not True:
@@ -80,33 +136,86 @@ class RobotClient:
             raise RuntimeError('停止指令未全部确认：' + '; '.join(failures))
 
     def move_linear(self, pose, speed, cancelled, watchdog, timeout=60):
-        if not self.writes or len(pose) != 6 or not all(isinstance(v, int) for v in pose) or not 1 <= speed <= 100:
+        if (
+            not self.writes
+            or len(pose) != 6
+            or not all(isinstance(v, int) for v in pose)
+            or not 1 <= speed <= 100
+        ):
             raise ValueError('运动未启用或运动参数无效')
-        command = {'command': 'movel', 'pose': pose, 'v': speed, 'r': 0, 'trajectory_connect': 0}
+        command = {
+            'command': 'movel',
+            'pose': pose,
+            'v': speed,
+            'r': 0,
+            'trajectory_connect': 0,
+        }
         return self._move(command, cancelled, watchdog, timeout)
 
     def move_joint_pose(self, pose, speed, cancelled, watchdog, timeout=60):
-        if not self.writes or len(pose) != 6 or not all(type(v) is int for v in pose) or not 1 <= speed <= 100:
+        if (
+            not self.writes
+            or len(pose) != 6
+            or not all(type(v) is int for v in pose)
+            or not 1 <= speed <= 100
+        ):
             raise ValueError('目标位姿关节运动未启用或参数无效')
-        return self._move({'command':'movej_p', 'pose':pose, 'v':speed, 'r':0, 'trajectory_connect':0},
-                          cancelled, watchdog, timeout)
+        return self._move(
+            {
+                'command': 'movej_p',
+                'pose': pose,
+                'v': speed,
+                'r': 0,
+                'trajectory_connect': 0,
+            },
+            cancelled,
+            watchdog,
+            timeout,
+        )
 
     def move_joints(self, joints, speed, cancelled, watchdog, timeout=60):
-        if not self.writes or len(joints) != 7 or not all(type(v) is int for v in joints) or not 1 <= speed <= 100:
+        if (
+            not self.writes
+            or len(joints) != 7
+            or not all(type(v) is int for v in joints)
+            or not 1 <= speed <= 100
+        ):
             raise ValueError('关节运动未启用或参数无效')
-        return self._move({'command':'movej', 'joint':joints, 'v':speed, 'r':0, 'trajectory_connect':0},
-                          cancelled, watchdog, timeout)
+        return self._move(
+            {
+                'command': 'movej',
+                'joint': joints,
+                'v': speed,
+                'r': 0,
+                'trajectory_connect': 0,
+            },
+            cancelled,
+            watchdog,
+            timeout,
+        )
 
     def _move(self, command, cancelled, watchdog, timeout):
         started = time.monotonic()
-        record = {'started_at': time.time(), 'stage': getattr(self, 'motion_stage', None), 'command': command, 'timeout_s': timeout,
-                  'send_completed': False, 'accepted': False, 'responses': [], 'responses_dropped': 0}
+        record = {
+            'started_at': time.time(),
+            'stage': getattr(self, 'motion_stage', None),
+            'command': command,
+            'timeout_s': timeout,
+            'send_completed': False,
+            'accepted': False,
+            'responses': [],
+            'responses_dropped': 0,
+        }
         self.motion_log.append(record)
         try:
             self._execute_move(command, cancelled, watchdog, timeout, record)
             record['outcome'] = 'completed'
         except Exception as error:
-            record.update(outcome='failed', error=str(error), error_type=type(error).__name__)
+            record.update(
+                outcome='failed',
+                error=str(error),
+                error_type=type(error).__name__,
+            )
             raise
         finally:
             record['elapsed_s'] = time.monotonic() - started
@@ -145,8 +254,11 @@ class RobotClient:
                     if not line.strip():
                         continue
                     raw = line.decode('utf-8', errors='replace')
-                    response = {'elapsed_s': time.monotonic() - (deadline - timeout),
-                                'raw': raw[:2048], 'truncated': len(raw) > 2048}
+                    response = {
+                        'elapsed_s': time.monotonic() - (deadline - timeout),
+                        'raw': raw[:2048],
+                        'truncated': len(raw) > 2048,
+                    }
                     if len(record['responses']) >= 32:
                         record['responses'].pop(0)
                         record['responses_dropped'] += 1
@@ -156,15 +268,27 @@ class RobotClient:
                         raise ValueError('控制器运动应答不是 JSON 对象')
                     if reply.get('command') == command['command']:
                         if reply.get('receive_state') is not True:
-                            raise RuntimeError(f"控制器拒绝 {command['command']} 指令：{raw[:512]}")
+                            raise RuntimeError(
+                                f"控制器拒绝 {command['command']} 指令："
+                                f"{raw[:512]}"
+                            )
                         accepted = True
                         record['accepted'] = True
                         record['acceptance_reply'] = response
                     if reply.get('state') == 'current_trajectory_state':
                         record['completion_reply'] = response
                         if not accepted:
-                            raise RuntimeError(f"收到运动结果但尚未收到 {command['command']} 的接受确认：{raw[:512]}")
+                            raise RuntimeError(
+                                f"收到运动结果但尚未收到 {command['command']} "
+                                f"的接受确认：{raw[:512]}"
+                            )
                         if reply.get('trajectory_state') is not True:
-                            raise RuntimeError(f"控制器报告 {command['command']} 轨迹未成功完成：{raw[:512]}")
+                            raise RuntimeError(
+                                f"控制器报告 {command['command']} "
+                                f"轨迹未成功完成：{raw[:512]}"
+                            )
                         return
-            raise TimeoutError(f"{command['command']} 等待运动完成超时（{timeout} 秒，已收到接受确认：{accepted}）")
+            raise TimeoutError(
+                f"{command['command']} 等待运动完成超时（{timeout} 秒，"
+                f"已收到接受确认：{accepted}）"
+            )

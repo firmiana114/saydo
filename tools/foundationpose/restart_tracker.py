@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Stop and start the 8089 tracker on this machine; sends no robot or gripper command."""
+
 import argparse
 import fcntl
 import json
@@ -16,11 +17,22 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 HOST, PORT = '192.168.101.65', 8089
 RUNNER_URL = 'http://127.0.0.1:8091/api/task-runs'
-LIVE = ROOT/'work/foundationpose_live'
-# Same start-up arguments as the documented manual command; extra arguments are appended.
-TRACKER_ARGS = ['--host', HOST, '--port', str(PORT), '--serial', '405622073572',
-                '--agent-token-file', str(Path.home()/'.local/share/saydo-mcp/robot-backend-token'),
-                '--mesh', 'work/object_models/transparent_test_tube_150mm/model/model.obj', '--auto-start']
+LIVE = ROOT / 'work/foundationpose_live'
+# Same start-up arguments as the documented manual command; extra arguments are
+# appended.
+TRACKER_ARGS = [
+    '--host',
+    HOST,
+    '--port',
+    str(PORT),
+    '--serial',
+    '405622073572',
+    '--agent-token-file',
+    str(Path.home() / '.local/share/saydo-mcp/robot-backend-token'),
+    '--mesh',
+    'work/object_models/transparent_test_tube_150mm/model/model.obj',
+    '--auto-start',
+]
 FINISHED = {'succeeded', 'blocked', 'failed', 'cancelled'}
 LOG = logging.getLogger('restart_tracker')
 
@@ -38,7 +50,12 @@ def listening_pid(text):
 
 
 def current_pid():
-    result = subprocess.run(['ss', '-ltnpH', 'sport = :%d' % PORT], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ['ss', '-ltnpH', 'sport = :%d' % PORT],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return listening_pid(result.stdout)
 
 
@@ -53,9 +70,15 @@ def blockers(status, runs):
     if runs is not None:
         if runs.get('stopping'):
             reasons.append('任务执行器正在停止任务')
-        active = [r.get('run_id') for r in runs.get('runs', []) if r.get('state') not in FINISHED]
+        active = [
+            r.get('run_id')
+            for r in runs.get('runs', [])
+            if r.get('state') not in FINISHED
+        ]
         if active:
-            reasons.append('任务执行器有未结束的任务：' + ', '.join(str(i) for i in active))
+            reasons.append(
+                '任务执行器有未结束的任务：' + ', '.join(str(i) for i in active)
+            )
     return reasons
 
 
@@ -64,41 +87,67 @@ def check_idle():
     try:
         runs = get_json(RUNNER_URL, timeout=8)
     except (OSError, ValueError) as error:
-        LOG.warning('任务执行器不可达，跳过其任务检查：%s', type(error).__name__)
+        LOG.warning(
+            '任务执行器不可达，跳过其任务检查：%s', type(error).__name__
+        )
         runs = None
     return blockers(status, runs)
 
 
 def children(pid):
-    result = subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True)
+    result = subprocess.run(
+        ['pgrep', '-P', str(pid)], capture_output=True, text=True
+    )
     return [int(p) for p in result.stdout.split()]
 
 
 def stop(pid, timeout=30):
-    command = Path('/proc/%d/cmdline' % pid).read_bytes().replace(b'\0', b' ').decode(errors='replace')
+    command = Path(
+        '/proc/%d/cmdline' % pid
+    ).read_bytes().replace(b'\0', b' ').decode(errors='replace')
     if 'live_tracker.py' not in command:
-        raise RuntimeError('占用 %d 端口的进程 %d 不是跟踪服务，未停止：%s' % (PORT, pid, command[:120]))
-    waiting = [pid] + children(pid)  # The resident detector child exits with its parent.
+        raise RuntimeError(
+            '占用 %d 端口的进程 %d 不是跟踪服务，未停止：%s'
+            % (PORT, pid, command[:120])
+        )
+    # The resident detector child exits with its parent.
+    waiting = [pid] + children(pid)
     LOG.info('停止跟踪服务 PID %d（含子进程 %s）', pid, waiting[1:])
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while any(Path('/proc/%d' % p).exists() for p in waiting):
         if time.monotonic() > deadline:
-            raise RuntimeError('%d 秒内进程未退出，未强制结束，请人工检查：%s' % (timeout, waiting))
+            raise RuntimeError(
+                '%d 秒内进程未退出，未强制结束，请人工检查：%s'
+                % (timeout, waiting)
+            )
         time.sleep(.2)
     LOG.info('旧进程已全部退出')
 
 
 def start(extra):
     LIVE.mkdir(parents=True, exist_ok=True)
-    log_path = LIVE/time.strftime('restart_script_%Y%m%d_%H%M%S.log')
-    script = 'source tools/foundationpose/runtime_env.sh && exec python tools/foundationpose/live_tracker.py "$@"'
+    log_path = LIVE / time.strftime('restart_script_%Y%m%d_%H%M%S.log')
+    script = (
+        'source tools/foundationpose/runtime_env.sh && exec python '
+        'tools/foundationpose/live_tracker.py "$@"'
+    )
     with log_path.open('wb') as log:
-        # A new session with no inherited terminal, so the caller's ssh can return.
-        process = subprocess.Popen(['bash', '-c', script, 'bash', *TRACKER_ARGS, *extra], cwd=ROOT,
-                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
-    LOG.info('已启动跟踪服务 PID %d，日志 %s', process.pid, log_path.relative_to(ROOT))
+        # A new session with no inherited terminal, so the caller's ssh can
+        # return.
+        process = subprocess.Popen(
+            ['bash', '-c', script, 'bash', *TRACKER_ARGS, *extra],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    LOG.info(
+        '已启动跟踪服务 PID %d，日志 %s',
+        process.pid,
+        log_path.relative_to(ROOT),
+    )
     return process, log_path
 
 
@@ -107,9 +156,12 @@ def wait_ready(process, log_path, listen_timeout=120, model_timeout=180):
     while current_pid() != process.pid:
         if process.poll() is not None or time.monotonic() > deadline:
             tail = log_path.read_text(errors='replace').splitlines()[-15:]
-            raise RuntimeError('跟踪服务未能开始监听 %d 端口，日志结尾：\n%s' % (PORT, '\n'.join(tail)))
+            raise RuntimeError(
+                '跟踪服务未能开始监听 %d 端口，日志结尾：\n%s'
+                % (PORT, '\n'.join(tail))
+            )
         time.sleep(.5)
-    (LIVE/'server.pid').write_text('%d\n' % process.pid)
+    (LIVE / 'server.pid').write_text('%d\n' % process.pid)
     LOG.info('已监听 %s:%d，PID 文件已更新；等待模型就绪', HOST, PORT)
     deadline = time.monotonic() + model_timeout
     status = {}
@@ -127,21 +179,37 @@ def wait_ready(process, log_path, listen_timeout=120, model_timeout=180):
 def acquire_lock():
     """Hold an exclusive lock for this run so two restarts cannot stop each other's new process."""
     LIVE.mkdir(parents=True, exist_ok=True)
-    handle = (LIVE/'restart.lock').open('a')
+    handle = (LIVE / 'restart.lock').open('a')
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as error:
         handle.close()
-        raise RuntimeError('另一次重启正在进行，本次未执行；等它结束后查看结果') from error
+        raise RuntimeError(
+            '另一次重启正在进行，本次未执行；等它结束后查看结果'
+        ) from error
     return handle
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='关闭并启动 8089 跟踪服务；不发送机械臂或夹爪指令。')
-    parser.add_argument('--force', action='store_true', help='跳过“无任务、无夹持”检查（会丢失夹持记录）')
-    parser.add_argument('tracker_args', nargs='*', help='写在 -- 之后，追加给 live_tracker.py 的参数')
+    parser = argparse.ArgumentParser(
+        description='关闭并启动 8089 跟踪服务；不发送机械臂或夹爪指令。'
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='跳过“无任务、无夹持”检查（会丢失夹持记录）',
+    )
+    parser.add_argument(
+        'tracker_args',
+        nargs='*',
+        help='写在 -- 之后，追加给 live_tracker.py 的参数',
+    )
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(message)s',
+        datefmt='%H:%M:%S',
+    )
     try:
         lock = acquire_lock()  # Released when this process exits.
         pid = current_pid()
@@ -154,10 +222,19 @@ def main(argv=None):
                 try:
                     reasons = check_idle()
                 except (OSError, ValueError) as error:
-                    raise RuntimeError('无法读取服务状态以确认空闲（%s）；确认可重启后加 --force'
-                                       % type(error).__name__) from error
+                    raise RuntimeError(
+                        (
+                            '无法读取服务状态以确认空闲（%s）；确认可重启后加 '
+                            '--force'
+                        )
+                        % type(error).__name__
+                    ) from error
                 if reasons:
-                    raise RuntimeError('未重启：' + '；'.join(reasons) + '。处理后重试，或加 --force')
+                    raise RuntimeError(
+                        '未重启：'
+                        + '；'.join(reasons)
+                        + '。处理后重试，或加 --force'
+                    )
             stop(pid)
         process, log_path = start(args.tracker_args)
         status = wait_ready(process, log_path)
@@ -165,10 +242,19 @@ def main(argv=None):
         LOG.error('%s', error)
         return 1
     grasp = status.get('grasp') or {}
-    LOG.info('状态：state=%s model_ready=%s error=%s 找框=%s 夹持=%s', status.get('state'), status.get('model_ready'),
-             status.get('error'), status.get('detector_backend'), grasp.get('held_object'))
+    LOG.info(
+        '状态：state=%s model_ready=%s error=%s 找框=%s 夹持=%s',
+        status.get('state'),
+        status.get('model_ready'),
+        status.get('error'),
+        status.get('detector_backend'),
+        grasp.get('held_object'),
+    )
     if not status.get('model_ready') or status.get('error'):
-        LOG.error('服务已监听，但模型未就绪或服务报告了错误，请查看日志 %s', log_path.relative_to(ROOT))
+        LOG.error(
+            '服务已监听，但模型未就绪或服务报告了错误，请查看日志 %s',
+            log_path.relative_to(ROOT),
+        )
         return 1
     LOG.info('重启完成：http://%s:%d/', HOST, PORT)
     return 0
