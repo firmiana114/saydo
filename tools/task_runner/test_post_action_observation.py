@@ -28,7 +28,7 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
         for history in llm.histories[1:]:
             images=[p for item in history for p in item.get('content',[]) if isinstance(p,dict) and p.get('type')=='input_image']
             self.assertEqual(len(images),1)
-            self.assertIn('fixed_global',json.dumps(history))
+            self.assertIn('movable_global',json.dumps(history))
         # Program observations are explicitly labelled user-context data, not
         # fabricated model function calls or orphan function_call_outputs.
         self.assertFalse(any(i.get('type')=='function_call_output' and i.get('call_id','').startswith('auto-global-') for i in llm.histories[-1]))
@@ -63,15 +63,15 @@ class ObservationFlowTests(unittest.IsolatedAsyncioTestCase):
         llm=FakeLLM(call('grasp',{'object_id':'bottle'},'g'),end('blocked',['g']))
         run,_=await self.execute(llm)
         self.assertEqual(run['state'],'blocked');self.assertNotIn('global_observations',run)
-        frame={'camera_role':'fixed_global','camera_serial':'fixed','captured_at':time.time()-20,'image_base64':'AA==','mime_type':'image/png'}
+        frame={'camera_role':'movable_global','camera_serial':'fixed','captured_at':time.time()-20,'image_base64':'AA==','mime_type':'image/png'}
         self.assertFalse(valid_global(frame,time.time()-1))
 
     def test_context_keeps_one_image_per_camera_and_explicit_provenance(self):
         h=[]
         def frame(serial):return {'camera':{'serial':serial},'image_base64':'AA==','mime_type':'image/png','captured_at':time.time()}
         Runner.append_result(h,'eye-1','get_camera_frame',frame('wrist'))
-        Runner.append_result(h,'global-1','observe_global',{**frame('fixed'),'camera_role':'fixed_global','camera_serial':'fixed'})
+        Runner.append_result(h,'global-1','observe_global',{**frame('fixed'),'camera_role':'movable_global','camera_serial':'fixed'})
         Runner.append_result(h,'eye-2','get_camera_frame',frame('wrist'))
         items=[i for i in h if isinstance(i.get('content'),list) and any(p.get('type')=='input_image' for p in i['content'])]
         self.assertEqual(len(items),2)
-        self.assertIn('fixed_global',items[0]['content'][0]['text']);self.assertIn('eye_in_hand',items[1]['content'][0]['text'])
+        self.assertIn('movable_global',items[0]['content'][0]['text']);self.assertIn('eye_in_hand',items[1]['content'][0]['text'])

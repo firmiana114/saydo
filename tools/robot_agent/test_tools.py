@@ -23,12 +23,12 @@ class ToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_global_observation_is_native_image_without_robot_backend(self):
         backend=FakeBackend()
         frame={'image_base64':base64.b64encode(b'fixture').decode(),'mime_type':'image/jpeg',
-               'camera_role':'fixed_global','camera_serial':'344422070678','calibrated_to_robot_base':False}
+               'camera_role':'movable_global','camera_serial':'344422070678','calibrated_to_robot_base':False}
         with patch('server.capture_global',return_value=frame):
             async with Client(create_server(backend)) as client:
                 result=await client.call_tool('observe_global',{})
         self.assertFalse(result.is_error);self.assertEqual(result.content[0].type,'image')
-        self.assertEqual(result.structured_content['camera_role'],'fixed_global')
+        self.assertEqual(result.structured_content['camera_role'],'movable_global')
         self.assertNotIn('image_base64',result.structured_content);self.assertEqual(backend.calls,[])
         with patch('server.capture_global',side_effect=CameraUnavailable('missing')):
             async with Client(create_server(backend)) as client:

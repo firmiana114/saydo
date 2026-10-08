@@ -124,7 +124,7 @@ class Runner:
         record=self.store.prepare(run['run_id'],ident,'observe_global',{},step)
         record.update(initiated_by='executor',after_action=action_id,state='dispatching')
         record['request_id']+='-global';self.store.save_call(run['run_id'],record)
-        self.emit(run,'phase',text='执行器自动获取动作后的固定全局画面。')
+        self.emit(run,'phase',text='执行器自动获取动作后的不固定的全局相机画面。')
         self.emit(run,'tool_started',name='observe_global',call_id=ident,initiated_by='executor',after_action=action_id)
         started=time.monotonic()
         try:

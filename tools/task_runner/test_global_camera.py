@@ -17,14 +17,14 @@ class GlobalObservationTests(unittest.IsolatedAsyncioTestCase):
             validate({'type':'function_call','call_id':'global-1','name':'observe_global',
                       'arguments':json.dumps({'progress_message':'观察全局'})},mode)
         backend=Mock();adapter=RobotAdapter(Config(api_key='test'),backend)
-        frame={'camera_role':'fixed_global','image_base64':'AA==','mime_type':'image/jpeg','captured_at':123}
+        frame={'camera_role':'movable_global','image_base64':'AA==','mime_type':'image/jpeg','captured_at':123}
         with patch('tools.task_runner.robot_adapter.observe_global',return_value=frame):
             result=await adapter.execute('observe_global',{},'r',asyncio.Event(),lambda _:None)
-        self.assertEqual(result['image_base64'],frame['image_base64']);self.assertEqual(result['camera_label'],'固定全局机位');backend.request.assert_not_called()
+        self.assertEqual(result['image_base64'],frame['image_base64']);self.assertEqual(result['camera_label'],'不固定的全局相机');backend.request.assert_not_called()
         history=[];cleaned=Runner.append_result(history,'global-1','observe_global',result)
         self.assertNotIn('image_base64',cleaned)
         self.assertEqual(history[-1]['content'][-1]['type'],'input_image')
-        self.assertIn('fixed_global',history[-1]['content'][0]['text'])
+        self.assertIn('movable_global',history[-1]['content'][0]['text'])
 
     async def test_failure_is_read_failure_and_cancelled_result_is_not_delivered(self):
         adapter=RobotAdapter(Config(api_key='test'),Mock());cancelled=asyncio.Event()

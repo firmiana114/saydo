@@ -101,7 +101,7 @@ def create_server(backend):
 
     @server.tool(annotations=read)
     async def observe_global() -> CallToolResult:
-        """Observe the whole workspace with the separate configured fixed camera. Capture a new RGB image, with camera serial/role, host receipt time and resolution. No calibration to robot Base: qualitative appearance only, not robot coordinates, metric measurements, tracking boxes, contact/insertion or collision verification. Does not move hardware, switch the tracking camera, or replace scene capture. Never falls back to another camera or an old image."""
+        """Observe the whole workspace with the separate configured global camera, whose mount is not fixed. Capture a new RGB image, with camera serial/role, host receipt time and resolution. No calibration to robot Base: qualitative appearance only, not robot coordinates, metric measurements, tracking boxes, contact/insertion or collision verification. Does not move hardware, switch the tracking camera, or replace scene capture. Never falls back to another camera or an old image."""
         try:
             data = label_frame(await asyncio.to_thread(capture_global),'observe_global')
             encoded = data.pop('image_base64')
@@ -109,7 +109,7 @@ def create_server(backend):
                 TextContent(type='text', text=json.dumps(data, ensure_ascii=False))], structured_content=data)
         except CameraUnavailable as error:
             return CallToolResult(is_error=True, content=[TextContent(type='text', text=json.dumps(
-                {'code':'CAMERA_UNAVAILABLE','message':str(error),'camera_role':'fixed_global','motion_sent':False,
+                {'code':'CAMERA_UNAVAILABLE','message':str(error),'camera_role':'movable_global','motion_sent':False,
                  'usage_note':GLOBAL_CAMERA_NOTE}, ensure_ascii=False))])
 
     @server.tool(annotations=read)

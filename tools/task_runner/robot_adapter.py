@@ -118,7 +118,7 @@ class RobotAdapter:
                 result = await asyncio.to_thread(observe_global)
             except CameraUnavailable as error:
                 raise BackendError({'code':'CAMERA_UNAVAILABLE','message':str(error),
-                                    'camera_role':'fixed_global','motion_sent':False}) from error
+                                    'camera_role':'movable_global','motion_sent':False}) from error
             if cancelled.is_set():
                 raise Cancelled()
             return label_frame(result,'observe_global')

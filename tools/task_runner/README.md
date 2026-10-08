@@ -149,17 +149,17 @@ work/task_runner_env/bin/python -m tools.task_runner.probe
 成功抓取后仅在模型上下文中移除已移动源实例的旧位姿，其他静态参照保留；原始持久化记录不修改。当前位姿从get_robot_state.held_object_pose读取。拟合残差附带指标语义，不能直接当作横向定位误差。模型仍可针对具体几何风险停止，不强制绕过已确认危险或后端拒绝。
 
 
-## 固定相机观察全局
+## 不固定的全局相机观察
 
-`observe_global` 与 MCP 共用独立按需采集模块，配置和限制见 [固定机位全局观察](../robot_agent/README.md#固定机位全局观察)。三个运行模式均可调用，返回原生模型图片和相机身份/时间元数据；失败沿用有限观察恢复，不提交机械臂动作。`get_camera_frame` 和 `get_task_context.include_frame` 仍是眼在手图片，像素框不可跨机位使用。模型上下文分别保留眼在手和固定全局机位各自最新一张图片，旧图保留时间和证据说明；两个机位不是同步拍摄。
+`observe_global` 与 MCP 共用独立按需采集模块，配置和限制见 [不固定的全局相机观察](../robot_agent/README.md#不固定的全局相机观察)。三个运行模式均可调用，返回原生模型图片和相机身份/时间元数据；失败沿用有限观察恢复，不提交机械臂动作。`get_camera_frame` 和 `get_task_context.include_frame` 仍是眼在手图片，像素框不可跨机位使用。模型上下文分别保留眼在手和不固定的全局相机各自最新一张图片，旧图保留时间和证据说明；两个机位不是同步拍摄。
 
 只读持物规划（plan_held_object_motion、plan_release）已取消20秒后端总时限，执行器持续轮询到终态或取消，不套用120秒动作等待，并在等待期间暂停600秒整任务计时。真实动作、其他观察超时、模型单次请求时限以及5/3重试次数均保持原规则。
 
 
 ## 动作后自动全局观察
 
-每个已核验的真实动作完成后，执行器主动调用observe_global，并在下一轮模型决策前提供原生图像。记录标记initiated_by=executor、after_action及独立证据编号，不能算成模型主动调用。动作前的全局图不能替代动作后的图；须为fixed_global、序列号非空、采集时间晚于动作结果确认，接收时帧龄不超过5秒（采集模块自身仍执行更严格的2秒检查）。没有新增移动/松爪操作。
+每个已核验的真实动作完成后，执行器主动调用observe_global，并在下一轮模型决策前提供原生图像。记录标记initiated_by=executor、after_action及独立证据编号，不能算成模型主动调用。动作前的全局图不能替代动作后的图；须为movable_global、序列号非空、采集时间晚于动作结果确认，接收时帧龄不超过5秒（采集模块自身仍执行更严格的2秒检查）。没有新增移动/松爪操作。
 
 自动观察失败会把具体错误交给模型，允许observe_global重试；尚未恢复时拒绝继续真实动作，且finish_task不能报告succeeded或answered，可如实blocked。模型补拍成功后可以继续，不能重做已完成动作。最终run.global_observations保存来源与动作关联，visual_verification只表示有动作后图片，不证明精确接触、入孔或放稳。
 
-get_camera_frame及get_task_context.include_frame明确标为眼在手；observe_global标为固定全局机位。每个机位各保留最新一张图片并保留时间，禁止跨机位使用像素框。自动观察通过明确标注的观测上下文提供给模型，不伪造模型函数调用。
+get_camera_frame及get_task_context.include_frame明确标为眼在手；observe_global标为不固定的全局相机。每个机位各保留最新一张图片并保留时间，禁止跨机位使用像素框。自动观察通过明确标注的观测上下文提供给模型，不伪造模型函数调用。

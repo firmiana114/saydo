@@ -58,7 +58,7 @@ class Camera:
         self.fps = 0.0
         self.camera_id, self.serial, self.tracker = camera_id, serial, tracker
         self.name = 'RealSense D435I' if camera_id == 'd435i' else 'RealSense D405'
-        self.role = 'eye_in_hand' if camera_id == 'd435i' else 'fixed_global'
+        self.role = 'eye_in_hand' if camera_id == 'd435i' else 'movable_global'
         self.source = None
         self.frame_metadata = {}
         self.usb = None

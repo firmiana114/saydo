@@ -6,15 +6,15 @@
 </style></head>
 <body><main>
 <header><div class="brand">Say<span>Do</span><div class="eyebrow">VISION WORKSPACE</div></div><span class="tag">D435i + D405 · 只读预览</span></header>
-<div class="title-row"><div><h1>两个机位，一起看</h1><p>左侧是眼在手相机，右侧是固定相机。可同时预览或单独释放。</p></div><div class="actions"><button class="primary" id="start-all">开始双路预览</button><button id="stop-all">释放全部预览</button></div></div>
+<div class="title-row"><div><h1>两个机位，一起看</h1><p>左侧是眼在手相机，右侧是不固定的全局相机。可同时预览或单独释放。</p></div><div class="actions"><button class="primary" id="start-all">开始双路预览</button><button id="stop-all">释放全部预览</button></div></div>
 <div id="service-error" class="service-error" role="status"></div>
 <div class="grid">
 <section class="camera-card" data-camera="d435i"><div class="camera-heading"><div><h2>D435i · 眼在手</h2><span class="live-note">随机械臂末端移动</span></div><span class="badge"><span class="dot" id="d435i-dot"></span><span id="d435i-state">连接中</span></span></div>
 <div class="video"><div class="placeholder" id="d435i-placeholder"><strong id="d435i-title">等待开始预览</strong><p>8089 正在使用此相机时，共享其最新原始画面。</p></div><img id="d435i-feed" alt="D435i 眼在手实时彩色画面"></div>
 <div class="toolbar"><button class="primary" id="d435i-start">开始预览</button><button id="d435i-stop" disabled>释放预览</button><a class="download" id="d435i-snapshot" href="/snapshot/d435i.jpg" download>保存截图 ↓</a></div>
 <div class="metrics"><span id="d435i-resolution">—</span><span id="d435i-fps">— fps</span><span id="d435i-frames">— 帧</span></div><div class="details"><div id="d435i-device">设备待确认</div><div id="d435i-source">尚未收到图像</div><div id="d435i-updated">—</div><div class="error" id="d435i-error" role="status"></div></div></section>
-<section class="camera-card" data-camera="d405"><div class="camera-heading"><div><h2>D405 · 固定机位</h2><span class="live-note">独立观察工作区域</span></div><span class="badge"><span class="dot" id="d405-dot"></span><span id="d405-state">连接中</span></span></div>
-<div class="video"><div class="placeholder" id="d405-placeholder"><strong id="d405-title">等待开始预览</strong><p>开启后持续采集固定机位画面，全局观察可共享此画面。</p></div><img id="d405-feed" alt="D405 固定机位实时彩色画面"></div>
+<section class="camera-card" data-camera="d405"><div class="camera-heading"><div><h2>D405 · 不固定的全局相机</h2><span class="live-note">独立观察工作区域</span></div><span class="badge"><span class="dot" id="d405-dot"></span><span id="d405-state">连接中</span></span></div>
+<div class="video"><div class="placeholder" id="d405-placeholder"><strong id="d405-title">等待开始预览</strong><p>开启后持续采集不固定的全局相机画面，全局观察可共享此画面。</p></div><img id="d405-feed" alt="D405 不固定的全局相机实时彩色画面"></div>
 <div class="toolbar"><button class="primary" id="d405-start">开始预览</button><button id="d405-stop" disabled>释放预览</button><a class="download" id="d405-snapshot" href="/snapshot/d405.jpg" download>保存截图 ↓</a></div>
 <div class="metrics"><span id="d405-resolution">—</span><span id="d405-fps">— fps</span><span id="d405-frames">— 帧</span></div><div class="details"><div id="d405-device">设备待确认</div><div id="d405-source">尚未收到图像</div><div id="d405-updated">—</div><div class="error" id="d405-error" role="status"></div></div></section>
 </div>

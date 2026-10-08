@@ -125,9 +125,9 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 统一放置由plan_release生成：最终目标沿Base +Z上方100 mm预放置点→保持最终朝向直线下降→确认到位后松爪→可选退出。高度由config/grasp/trial.json的release_preplacement_height_m配置，缺省0.1 m（允许0.01～0.3 m）。同一个物品参考点定义两端位置，不按模型名或特征类型分支。旧区域放置保留区域选点，approach_height_m同样配置为0.1 m。
 
 
-## 固定机位全局观察
+## 不固定的全局相机观察
 
-`observe_global()` 返回独立固定相机（当前为 RealSense D405） 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=fixed_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过2秒的图片被拒绝（D405关闭流约需1秒，帧龄如实包含释放设备耗时）。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
+`observe_global()` 返回独立的不固定的全局相机（当前为 RealSense D405，支架位置可能变动） 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=movable_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过2秒的图片被拒绝（D405关闭流约需1秒，帧龄如实包含释放设备耗时）。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
 
 它只用于全局外观观察：`calibrated_to_robot_base=false`、`usable_for_robot_target=false`。图片不能用于基座目标、毫米测量、眼在手框选、精确入孔/接触/无碰撞证明，不替代已有场景快照和运动反馈。`get_camera_frame` 继续读取眼在手相机。
 
@@ -143,9 +143,9 @@ SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/pyt
 }
 ```
 
-以上为MSI部署示例。运行环境需含 pyrealsense2、OpenCV、NumPy；两台相机序列号必须不同，型号和序列号均匹配才采集。目前支持D405与D435i的彩色流；旧配置缺少camera_name时按D435i兼容，切换相机须显式更新型号和序列号。固定机位不存在或型号不符时拒绝采集。其他机器独立提供自己的配置与环境，不能仅将机器人HTTP地址指向MSI就远程访问此本机相机。配置文件每次调用重新读取；无需把实际配置提交Git。
+以上为MSI部署示例。运行环境需含 pyrealsense2、OpenCV、NumPy；两台相机序列号必须不同，型号和序列号均匹配才采集。目前支持D405与D435i的彩色流；旧配置缺少camera_name时按D435i兼容，切换相机须显式更新型号和序列号。不固定的全局相机不存在或型号不符时拒绝采集。其他机器独立提供自己的配置与环境，不能仅将机器人HTTP地址指向MSI就远程访问此本机相机。配置文件每次调用重新读取；无需把实际配置提交Git。
 
 SayDo第5页同样提供 `observe_global`，在read_only/preview/execute模式均可用，作为原生图片送入模型，普通任务结果只记录元数据。更新后重启空闲任务执行器生效；已有MCP会话需重新建立连接刷新工具目录。采集失败返回 CAMERA_UNAVAILABLE，无图片，不替换为旧图或眼在手图。
 
 
-机位来源标记：眼在手图片明确返回camera_role=eye_in_hand、camera_label、camera_serial和source_tool；observe_global为fixed_global。MCP指令要求实际动作后调用observe_global，独立MCP会话仍由其模型遵守此规则。SayDo第5页另由执行器强制自动采图并检查缺失证据，见任务执行器README；两种调用来源在任务记录中明确区分。
+机位来源标记：眼在手图片明确返回camera_role=eye_in_hand、camera_label、camera_serial和source_tool；observe_global为movable_global。MCP指令要求实际动作后调用observe_global，独立MCP会话仍由其模型遵守此规则。SayDo第5页另由执行器强制自动采图并检查缺失证据，见任务执行器README；两种调用来源在任务记录中明确区分。

@@ -30,7 +30,7 @@ def end(outcome='answered', evidence=None):
 def mock_global_camera(test):
     mock=patch('tools.task_runner.robot_adapter.observe_global',side_effect=lambda:{
         'image_base64':'AA==','mime_type':'image/png','captured_at':time.time(),
-        'camera_role':'fixed_global','camera_serial':'fixed-camera'})
+        'camera_role':'movable_global','camera_serial':'fixed-camera'})
     mock.start();test.addCleanup(mock.stop)
 
 
@@ -80,7 +80,7 @@ class FakeAdapter:
             self.global_requests+=1
             if self.global_error:raise self.global_error
             return {'image_base64':'AA==','mime_type':'image/png','captured_at':time.time(),
-                    'camera_role':'fixed_global','camera_serial':'fixed-camera'}
+                    'camera_role':'movable_global','camera_serial':'fixed-camera'}
         self.sent.append((name, args, request_id))
         if self.fail:
             raise self.fail

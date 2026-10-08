@@ -1,4 +1,4 @@
-"""On-demand fixed-camera observation, isolated from the robot/eye-in-hand process."""
+"""On-demand observation from the non-fixed global camera, isolated from the robot/eye-in-hand process."""
 import base64
 import json
 import os
@@ -38,7 +38,7 @@ def monitor_frame(serial, camera_name):
         raise ValueError('共享相机响应超出大小上限')
     data = json.loads(raw)
     if (data.get('camera_serial') != serial or data.get('camera_name') != camera_name
-            or data.get('camera_role') != 'fixed_global'):
+            or data.get('camera_role') != 'movable_global'):
         raise ValueError('共享相机身份不匹配；不会改用其他设备')
     if not 0 <= time.time()-data['captured_at'] <= 1:
         raise ValueError('共享相机帧已过期')
@@ -56,15 +56,15 @@ def load_config(path):
     value = json.loads(Path(path).read_text())
     serial, excluded = value.get('serial'), value.get('eye_in_hand_serial')
     if not all(isinstance(s, str) and re.fullmatch(r'[0-9]{8,20}', s) for s in (serial, excluded)) or serial == excluded:
-        raise ValueError('必须分别指定固定相机与眼在手相机的不同序列号')
+        raise ValueError('必须分别指定不固定的全局相机与眼在手相机的不同序列号')
     value.setdefault('camera_name', 'RealSense D435I')  # Existing machine-local configurations remain valid.
     if value['camera_name'] not in ('RealSense D435I', 'RealSense D405'):
-        raise ValueError('不支持的固定相机型号')
+        raise ValueError('不固定的全局相机型号不受支持')
     for key in ('python', 'sdk_path'):
         if not isinstance(value.get(key), str) or not Path(value[key]).is_absolute():
             raise ValueError('相机运行环境须使用绝对路径：'+key)
     if not Path(value['python']).is_file() or not Path(value['sdk_path']).is_dir():
-        raise ValueError('固定相机运行环境不存在')
+        raise ValueError('不固定的全局相机运行环境不存在')
     return value
 
 
@@ -82,7 +82,7 @@ def observe_global(config_path=CONFIG):
         if len(result.stdout) > 4*1024*1024:
             raise ValueError('相机图片超出大小上限')
         data = json.loads(result.stdout)
-        if (data['camera_serial'] != config['serial'] or data['camera_role'] != 'fixed_global'
+        if (data['camera_serial'] != config['serial'] or data['camera_role'] != 'movable_global'
                 or data['camera_name'] != config['camera_name']):
             raise ValueError('相机身份不匹配')
         age = time.time()-data['captured_at']
@@ -96,7 +96,7 @@ def observe_global(config_path=CONFIG):
                     usable_for_robot_target=False, motion_sent=False, observation_only=True, usage_note=NOTE)
         return data
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
-        raise CameraUnavailable('固定机位不可用：'+str(error)[:650]) from error
+        raise CameraUnavailable('不固定的全局相机不可用：'+str(error)[:650]) from error
 
 
 def capture(serial, camera_name='RealSense D435I'):
@@ -115,11 +115,11 @@ def capture(serial, camera_name='RealSense D435I'):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise ValueError('固定相机正在被另一次观察使用，请稍后重试') from error
+            raise ValueError('不固定的全局相机正在被另一次观察使用，请稍后重试') from error
         context = rs.context()
         devices = [d for d in context.query_devices() if d.get_info(rs.camera_info.serial_number) == serial]
         if len(devices) != 1 or devices[0].get_info(rs.camera_info.name) != camera_name:
-            raise ValueError('未找到指定型号和序列号的固定相机；不会改用其他设备')
+            raise ValueError('未找到指定型号和序列号的不固定的全局相机；不会改用其他设备')
         pipeline = rs.pipeline(context)
         config = rs.config()
         config.enable_device(serial)
@@ -139,7 +139,7 @@ def capture(serial, camera_name='RealSense D435I'):
             ok, encoded = cv2.imencode('.jpg', np.asanyarray(frame.get_data()), [cv2.IMWRITE_JPEG_QUALITY, 90])
             if not ok:
                 raise ValueError('图片编码失败')
-            return {'camera_role':'fixed_global', 'camera_serial':serial, 'camera_name':device.get_info(rs.camera_info.name),
+            return {'camera_role':'movable_global', 'camera_serial':serial, 'camera_name':device.get_info(rs.camera_info.name),
                     'observation_id':uuid.uuid4().hex, 'captured_at':captured_at,
                     'timestamp_basis':'host_frame_received_unix_seconds',
                     'sensor_timestamp_ms':frame.get_timestamp(), 'sensor_timestamp_domain':str(frame.get_frame_timestamp_domain()),
@@ -155,7 +155,7 @@ if __name__ == '__main__':
     try:
         if (len(sys.argv) != 5 or sys.argv[1] != '--capture' or not re.fullmatch(r'[0-9]{8,20}', sys.argv[2])
                 or sys.argv[3] != '--model' or sys.argv[4] not in ('RealSense D435I', 'RealSense D405')):
-            raise ValueError('仅接受固定相机序列号与支持的型号')
+            raise ValueError('仅接受不固定的全局相机序列号与支持的型号')
         print(json.dumps(capture(sys.argv[2], sys.argv[4])))
     except Exception as error:
         print(str(error)[:600], file=sys.stderr)

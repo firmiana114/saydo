@@ -166,7 +166,7 @@ class TestHTTP(unittest.TestCase):
         self.open_stream('/stream/d405')
         before=time.time();code,raw=self.request('/api/cameras/d405/frame');data=json.loads(raw)
         self.assertEqual(code,200);self.assertGreaterEqual(data['captured_at'],before)
-        self.assertEqual(data['camera_serial'],'405123456789');self.assertEqual(data['camera_role'],'fixed_global')
+        self.assertEqual(data['camera_serial'],'405123456789');self.assertEqual(data['camera_role'],'movable_global')
         self.assertEqual(base64.b64decode(data['image_base64']),JPEG)
         self.assertEqual(self.server.cameras['d435i'].state,'idle')
 

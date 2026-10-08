@@ -8,7 +8,7 @@ from .robot_adapter import compact
 
 def valid_global(frame, after):
     stamp=frame.get('captured_at')
-    return (frame.get('camera_role')=='fixed_global' and isinstance(frame.get('camera_serial'),str)
+    return (frame.get('camera_role')=='movable_global' and isinstance(frame.get('camera_serial'),str)
             and bool(frame['camera_serial']) and isinstance(frame.get('image_base64'),str)
             and frame.get('mime_type') in ('image/jpeg','image/png')
             and bool(frame['image_base64']) and type(stamp) in (int,float) and math.isfinite(stamp)

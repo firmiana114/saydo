@@ -12,7 +12,7 @@ import global_camera as camera
 
 
 def image_result():
-    return {'camera_serial':'344422070678','camera_role':'fixed_global','camera_name':'RealSense D435I','captured_at':time.time(),
+    return {'camera_serial':'344422070678','camera_role':'movable_global','camera_name':'RealSense D435I','captured_at':time.time(),
             'mime_type':'image/jpeg','image_base64':base64.b64encode(b'\xff\xd8fixture').decode()}
 
 
