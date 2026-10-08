@@ -8,9 +8,10 @@ import sys
 import tomllib
 import urllib.parse
 
-from saydo import paths
+# 本文件里有名为 paths 的局部变量，导入模块时起别名以免混淆。
+from saydo import paths as saydo_paths
 
-ROOT = paths.ROOT
+ROOT = saydo_paths.ROOT
 
 from saydo.task_runner import config as task_runner_config
 
