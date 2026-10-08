@@ -61,7 +61,6 @@ class Camera:
         self.role = 'eye_in_hand' if camera_id == 'd435i' else 'fixed_global'
         self.source = None
         self.frame_metadata = {}
-        self.raw_image = None
         self.usb = None
 
     def status(self):
@@ -89,18 +88,17 @@ class Camera:
                 self.thread.start()
             return self.epoch
 
-    def publish(self, jpeg, captured_at, sequence, metadata, source, width, height, raw_image=None):
+    def publish(self, jpeg, captured_at, sequence, metadata, source, width, height):
         if not jpeg.startswith(b'\xff\xd8') or not 0 <= time.time()-captured_at <= 1:
             raise RuntimeError('相机图像无效或超过一秒时效。')
         with self.cv:
             self.jpeg, self.frame_at, self.sequence = jpeg, captured_at, sequence
             self.frame_metadata = metadata
-            self.raw_image = raw_image
             self.source, self.width, self.height = source, width, height
             self.state = 'streaming'
             self.cv.notify_all()
 
-    def fresh_frame(self, calibration=False):
+    def fresh_frame(self):
         """Wait for a frame captured after this observation request, without starting a device."""
         after = time.time()
         with self.cv:
@@ -110,21 +108,11 @@ class Camera:
                              or self.state != 'streaming' or self.stop_event.is_set(), timeout=2)
             if self.stop_event.is_set() or self.state != 'streaming' or self.frame_at is None or self.frame_at < after:
                 raise RuntimeError('没有取得请求之后的新鲜相机帧。')
-            data = {**self.frame_metadata, 'camera_role':self.role, 'camera_serial':self.serial,
+            return {**self.frame_metadata, 'camera_role':self.role, 'camera_serial':self.serial,
                     'camera_name':self.name, 'captured_at':self.frame_at, 'sequence':self.sequence,
                     'image_size':[self.width,self.height], 'mime_type':'image/jpeg',
                     'image_base64':base64.b64encode(self.jpeg).decode(), 'observation_id':uuid.uuid4().hex,
-                    'timestamp_basis':self.frame_metadata.get('timestamp_basis','host_frame_received_unix_seconds'),
-                    'capture_source':'camera_monitor', 'image_encoding':'jpeg', 'lossless_source':False}
-            raw = self.raw_image.copy() if calibration and self.raw_image is not None else None
-        if raw is not None:
-            import cv2
-            ok, encoded = cv2.imencode('.png', raw)
-            if not ok:
-                raise RuntimeError('原始图像PNG编码失败。')
-            data.update(image_base64=base64.b64encode(encoded).decode(),mime_type='image/png',
-                        image_encoding='png',lossless_source=True)
-        return data
+                    'timestamp_basis':'host_frame_received_unix_seconds', 'capture_source':'camera_monitor'}
 
     def unsubscribe(self, epoch):
         with self.cv:
@@ -206,13 +194,7 @@ class Camera:
                 if not color:
                     continue
                 captured_at = time.time()
-                raw = np.asanyarray(color.get_data()).copy()
-                intr = color.profile.as_video_stream_profile().intrinsics
-                camera = {'serial':self.serial,'name':self.name,'frame':'color_optical_frame',
-                          'image_size':[intr.width,intr.height], 'native_size':[intr.width,intr.height],
-                          'K':[[intr.fx,0,intr.ppx],[0,intr.fy,intr.ppy],[0,0,1]],
-                          'distortion_model':str(intr.model),'distortion_coefficients':list(intr.coeffs)}
-                ok, encoded = cv2.imencode('.jpg', raw, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                ok, encoded = cv2.imencode('.jpg', np.asanyarray(color.get_data()), [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if not ok:
                     raise RuntimeError('图像编码失败。')
                 count += 1
@@ -226,8 +208,8 @@ class Camera:
                     continue
                 self.publish(encoded.tobytes(), captured_at, color.get_frame_number(),
                              {'sensor_timestamp_ms':color.get_timestamp(),
-                              'sensor_timestamp_domain':str(color.get_frame_timestamp_domain()),'camera':camera},
-                             'device', color.get_width(), color.get_height(), raw)
+                              'sensor_timestamp_domain':str(color.get_frame_timestamp_domain())},
+                             'device', color.get_width(), color.get_height())
         except Exception as exc:
             LOG.warning('Camera stream stopped: %s', exc)
             with self.cv:
@@ -246,7 +228,6 @@ class Camera:
                 if self.state != 'error':
                     self.state = 'idle'
                 self.jpeg, self.frame_at, self.fps = None, None, 0.0
-                self.raw_image = None
                 self.cv.notify_all()
 
     def capture_tracker(self, first, stop):
@@ -260,9 +241,7 @@ class Camera:
             if len(jpeg) > 4*1024*1024 or data.get('mime_type') != 'image/jpeg':
                 raise RuntimeError('8089 相机图像格式无效。')
             if data['sequence'] != self.sequence or self.jpeg is None:
-                self.publish(jpeg, data['captured_at'], data['sequence'],
-                             {'camera':identity,'timestamp_basis':'8089_frame_captured_at_unix_seconds'},
-                             'tracker', data['width'], data['height'])
+                self.publish(jpeg, data['captured_at'], data['sequence'], {}, 'tracker', data['width'], data['height'])
                 count += 1
             elif not 0 <= time.time()-data['captured_at'] <= 1:
                 raise RuntimeError('8089 相机帧已过期。')
@@ -313,16 +292,15 @@ class Handler(BaseHTTPRequestHandler):
         for key in self.server.cameras:
             routes.update({f'/stream/{key}':(key,'stream'), f'/snapshot/{key}.jpg':(key,'snapshot'),
                            f'/api/cameras/{key}/status':(key,'status'), f'/api/cameras/{key}/frame':(key,'frame')})
-            routes[f'/api/cameras/{key}/calibration-frame'] = (key,'calibration-frame')
         if path not in routes:
             return self.send_body(404, b'{"error":"Not found"}')
         key, operation = routes[path]
         camera = self.server.cameras[key]
         if operation == 'status':
             return self.send_body(200, json.dumps(camera.status()).encode())
-        if operation in ('frame','calibration-frame'):
+        if operation == 'frame':
             try:
-                return self.send_body(200, json.dumps(camera.fresh_frame(calibration=operation=='calibration-frame')).encode())
+                return self.send_body(200, json.dumps(camera.fresh_frame()).encode())
             except RuntimeError as exc:
                 return self.send_body(409, json.dumps({'error':str(exc)}).encode())
         if operation == 'snapshot':

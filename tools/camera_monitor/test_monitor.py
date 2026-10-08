@@ -99,8 +99,6 @@ class TestCamera(unittest.TestCase):
         rs.pipeline.return_value.start.return_value.get_device.return_value=device
         rs.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value=color
         color.get_frame_number.return_value=2;color.get_width.return_value=1280;color.get_height.return_value=720
-        intr=color.profile.as_video_stream_profile.return_value.intrinsics
-        intr.coeffs=[0.]*5;intr.width=1280;intr.height=720;intr.fx=intr.fy=900.;intr.ppx=640.;intr.ppy=360.
         cv=Mock();encoded=Mock();encoded.tobytes.return_value=JPEG;attempts=[0]
         def encode(*args):
             attempts[0]+=1
