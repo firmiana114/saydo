@@ -38,6 +38,7 @@
 
 ## 5. 运行与常用命令（均在 MSI 项目根目录）
 
+- 关闭并启动 8089（推荐）：`ssh msi /home/pc/saydo/tools/foundationpose/restart_tracker.py`。先检查无任务、无夹持再停旧进程，后台启动并等待模型就绪；被拒绝时按提示处理或加 `--force`。说明见 `tools/foundationpose/README.md` 的“一条命令关闭并启动 8089”。
 - 启动 8089：`source tools/foundationpose/runtime_env.sh` 后 `python tools/foundationpose/live_tracker.py --host 192.168.101.65 --port 8089 --serial 405622073572 --agent-token-file ~/.local/share/saydo-mcp/robot-backend-token --mesh work/object_models/transparent_test_tube_150mm/model/model.obj --auto-start`。缺省找框方式为 qwen，`--detector llm/ssdlite` 可覆盖。启动不会自动抓取。经 `ssh msi '…'` 一行后台启动时，须把 `nohup setsid python … > 日志 2>&1 < /dev/null &` 整体放进括号子壳 `( … & )`，否则等待它的外层壳仍占着 ssh 的输出管道，ssh 命令不会返回（服务本身不受影响）。
 - 启动 8088：`./tools/camera_monitor/run.sh --port 8088 --tracker-url http://192.168.101.65:8089`。
 - 启动 8091：`work/task_runner_env/bin/python -m tools.task_runner.api`。
