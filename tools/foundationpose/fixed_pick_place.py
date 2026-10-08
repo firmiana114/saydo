@@ -189,6 +189,7 @@ class FixedPickPlaceMixin:
         if any(np.max(np.abs(np.asarray(targets[k])-q))>500 for k,q in expected.items()):raise ValueError('全程关节构型复核不一致，未发送动作')
         if time.time()>plan['expires_at']:raise ValueError('固定方案已过期')
         self._fixed_guard=lambda:self.fixed_binding_check(plan)
+        self._fixed_path_points=points  # Each grasp segment re-solves the remaining part of this same path.
         self.robot=RobotClient(config['robot_ip'],config['robot_port'],writes=True);self.robot.motion_log=report.setdefault('motion_events',[])
         self.update_scene_instance(grasp,'moving')
         self.execute(grasp,config,report)
@@ -228,7 +229,7 @@ class FixedPickPlaceMixin:
                 except Exception:pass
             self.update(state='cancelled' if self.cancelled.is_set() else 'failed',error=str(error),message=str(error),recovery={'can_replan':False})
         finally:
-            self._fixed_guard=None
+            self._fixed_guard=None;self._fixed_path_points=None
             try:self.update(diagnostics_ref=self.save_object_job(report))
             except Exception as error:self.update(state='failed',error='固定流程日志保存失败：'+str(error))
             self.update(busy=False)

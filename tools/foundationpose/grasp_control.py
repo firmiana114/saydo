@@ -646,6 +646,28 @@ class GraspController(FixedPickPlaceMixin, MotionRecoveryMixin, SceneMixin, Obje
             raise ValueError(detail['reason'])
         return detail
 
+    def verify_waypoint(self, plan, config, report, waypoint):
+        """Offline check before one grasp segment; returns its preselected joint target, if any."""
+        fixed = plan.get('fixed_joint_targets', {}).get(waypoint['name'])
+        if fixed is None:
+            self.verify_motion_targets(plan, config, report, self.arm_state(), [waypoint])
+            return None
+        # A 7-joint arm reaches one pose with many joint sets. Only solving the same remaining
+        # path reproduces the preselected set; solving this waypoint alone picks another one.
+        points = getattr(self, '_fixed_path_points', None) or []
+        own = [i for i, p in enumerate(points) if p['name'].startswith(waypoint['name'] + '_sample_')]
+        if not own:
+            raise ValueError('固定路径缺少航点采样：' + waypoint['name'])
+        detail = self.verify_motion_targets(plan, config, report, self.arm_state(), points[own[0]:])
+        solved = np.asarray(detail['joint_solutions_deg'][own[-1] - own[0]]) * 1000
+        deviation = float(np.max(np.abs(solved - fixed)))
+        if deviation > 500:
+            report['fixed_joint_mismatch'] = {'waypoint': waypoint['name'], 'preselected_joint_raw': list(fixed),
+                'resolved_joint_raw': np.rint(solved).astype(int).tolist(), 'max_deviation_deg': deviation / 1000,
+                'limit_deg': .5, 'remaining_points': len(points) - own[0]}
+            raise ValueError('当前反馈不能沿用预先选定的关节构型')
+        return fixed
+
     def execute(self, plan, config, report):
         grip = config['gripper']
         minimum_table_clearance(config)
@@ -686,10 +708,7 @@ class GraspController(FixedPickPlaceMixin, MotionRecoveryMixin, SceneMixin, Obje
             names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
             report['active_stage'] = names[waypoint['name']]
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
-            detail=self.verify_motion_targets(plan,config,report,self.arm_state(),[waypoint])
-            fixed=plan.get('fixed_joint_targets',{}).get(waypoint['name'])
-            if fixed is not None and np.max(np.abs(np.asarray(detail['joint_solutions_deg'][-1])*1000-fixed))>500:
-                raise ValueError('当前反馈不能沿用预先选定的关节构型')
+            fixed=self.verify_waypoint(plan,config,report,waypoint)
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
             if fixed is not None and waypoint['name']=='pregrasp':

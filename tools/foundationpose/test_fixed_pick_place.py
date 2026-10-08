@@ -134,6 +134,46 @@ class PlanningTests(unittest.TestCase):
         self.service.run_object_execution.assert_not_called()
 
 
+class GraspSegmentVerificationTests(unittest.TestCase):
+    """The preselected joint set is only reproducible by solving the same remaining path."""
+    def setUp(self):
+        control.ObjectControlTests.setUp(self)
+        names=['pregrasp_sample_0','pregrasp_sample_1','grasp_sample_0','grasp_sample_1','lift_sample_0','release_descent_1_sample_0']
+        self.points=[{'name':n,'controller_pose':[0]*6} for n in names]
+        self.service.arm_state=Mock(return_value=copy.deepcopy(self.arm));self.seen=[]
+        def solve(plan,config,report,arm,points):
+            self.seen.append([p['name'] for p in points])
+            # Path samples solve to [k]*7 for sample k; a lone waypoint (not a sample) solves differently.
+            if points[0]['name'] not in names:return {'joint_solutions_deg':[[99]*7]}
+            return {'joint_solutions_deg':[[names.index(p['name'])]*7 for p in points]}
+        self.service.verify_motion_targets=Mock(side_effect=solve)
+        self.plan={'fixed_joint_targets':{'pregrasp':[1000]*7,'grasp':[3000]*7,'lift':[4000]*7}}
+
+    def test_each_segment_solves_the_remaining_fixed_path_and_reads_its_own_endpoint(self):
+        self.service._fixed_path_points=self.points
+        for name,first in [('pregrasp',0),('grasp',2),('lift',4)]:
+            with self.subTest(name=name):
+                fixed=self.service.verify_waypoint(self.plan,{},{},{'name':name,'controller_pose':[0]*6})
+                self.assertEqual(fixed,self.plan['fixed_joint_targets'][name])
+                self.assertEqual(self.seen[-1],[p['name'] for p in self.points[first:]])
+
+    def test_changed_solution_is_rejected_with_diagnostics_and_missing_path_is_an_error(self):
+        self.service._fixed_path_points=self.points;report={}
+        self.plan['fixed_joint_targets']['grasp']=[3600]*7
+        with self.assertRaisesRegex(ValueError,'预先选定的关节构型'):
+            self.service.verify_waypoint(self.plan,{},report,{'name':'grasp','controller_pose':[0]*6})
+        self.assertEqual(report['fixed_joint_mismatch']['waypoint'],'grasp')
+        self.assertAlmostEqual(report['fixed_joint_mismatch']['max_deviation_deg'],.6)
+        self.service._fixed_path_points=None
+        with self.assertRaisesRegex(ValueError,'缺少航点采样'):
+            self.service.verify_waypoint(self.plan,{},{},{'name':'pregrasp','controller_pose':[0]*6})
+
+    def test_ordinary_grasp_without_fixed_targets_still_checks_only_its_waypoint(self):
+        waypoint={'name':'pregrasp','controller_pose':[0]*6}
+        self.assertIsNone(self.service.verify_waypoint({},{},{},waypoint))
+        self.assertEqual(self.seen,[['pregrasp']])
+
+
 class ApiTests(unittest.TestCase):
     request=api_base.AgentAPITests.request
     wait=api_base.AgentAPITests.wait
