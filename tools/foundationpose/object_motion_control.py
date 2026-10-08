@@ -210,7 +210,7 @@ class ObjectMotionMixin:
             def read_state(released=False):
                 self.check_cancel()
                 if getattr(self,'agent_recording_error',None):raise ValueError('任务状态记录失败，停止后续动作')
-                if time.monotonic()>deadline:raise TimeoutError('方案执行超过90秒预算')
+                if time.monotonic()>deadline:raise TimeoutError('方案执行超过%d秒预算'%plan['max_execution_duration_s'])
                 if self.motion_binding(config)!=plan['configuration_binding']:raise ValueError('执行期间配置变化，停止后续动作')
                 a=self.arm_state();tcp=controller_pose(a['pose']);check_tcp_workspace(tcp,config)
                 if released:self.check_placement_open(config,require_open=True)
@@ -242,8 +242,9 @@ class ObjectMotionMixin:
                         points.extend(segment_samples(last,future_pose,None,None,config,'linear',future['name']))
                 detail=self.verify_motion_targets(plan,config,report,start,points)
                 fixed=plan.get('fixed_joint_targets',{}).get(target['name'])
-                # A fixed plan follows the remaining path as re-solved from real feedback above; its
-                # planned joint set is only a diagnostic reference once the controller has run a movel.
+                # A fixed plan follows the remaining path as re-solved from real feedback above and
+                # drives straight segments through their sampled joint sets instead of movel, whose
+                # redundancy the controller resolves on its own; the planned set is a diagnostic reference.
                 if fixed is not None:note_joint_change(report,target['name'],'resolved_remaining_path_vs_plan',fixed,np.asarray(detail['joint_solutions_deg'][current_endpoint_index])*1000)
                 self.check_cancel()
                 if not self.actuated and time.time()>plan['expires_at']:raise ValueError('方案已过期，请重新规划')
@@ -259,7 +260,10 @@ class ObjectMotionMixin:
                         if (target['name'].startswith(('transfer_','release_preplacement','release_descent')) or rotation_error(start_pose[:3,:3],end[:3,:3])<1e-6) and rotation_error(pose[:3,:3],end[:3,:3])>np.deg2rad(plan['orientation_tolerance_deg']):raise ValueError('直线段实际朝向偏离目标')
                     return feedback
                 joint_target=None
-                if target['method']=='linear':
+                if target['method']=='linear' and fixed is not None:
+                    self.actuated=True;report['robot_motion_sent']=True
+                    joint_target=self.follow_joint_samples(detail['joint_solutions_deg'][:current_endpoint_index+1],plan['speed_percent'],observed,report,target['name'])
+                elif target['method']=='linear':
                     self.actuated=True;report['robot_motion_sent']=True
                     self.robot.move_linear(target['controller_pose'],plan['speed_percent'],self.cancelled,observed)
                 else:
@@ -273,7 +277,6 @@ class ObjectMotionMixin:
                 reached=wait_for_pose(observed,target['controller_pose'],self.check_cancel,record,
                     plan['position_tolerance_m'],np.deg2rad(plan['orientation_tolerance_deg']))
                 if joint_target is not None and np.max(np.abs(np.asarray(reached['joint'])-joint_target))>500:raise ValueError('关节方案未到达所选关节解')
-                if fixed is not None and joint_target is None:note_joint_change(report,target['name'],'controller_linear_move_vs_plan',fixed,reached['joint'])
                 previous_feedback=copy.deepcopy(reached)
                 report['completed_waypoints']=report.get('completed_waypoints',0)+1
                 return reached

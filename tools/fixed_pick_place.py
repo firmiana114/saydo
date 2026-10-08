@@ -66,7 +66,8 @@ def workflow(backend,args):
         print('只读规划完成。未发送机械臂或夹爪动作。',flush=True);return result
     print('执行已保存的固定方案；Ctrl-C停止，不自动重试。',flush=True)
     try:
-        result=wait_task(backend,'execute_fixed_pick_place',{'plan_id':plan['plan_id']},ident+'-execute',timeout=240)
+        # Sampled joint moves make the whole pick/place take minutes; a client timeout here would stop the arm.
+        result=wait_task(backend,'execute_fixed_pick_place',{'plan_id':plan['plan_id']},ident+'-execute',timeout=900)
     except BaseException:
         try:save('stop.json',backend.request('/api/agent/stop',{}))
         except Exception as error:print('软件停止未确认：'+str(error),flush=True)

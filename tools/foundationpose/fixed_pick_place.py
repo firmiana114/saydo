@@ -18,6 +18,11 @@ from reorientation_geometry import model_geometry
 from tools.robot_agent.motion_contract import checked_goal
 
 
+# Straight segments run as one joint move per sample (about 10 mm apart), so a fixed release
+# takes far longer than the 90 s allowed for controller-interpolated plans.
+FIXED_RELEASE_BUDGET_S=600
+
+
 def checked_request(value):
     keys={'scene_id','source_instance_id','reference_instance_id','free_slots','release_gap_m','seed'}
     if not isinstance(value,dict) or set(value)!=keys:raise ValueError('固定流程参数不完整')
@@ -200,10 +205,10 @@ class FixedPickPlaceMixin:
         if np.linalg.norm(a[:3,3]-b[:3,3])>.002 or rotation_error(a[:3,:3],b[:3,:3])>np.deg2rad(2):
             raise ValueError('实际夹持关系偏离预先规划，不重新规划或继续下降')
         release=copy.deepcopy(plan['release'])
-        # The lift is a controller-resolved movel: keep the planned lift pose as the required start,
-        # but take the joint set from real feedback so the remaining path is re-solved from it.
+        # Keep the planned lift pose as the required start; the joint set comes from real feedback,
+        # from which every release segment re-solves the remaining path.
         release['current_arm']['joint']=list(self.arm_state()['joint'])
-        release.update(hold=actual,configuration_binding=self.motion_binding(config),plan_id=plan['plan_id'],expires_at=plan['expires_at'])
+        release.update(max_execution_duration_s=FIXED_RELEASE_BUDGET_S,hold=actual,configuration_binding=self.motion_binding(config),plan_id=plan['plan_id'],expires_at=plan['expires_at'])
         self.run_object_execution(release,request_id,nested=True)
         report['release_diagnostics_ref']=copy.deepcopy(self.status.get('diagnostics_ref'))
         if self.status['state']!='completed':raise ValueError(self.status.get('error') or '固定放置失败')

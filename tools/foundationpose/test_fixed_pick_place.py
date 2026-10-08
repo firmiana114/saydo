@@ -135,7 +135,7 @@ class PlanningTests(unittest.TestCase):
 
 
 class GraspSegmentVerificationTests(unittest.TestCase):
-    """Each grasp segment follows the remaining path as re-solved from real feedback."""
+    """Each grasp segment re-solves the remaining path and is driven through its own samples."""
     def setUp(self):
         control.ObjectControlTests.setUp(self)
         names=['pregrasp_sample_0','pregrasp_sample_1','grasp_sample_0','grasp_sample_1','lift_sample_0','release_descent_1_sample_0']
@@ -149,20 +149,20 @@ class GraspSegmentVerificationTests(unittest.TestCase):
         self.service.verify_motion_targets=Mock(side_effect=solve)
         self.plan={'fixed_joint_targets':{'pregrasp':[1000]*7,'grasp':[3000]*7,'lift':[4000]*7}}
 
-    def test_each_segment_solves_the_remaining_fixed_path_and_reads_its_own_endpoint(self):
+    def test_each_segment_solves_the_remaining_fixed_path_and_returns_its_own_samples(self):
         self.service._fixed_path_points=self.points;report={}
-        for name,first in [('pregrasp',0),('grasp',2),('lift',4)]:
+        for name,own in [('pregrasp',[0,1]),('grasp',[2,3]),('lift',[4])]:
             with self.subTest(name=name):
                 solved=self.service.verify_waypoint(self.plan,{},report,{'name':name,'controller_pose':[0]*6})
-                self.assertEqual(solved,self.plan['fixed_joint_targets'][name])
-                self.assertEqual(self.seen[-1],[p['name'] for p in self.points[first:]])
+                self.assertEqual(solved,[[k]*7 for k in own])
+                self.assertEqual(self.seen[-1],[p['name'] for p in self.points[own[0]:]])
         self.assertNotIn('joint_configuration_changes',report)
 
     def test_changed_solution_replaces_the_planned_set_and_is_recorded(self):
         self.service._fixed_path_points=self.points;report={}
         self.plan['fixed_joint_targets']['grasp']=[3600]*7
         solved=self.service.verify_waypoint(self.plan,{},report,{'name':'grasp','controller_pose':[0]*6})
-        self.assertEqual(solved,[3000]*7)
+        self.assertEqual(solved[-1],[3]*7)
         change=report['joint_configuration_changes'][0]
         self.assertEqual((change['stage'],change['basis']),('grasp','resolved_remaining_path_vs_plan'))
         self.assertEqual(change['reference_joint_raw'],[3600]*7);self.assertAlmostEqual(change['max_deviation_deg'],.6)
@@ -182,26 +182,60 @@ class GraspSegmentVerificationTests(unittest.TestCase):
         self.assertEqual(self.seen,[['pregrasp']])
 
 
-class FixedReleaseAfterControllerMoveTests(unittest.TestCase):
-    """A fixed release continues when the controller's joints differ from the planned set."""
+class SampledJointSegmentTests(unittest.TestCase):
+    """A fixed plan drives straight segments as one joint move per verified sample, never movel."""
     def setUp(self):
         control.ObjectControlTests.setUp(self)
 
-    def test_release_with_different_planned_joints_completes_and_records_the_difference(self):
+    def test_samples_are_sent_in_order_and_each_arrival_is_checked(self):
+        self.service.robot=self.robot;sent=[];state={'joint':[0]*7}
+        def joints(values,speed,cancelled,watchdog):
+            sent.append((list(values),speed));watchdog();state['joint']=list(values)
+        self.robot.move_joints.side_effect=joints;self.service.arm_state=Mock(side_effect=lambda:copy.deepcopy(state))
+        watchdog=Mock();report={}
+        last=self.service.follow_joint_samples([[1,0,0,0,0,0,0],[2.0004,0,0,0,0,0,0]],25,watchdog,report,'lift')
+        self.assertEqual(sent,[([1000,0,0,0,0,0,0],25),([2000,0,0,0,0,0,0],25)]);self.assertEqual(last,[2000,0,0,0,0,0,0])
+        self.assertEqual(report['sampled_joint_segments'],[{'stage':'lift','joint_moves':2,'final_joint_raw':last}])
+        self.assertEqual(watchdog.call_count,2);self.robot.move_linear.assert_not_called()
+
+    def test_unreached_sample_or_invalid_solution_stops_the_segment(self):
+        self.service.robot=self.robot;sent=[]
+        self.robot.move_joints.side_effect=lambda values,*rest:sent.append(list(values))
+        self.service.arm_state=Mock(return_value={'joint':[0]*7})
+        with self.assertRaisesRegex(ValueError,'未到达所选关节解'):
+            self.service.follow_joint_samples([[1]*7,[2]*7],25,Mock(),{},'lift')
+        self.assertEqual(len(sent),1)
+        for bad in ([[1]*6],[[float('nan')]*7],[]):
+            with self.subTest(bad=bad),self.assertRaisesRegex(ValueError,'缺少已验证的关节解'):
+                self.service.follow_joint_samples(bad,25,Mock(),{},'lift')
+        self.assertEqual(len(sent),1)
+
+    def test_fixed_release_uses_sampled_joint_moves_and_completes_with_different_planned_joints(self):
         args=control.ObjectControlTests.args(self);args.update(goal=None,retreat_vector_base_m=[0,0,.05])
         plan=copy.deepcopy(control.ObjectControlTests.planned(self,args,True))
         names=[w['name'] for w in plan['waypoints']]+[plan['retreat_waypoint']['name']]
         plan['fixed_joint_targets']={name:[777000]*7 for name in names}
-        saved={}
-        self.service.save_object_job=Mock(side_effect=lambda report:saved.update(report=report) or {'file':'job.json'})
+        before=control.controller_pose(self.arm['pose'])
         self.service.status.update(busy=True)
         self.service.run_object_execution(plan,'fixed-release',nested=True)
         self.assertEqual(self.service.status['state'],'completed',self.service.status.get('error'))
-        self.assertEqual([c[0] for c in self.calls],['movel','movel','open','movel'])
-        self.assertIsNone(self.service.held_object)
+        kinds=[c[0] for c in self.calls]
+        self.assertNotIn('movel',kinds);self.assertEqual(kinds.count('open'),1)
+        opened=kinds.index('open');self.assertGreaterEqual(opened,2);self.assertGreater(len(kinds)-opened-1,0)
+        self.assertEqual(set(kinds)-{'open'},{'movej'});self.assertIsNone(self.service.held_object)
+        np.testing.assert_allclose(control.controller_pose(self.arm['pose'])[:3,3],before[:3,3]+[0,0,.05],atol=1e-6)
 
-    def test_joint_change_note_records_only_real_differences(self):
+    def test_ordinary_release_still_uses_controller_linear_moves(self):
+        args=control.ObjectControlTests.args(self);args.update(goal=None,retreat_vector_base_m=[0,0,.05])
+        plan=control.ObjectControlTests.planned(self,args,True)
+        status=control.ObjectControlTests.execute(self,plan,'release-001')
+        self.assertEqual(status['state'],'completed',status.get('error'))
+        self.assertEqual([c[0] for c in self.calls],['movel','movel','open','movel'])
+
+    def test_fixed_release_budget_and_joint_change_note(self):
+        import fixed_pick_place
         from motion_validation import note_joint_change
+        self.assertGreater(fixed_pick_place.FIXED_RELEASE_BUDGET_S,90)
         report={}
         self.assertAlmostEqual(note_joint_change(report,'lift','basis',[1000]*7,[1400]*7),.4)
         self.assertEqual(report,{})

@@ -647,22 +647,39 @@ class GraspController(FixedPickPlaceMixin, MotionRecoveryMixin, SceneMixin, Obje
         return detail
 
     def verify_waypoint(self, plan, config, report, waypoint):
-        """Offline check before one grasp segment; a fixed plan gets the segment's re-solved joint target."""
+        """Offline check before one grasp segment; a fixed plan gets the joint solution of each of its samples."""
         fixed = plan.get('fixed_joint_targets', {}).get(waypoint['name'])
         if fixed is None:
             self.verify_motion_targets(plan, config, report, self.arm_state(), [waypoint])
             return None
-        # A 7-joint arm reaches one pose with many joint sets, and the controller picks its own
-        # during movel. So the whole remaining path is re-solved from real feedback before every
-        # segment: no continuous solution stops the task, a different one replaces the planned set.
+        # A 7-joint arm reaches one pose with many joint sets, and the controller's movel was
+        # measured swinging them by up to 35 degrees. A fixed plan therefore never sends movel:
+        # the whole remaining path is re-solved from real feedback before every segment, and the
+        # segment is then driven through the solved joint set of each of its samples.
         points = getattr(self, '_fixed_path_points', None) or []
         own = [i for i, p in enumerate(points) if p['name'].startswith(waypoint['name'] + '_sample_')]
         if not own:
             raise ValueError('固定路径缺少航点采样：' + waypoint['name'])
         detail = self.verify_motion_targets(plan, config, report, self.arm_state(), points[own[0]:])
-        solved = np.rint(np.asarray(detail['joint_solutions_deg'][own[-1] - own[0]]) * 1000).astype(int).tolist()
-        note_joint_change(report, waypoint['name'], 'resolved_remaining_path_vs_plan', fixed, solved)
+        solved = detail['joint_solutions_deg'][:own[-1] - own[0] + 1]
+        note_joint_change(report, waypoint['name'], 'resolved_remaining_path_vs_plan', fixed, np.asarray(solved[-1]) * 1000)
         return solved
+
+    def follow_joint_samples(self, solutions_deg, speed, watchdog, report, stage):
+        """Drive one segment as joint moves through its verified samples; returns the last joint target."""
+        target = None
+        for solution in solutions_deg:
+            if len(solution) != 7 or not np.isfinite(solution).all():
+                raise ValueError('缺少已验证的关节解，不能执行关节方案')
+            target = np.rint(np.asarray(solution) * 1000).astype(int).tolist()
+            self.robot.move_joints(target, speed, self.cancelled, watchdog)
+            if np.max(np.abs(np.asarray(self.arm_state()['joint']) - target)) > 500:
+                raise ValueError('关节运动未到达所选关节解，停止固定流程')
+        if target is None:
+            raise ValueError('缺少已验证的关节解，不能执行关节方案')
+        report.setdefault('sampled_joint_segments', []).append({'stage': stage, 'joint_moves': len(solutions_deg),
+                                                              'final_joint_raw': target})
+        return target
 
     def execute(self, plan, config, report):
         grip = config['gripper']
@@ -705,25 +722,16 @@ class GraspController(FixedPickPlaceMixin, MotionRecoveryMixin, SceneMixin, Obje
             report['active_stage'] = names[waypoint['name']]
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
             solved=self.verify_waypoint(plan,config,report,waypoint)
-            joint_commanded=solved is not None and waypoint['name']=='pregrasp'
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            if joint_commanded:
-                self.robot.move_joints(solved,config['arm_speed_percent'],self.cancelled,watchdog)
+            if solved is not None:
+                self.follow_joint_samples(solved,config['arm_speed_percent'],watchdog,report,report['active_stage'])
             else:
                 move = self.robot.move_joint_pose if waypoint['name'] == 'pregrasp' else self.robot.move_linear
                 move(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
             check={'stage':report['active_stage']}
             report.setdefault('arrival_checks',[]).append(check)
             wait_for_pose(self.arm_state,waypoint['controller_pose'],self.check_cancel,check)
-            if solved is not None:
-                actual=self.arm_state()['joint']
-                if joint_commanded:
-                    if np.max(np.abs(np.asarray(actual)-solved))>500:
-                        raise ValueError('关节运动未到达所选关节解，停止固定流程')
-                else:
-                    # Pose arrival is verified above; the joint set after movel is the controller's choice.
-                    note_joint_change(report,report['active_stage'],'controller_linear_move_vs_offline_solution',solved,actual)
 
         for waypoint in plan['waypoints']:
             if waypoint['name'] != 'lift':
