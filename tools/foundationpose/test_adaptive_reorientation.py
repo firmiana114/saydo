@@ -43,7 +43,9 @@ class AdaptiveReorientationTests(unittest.TestCase):
         p=plan_reorientation(h,v,np.eye(3),a,c,s,Mock(return_value=(True,{})),lambda:None,'adaptive')
         self.assertGreater(p['target_tcp_position_m'][2],c['table_z_m']+.10+s['position_tolerance_m'])
         self.assertAlmostEqual(p['start_tcp_position_m'][2],.05)
-        self.assertEqual([w['name'] for w in p['waypoints']],['translate','reorient'])
+        self.assertEqual(p['waypoints'][0]['name'],'translate')
+        self.assertTrue(all(w['name'].startswith('reorient') for w in p['waypoints'][1:]))
+        self.assertGreater(len(p['waypoints']),2)
         self.assertEqual(p['minimum_final_clearance_m'],.10)
 
     def test_search_can_exceed_20cm_and_ignore_workspace_and_grasp_distance(self):
@@ -100,10 +102,15 @@ class AdaptiveReorientationTests(unittest.TestCase):
             plan['position_mode']='adaptive'
             service=GraspController(root,None,cfg);service.held_object=h;service.robot=Mock();service.verify_motion_targets=Mock();service.check_reorient_contact=Mock()
             service.arm_state=Mock(side_effect=lambda:copy.deepcopy(a));count=[0]
-            def move(pose,*args):
+            targets={}
+            def verify(plan,config,report,current,points):
+                raw=[len(targets)+1]*7;targets[tuple(raw)]=points[-1]['controller_pose'];return {'joint_solutions_deg':[[n/1000 for n in raw]]}
+            service.verify_motion_targets.side_effect=verify
+            def move(joints,*args):
+                pose=targets[tuple(joints)];a['joint']=list(joints)
                 count[0]+=1;a['pose']=pose.copy()
-                if count[0]==2:a['pose'][2]=99500  # Within 2 mm of target, but fails the independent >10 cm rule.
-            service.robot.move_joint_pose.side_effect=move
+                if count[0]==len(plan['waypoints']):a['pose'][2]=99500  # Within 2 mm of target, but fails the independent >10 cm rule.
+            service.robot.move_joints.side_effect=move
             with self.assertRaisesRegex(ValueError,'实际末端最终高度'):service.execute_reorient(plan,h,c,s,{},v)
             service.robot.move_gripper.assert_not_called()
 
@@ -114,7 +121,12 @@ class AdaptiveReorientationTests(unittest.TestCase):
                 service=GraspController(root,None,cfg);service.held_object=h;robot=service.robot=Mock()
                 plan=adaptive_candidate(h,v,np.eye(3),a,c,s,np.array([0,-.05,0]))
                 calls=[];service.verify_motion_targets=Mock();service.arm_state=Mock(side_effect=lambda:copy.deepcopy(a));service.check_reorient_contact=Mock()
-                def move(pose,speed,cancelled,watchdog):
+                targets={}
+                def verify(plan,config,report,current,points):
+                    raw=[len(targets)+1]*7;targets[tuple(raw)]=points[-1]['controller_pose'];return {'joint_solutions_deg':[[n/1000 for n in raw]]}
+                service.verify_motion_targets.side_effect=verify
+                def move(joints,speed,cancelled,watchdog):
+                    pose=targets[tuple(joints)];a['joint']=list(joints)
                     calls.append(pose)
                     if len(calls)==1:
                         a['pose'][:3]=np.rint((np.array(a['pose'][:3])+pose[:3])/2).astype(int).tolist()
@@ -126,14 +138,14 @@ class AdaptiveReorientationTests(unittest.TestCase):
                         watchdog()
                         if fault=='early_arrival':return
                     a['pose']=pose.copy()
-                robot.move_joint_pose.side_effect=move;report={}
+                robot.move_joints.side_effect=move;report={}
                 if fault:
                     with self.assertRaises(ValueError):service.execute_reorient(plan,h,c,s,report,v)
                     self.assertEqual(len(calls),1)
                 else:
                     service.execute_reorient(plan,h,c,s,report,v)
-                    self.assertEqual(len(calls),2);self.assertEqual(calls[0][:3],calls[1][:3]);self.assertEqual(service.status['state'],'completed')
-                    self.assertEqual(service.held_object['hold_id'],h['hold_id']);self.assertEqual(len(report['arrival_checks']),2)
+                    self.assertEqual(len(calls),len(plan['waypoints']));self.assertEqual(calls[0][:3],calls[1][:3]);self.assertEqual(service.status['state'],'completed')
+                    self.assertEqual(service.held_object['hold_id'],h['hold_id']);self.assertEqual(len(report['arrival_checks']),len(plan['waypoints']))
                 robot.move_gripper.assert_not_called();robot.set_register.assert_not_called();robot.move_linear.assert_not_called()
 
 if __name__=='__main__':unittest.main()

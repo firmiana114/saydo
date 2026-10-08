@@ -21,10 +21,18 @@ from camera_checks import camera_binding, check_camera_observation
 from reorientation_control import ReorientationMixin
 from placement_control import PlacementMixin
 from grasp_profiles_control import GraspProfilesMixin
-from grasp_library import binding_error, revision
+from pose_symmetry import effective_profile
+from gripper_diagnostics import CloseDiagnostics, contact_failure_message, feedback_summary, record_failure_before_stop
+from motion_speed import MotionSpeedMixin, checked_speed
+from object_motion_control import ObjectMotionMixin
+from scene_control import SceneMixin
+from fixed_pick_place import FixedPickPlaceMixin
+from motion_recovery import MotionRecoveryMixin
+from object_catalog import select_object
+from grasp_library import binding_error, revision, object_gripper_defaults, checked_bound_overrides
 
 
-class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
+class GraspController(FixedPickPlaceMixin, MotionRecoveryMixin, SceneMixin, ObjectMotionMixin, MotionSpeedMixin, ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def __init__(self, root, tracker, config_path, mode='execute'):
         self.root, self.tracker, self.config_path, self.mode = Path(root), tracker, Path(config_path), mode
         self.lock = threading.RLock()
@@ -46,7 +54,9 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 reset_available = return_joint_target(config) is not None
             except (ValueError, TypeError, KeyError, AttributeError):
                 reset_available = False
-            return {**self.status, 'force_config': self.force_config(),
+            return {**self.status,'active_scene_id':self.scenes().active, 'force_config': self.force_config(),
+                    'motion_speed_config': self.motion_speed_configuration(),
+                    'grasp_configuration': self.grasp_configuration(config),
                     'open_position_config': {'value': config['gripper']['open_position'], 'minimum': 0, 'maximum': 1000},
                     'reset_available': reset_available, 'zero_reset_available': True, 'held_object': self.held_snapshot(),
                     'placement_config': self.placement_configuration(), 'pregrasp_distance_m': config.get('pregrasp_distance_m')}
@@ -55,7 +65,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         if type(value) is not int or not 0 <= value <= 1000:
             raise ValueError('抓取时夹爪打开位置必须为 0–1000 的整数原始值')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能更改抓取张开位置')
             directory = self.root / 'work/grasp'
             directory.mkdir(parents=True, exist_ok=True)
@@ -98,7 +108,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             raise ValueError('未知的机械臂复位目标')
         label = '机械臂复位(零位)' if target_kind == 'zero' else '机械臂复位(观测桌面)'
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有机械臂任务正在处理')
             if self.mode != 'execute':
                 raise ValueError('预览模式不发送机械臂复位指令')
@@ -106,8 +116,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             target = [0]*7 if target_kind == 'zero' else return_joint_target(config)
             if target is None:
                 raise ValueError('尚未配置机械臂复位目标，无法复位')
-            if type(config['arm_speed_percent']) is not int or not 1 <= config['arm_speed_percent'] <= 100:
-                raise ValueError('机械臂速度必须为 1–100 的整数百分比')
+            config['arm_speed_percent'] = checked_speed(config['arm_speed_percent'])
             self.cancelled.clear()
             self.actuated = False
             self.robot = None
@@ -209,7 +218,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
 
     def set_force_config(self, value):
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('抓取任务进行中，不能更改力度')
             if type(value) is not int or not 1 <= value <= 100:
                 raise ValueError('力度必须为 1–100 的整数原始值，不能按牛顿输入')
@@ -259,7 +268,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
 
     def open_gripper(self):
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('抓取任务进行中，不能打开夹爪')
             if self.mode != 'execute':
                 raise ValueError('预览模式不发送夹爪运动指令')
@@ -282,6 +291,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                     report['initial_gripper_state'] = state
                     if contact_result(state, grip) == 'fault' or state.get('speed') != [0]:
                         raise ValueError('夹爪异常或正在运动')
+                    self.update_scene_instance(self.held_object,'release_unknown')
                     report['write_attempted'] = True
                     self.held_object = None
                     robot.move_gripper(1000)
@@ -300,6 +310,9 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def update(self, **values):
         with self.lock:
             self.status.update(values)
+            observer = getattr(self, 'agent_observer', None)
+            if observer is not None:
+                observer(self.status)
 
     def hardware_status(self):
         config = json.loads(self.config_path.read_text())
@@ -332,20 +345,28 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             profile.update(record['profile'])
         return profile
 
-    def teach(self, use_current_point=False):
+    def teach(self, use_current_point=False, gripper_parameters=None, expected_object_id=None):
         if type(use_current_point) is not bool:
             raise ValueError('记录位置选项必须为布尔值')
         observation = copy.deepcopy(self.tracker.grasp_observation())
         if not observation.get('object_id') or not observation.get('model_sha256'):
             raise ValueError('记录夹法需要已登记的物品模型')
+        if expected_object_id is not None and observation['object_id'] != expected_object_id:
+            raise ValueError('当前物品已变化，请重新确认记录夹法的物品和参数')
+        if gripper_parameters is None:
+            gripper_parameters = object_gripper_defaults(observation['object_id'])
+        if not isinstance(gripper_parameters, dict) or set(gripper_parameters) != {'force_target_raw', 'open_position'}:
+            raise ValueError('记录夹法必须提供力度和抓取张开位置')
+        gripper_parameters = checked_bound_overrides(gripper_parameters)
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有抓取任务正在处理')
             self.status.update(busy=True, state='teaching', message='正在读取当前夹法，不发送运动…', error=None)
             self.actuated = False
             self.cancelled.clear()
         directory = self.root / 'work/grasp'
-        report = {'at': time.time(), 'observation': observation, 'use_current_point': use_current_point, 'motion_sent': False}
+        report = {'at': time.time(), 'observation': observation, 'use_current_point': use_current_point,
+                  'gripper_parameters': gripper_parameters, 'motion_sent': False}
         try:
             directory.mkdir(parents=True, exist_ok=True)
             with (directory / 'robot.lock').open('a') as lock:
@@ -373,14 +394,21 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 plan_grasp(arm['pose'], base_object, profile, config)
                 self.check_cancel()
                 record = {'profile': profile, 'model_sha256': observation['model_sha256'],
+                          'overrides': gripper_parameters,
                           'tool_response': tool['controller_readback']['tool_response_raw'],
                           'flange_T_camera': handeye['flange_T_color_optical_camera'], 'recorded_at': time.time()}
+                if observation.get('pose_mode') == '5d':
+                    record['profile_5d'] = effective_profile(record, '5d')
                 entry = self.grasp_library().append_taught(observation['object_id'], record)
                 report['grasp_id'] = entry['id']
                 report['record'] = record
                 message = '已新增并选用当前物品的夹法，保存朝向' + ('及夹持位置' if use_current_point else '；夹持位置采用记录时的文件配置')
+                message += f"；夹爪力度 {gripper_parameters['force_target_raw']}，抓取张开位置 {gripper_parameters['open_position']}。"
+                if observation.get('pose_mode') == '5d':
+                    message += '；5D夹法仅使用Z轴高度与接近夹角，中心X/Y已投影到0，绕轴方位由规划选择。'
                 self.update(state='taught', message=message, plan=None, grasp_library_changed_at=time.time())
-                return {'message': message, 'profile': profile, 'grasp_id':entry['id'], 'motion_sent': False}
+                return {'message': message, 'profile': effective_profile(record, observation.get('pose_mode','6d')), 'grasp_id':entry['id'],
+                        'gripper_parameters': gripper_parameters, 'motion_sent': False}
         except Exception as error:
             report['error'] = str(error)
             self.update(state='failed', message='记录夹法失败：' + str(error), error=str(error))
@@ -390,11 +418,17 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             records = self.grasp_library().object_directory(observation['object_id'])/'teach_commands';records.mkdir(parents=True,exist_ok=True)
             (records / f'{time.time_ns()}.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
 
-    def start(self, preview=False):
+    def start(self, preview=False, expected_object_id=None, scene_id=None, instance_id=None):
         # Take the tracker lock before the grasp lock (snapshot uses the same order).
-        observation = copy.deepcopy(self.tracker.grasp_observation())
+        if scene_id is not None:
+            observation=self.scene_observation(scene_id,instance_id,expected_object_id)
+        else:
+            if self.scenes().active is not None:raise ValueError('已有场景采集上下文，必须引用准备完成的scene_id和instance_id')
+            observation = copy.deepcopy(self.tracker.grasp_observation())
+        if expected_object_id is not None and observation.get('object_id') != expected_object_id:
+            raise ValueError('当前跟踪物品已变化，拒绝抓取其他物品')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有抓取任务正在处理')
             self.cancelled.clear()
             self.actuated = False
@@ -417,6 +451,8 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
     def check_cancel(self):
         if self.cancelled.is_set():
             raise ValueError('机械臂任务已取消')
+        guard=getattr(self,'_fixed_guard',None)
+        if guard is not None:guard()
 
     def calibration(self, config):
         handeye = yaml.safe_load((self.root / config['handeye_file']).read_text())
@@ -471,6 +507,59 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         if not opened and (state.get('dof_state') == [3] or any(state.get('force', []))):
             raise ValueError(f"夹爪可能已夹持物体，请先人工张开复位（当前位置 {position[0]}，抓取张开目标 {grip['open_position']}，完全张开目标 1000，状态 {state.get('dof_state')}，力度反馈 {state.get('force')}）")
 
+    def prepare_grasp_plan(self, observation, config, arm, report):
+        handeye, tool = self.calibration(config)
+        software = self.robot.query('get_arm_software_info')
+        report['controller_software'] = software
+        if software.get('Product_version') != 'RM75-BI' or software['ctrl_info']['version'] != handeye['installation']['controller_firmware']:
+            raise ValueError('机械臂型号/固件与标定记录不匹配')
+        if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
+            raise ValueError('当前工具/TCP/负载与 grip_tcp 记录不一致')
+        work = self.robot.query('get_current_work_frame')
+        if work.get('frame_name') != 'Base' or work.get('pose') != [0]*6:
+            raise ValueError('当前工作坐标系必须是零偏移 Base')
+        if self.robot.query('get_joint_en_state').get('en_state') != [1]*7 or self.robot.query('get_joint_err_flag').get('err_flag') != [0]*7:
+            raise ValueError('关节使能或错误状态异常')
+        if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
+            raise ValueError('RM Plus 通信模式不匹配')
+        base = self.robot.query('get_rm_plus_base_info')['base_info']
+        gripper_state = self.robot.query('get_rm_plus_state_info')['state_info']
+        report['initial_gripper_state'] = copy.deepcopy(gripper_state)
+        grip = config['gripper']
+        if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
+            raise ValueError('夹爪身份不匹配')
+        check_camera_observation(handeye, observation)
+        report['camera_calibration'] = handeye.get('runtime_camera_binding')
+        report['gripper_base'] = base
+        base_object = np.asarray(observation['base_T_object']) if observation.get('scene_id') else object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
+        if observation.get('pose_mode_revision') is not None:
+            current_model = select_object(self.tracker.models_root, observation['object_id'])
+            if current_model['pose_mode_revision'] != observation['pose_mode_revision']:
+                raise ValueError('模型位姿设置已变化，请重新跟踪后抓取')
+        plan, profile, config = self.select_grasp_candidate(config, observation, tool, handeye, base_object, arm, report)
+        grip = config['gripper']
+        report['effective_gripper_config'] = dict(grip)
+        plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
+                    pose_mode=observation.get('pose_mode','6d'), pose_mode_revision=observation.get('pose_mode_revision'),
+                    model_sha256=observation.get('model_sha256'),
+                    camera_calibration=handeye.get('runtime_camera_binding'),
+                    object_name=observation.get('object_name'),
+                    current_arm=arm, gripper_base=base, gripper_state=gripper_state,
+                    tool_response=tool['controller_readback']['tool_response_raw'], work_response=work,
+                    flange_T_grip_tcp=tool['flange_T_grip_tcp'],
+                    force_limit_raw=grip['force_limit_raw'], force_units=grip['force_units'])
+        if observation.get('scene_id'):plan.update(scene_id=observation['scene_id'],instance_id=observation['instance_id'])
+        blockers = workspace_blockers(plan, config)
+        if not base.get('force'):
+            blockers.append('当前夹爪未声明支持力度控制')
+        report['plan'] = plan
+        plan['motion_validation'] = {'method':'ik_fk_endpoints_then_controller_movej_p_movel_movej',
+            'offline_path_checked':False,'ik_fk_checked':not blockers,
+            'message':'抓取航点先做逆解及正解回验，每段发令前按实际关节重查；控制器完成后等待稳定到位。未检查完整中间轨迹或环境碰撞。'}
+        plan['execution_blockers'] = blockers
+        report['grasp_profile'] = profile
+        return plan, config
+
     def run(self, observation, preview=False):
         mode = 'preview' if preview else self.mode
         report = {'started_at': time.time(), 'mode': mode, 'robot_motion_sent': False,
@@ -479,9 +568,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
         try:
             with self.lock:
                 config = json.loads(self.config_path.read_text())
-                if self.force_override is not None:
-                    config['gripper']['force_target_raw'] = self.force_override
-                    config['gripper']['force_limit_raw'] = self.force_override
+                config['arm_speed_percent'] = checked_speed(config['arm_speed_percent'])
             report['effective_gripper_config'] = dict(config['gripper'])
             report['config_sha256'] = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
             if mode == 'execute':
@@ -491,52 +578,12 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=mode == 'execute')
             self.robot.motion_log = report.setdefault('motion_events', [])
-            arm, observation = self.paired_observation(observation)
-            handeye, tool = self.calibration(config)
-            software = self.robot.query('get_arm_software_info')
-            report['controller_software'] = software
-            if software.get('Product_version') != 'RM75-BI' or software['ctrl_info']['version'] != handeye['installation']['controller_firmware']:
-                raise ValueError('机械臂型号/固件与标定记录不匹配')
-            if self.robot.query('get_current_tool_frame') != tool['controller_readback']['tool_response_raw']:
-                raise ValueError('当前工具/TCP/负载与 grip_tcp 记录不一致')
-            work = self.robot.query('get_current_work_frame')
-            if work.get('frame_name') != 'Base' or work.get('pose') != [0]*6:
-                raise ValueError('当前工作坐标系必须是零偏移 Base')
-            if self.robot.query('get_joint_en_state').get('en_state') != [1]*7 or self.robot.query('get_joint_err_flag').get('err_flag') != [0]*7:
-                raise ValueError('关节使能或错误状态异常')
-            if self.robot.query('get_rm_plus_mode').get('mode') != 115200:
-                raise ValueError('RM Plus 通信模式不匹配')
-            base = self.robot.query('get_rm_plus_base_info')['base_info']
-            gripper_state = self.robot.query('get_rm_plus_state_info')['state_info']
-            report['initial_gripper_state'] = copy.deepcopy(gripper_state)
-            grip = config['gripper']
-            if (base.get('manu'), base.get('id'), base.get('dof'), base.get('type')) != (grip['vendor'], grip['device_id'], 1, 1):
-                raise ValueError('夹爪身份不匹配')
-            check_camera_observation(handeye, observation)
-            report['camera_calibration'] = handeye.get('runtime_camera_binding')
-            report['gripper_base'] = base
-            base_object = object_in_base(controller_pose(arm['pose']), tool['flange_T_grip_tcp'], handeye['flange_T_color_optical_camera'], observation['pose'])
-            plan, profile, config = self.select_grasp_candidate(config, observation, tool, handeye, base_object, arm, report)
-            grip = config['gripper']
-            report['effective_gripper_config'] = dict(grip)
-            plan.update(object_id=observation['object_id'], generation=observation['generation'], captured_at=observation['time'], target_locked=True,
-                        model_sha256=observation.get('model_sha256'),
-                        camera_calibration=handeye.get('runtime_camera_binding'),
-                        object_name=observation.get('object_name'),
-                        current_arm=arm, gripper_base=base, gripper_state=gripper_state,
-                        tool_response=tool['controller_readback']['tool_response_raw'], work_response=work,
-                        flange_T_grip_tcp=tool['flange_T_grip_tcp'],
-                        force_limit_raw=grip['force_limit_raw'], force_units=grip['force_units'])
-            blockers = workspace_blockers(plan, config)
-            if not base.get('force'):
-                blockers.append('当前夹爪未声明支持力度控制')
-            report['plan'] = plan
-            plan['motion_validation'] = {'method':'ik_fk_endpoints_then_controller_movej_p_movel_movej',
-                'offline_path_checked':False,'ik_fk_checked':not blockers,
-                'message':'抓取航点先做逆解及正解回验，每段发令前按实际关节重查；控制器完成后等待稳定到位。未检查完整中间轨迹或环境碰撞。'}
-            plan['execution_blockers'] = blockers
+            if observation.get('scene_id'):
+                self.validate_scene(observation['scene_id'],config);arm=self.stationary_scene_arm()
+            else:arm, observation = self.paired_observation(observation)
+            plan, config = self.prepare_grasp_plan(observation, config, arm, report)
+            blockers = plan['execution_blockers']
             plan['can_execute'] = mode == 'execute' and not blockers
-            report['grasp_profile'] = profile
             report['plan'] = plan
             self.update(plan=plan)
             self.check_cancel()
@@ -546,24 +593,38 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             library = self.grasp_library()
             if revision(library.object(observation['object_id'])) != plan['grasp_library_revision']:
                 raise ValueError('夹法库在规划后变化，请重新预览')
+            if observation.get('scene_id'):
+                self.validate_scene(observation['scene_id'],config)
+                self.update_scene_instance(observation,'moving')
             self.execute(plan, config, report)
+            if observation.get('scene_id'):self.update_scene_instance(observation,'held')
             if self.status['state']=='completed' and plan['grasp_id']!='config':
                 try:
-                    library.mark_success(observation['object_id'],plan['grasp_id'],plan['grasp_library_revision'])
+                    library.mark_success(observation['object_id'],plan['grasp_id'],plan['grasp_library_revision'],plan.get('pose_mode','6d'))
                     self.update(grasp_library_changed_at=time.time())
                 except (OSError, ValueError) as error:
                     report['grasp_history_error'] = str(error)
         except Exception as error:
             if self.actuated:
+                record_failure_before_stop(report, error)
+                stop_record = report['failure_stop'] = {'requested_at':time.time(), 'commands_acknowledged':False,
+                                                       'stationarity_checked':False}
                 try:
                     self.robot.stop()
+                    stop_record['commands_acknowledged'] = True
                 except Exception as stop_error:
                     report['stop_error'] = str(stop_error)
+                    stop_record['error'] = str(stop_error)
+                finally:
+                    stop_record['finished_at'] = time.time()
             stage = report.get('active_stage', '抓取准备')
             detail = f'{stage}：{error}'
             self.update(state='cancelled' if self.cancelled.is_set() else 'failed', error=detail, message=detail)
             report.update(error=detail, error_type=type(error).__name__, traceback=traceback.format_exc())
         finally:
+            if observation.get('scene_id') and self.status['state'] in ('failed','cancelled'):
+                try:self.update_scene_instance(observation,'unknown' if self.actuated else 'static')
+                except Exception as e:report['scene_record_error']=str(e)
             self.update(busy=False)
             report['result'] = self.snapshot()
             if robot_lock is not None:
@@ -625,32 +686,48 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
             names = {'pregrasp':'调整朝向并到达预抓取点', 'grasp':'接近夹持点', 'lift':'夹持后竖直抬升'}
             report['active_stage'] = names[waypoint['name']]
             self.update(state='lifting' if lifting else 'moving', message='执行路径：' + names[waypoint['name']])
-            self.verify_motion_targets(plan,config,report,self.arm_state(),[waypoint])
+            detail=self.verify_motion_targets(plan,config,report,self.arm_state(),[waypoint])
+            fixed=plan.get('fixed_joint_targets',{}).get(waypoint['name'])
+            if fixed is not None and np.max(np.abs(np.asarray(detail['joint_solutions_deg'][-1])*1000-fixed))>500:
+                raise ValueError('当前反馈不能沿用预先选定的关节构型')
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            move = self.robot.move_joint_pose if waypoint['name'] == 'pregrasp' else self.robot.move_linear
-            move(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
+            if fixed is not None and waypoint['name']=='pregrasp':
+                self.robot.move_joints(fixed,config['arm_speed_percent'],self.cancelled,watchdog)
+            else:
+                move = self.robot.move_joint_pose if waypoint['name'] == 'pregrasp' else self.robot.move_linear
+                move(waypoint['controller_pose'], config['arm_speed_percent'], self.cancelled, watchdog)
             check={'stage':report['active_stage']}
             report.setdefault('arrival_checks',[]).append(check)
             wait_for_pose(self.arm_state,waypoint['controller_pose'],self.check_cancel,check)
+            if fixed is not None and np.max(np.abs(np.asarray(self.arm_state()['joint'])-fixed))>500:
+                raise ValueError('实际关节构型偏离预先规划，停止固定流程')
 
         for waypoint in plan['waypoints']:
             if waypoint['name'] != 'lift':
                 move_waypoint(waypoint)
         report['active_stage'] = '设置力度并闭合夹爪'
         self.update(state='closing', message='按指定力度闭合，等待力控接触反馈')
-        self.robot.set_register(1220, grip['force_limit_raw'])
-        self.robot.move_gripper(grip['closed_position'])
+        diagnostics = CloseDiagnostics(report, grip)
+        diagnostics.command('set_rm_plus_reg', {'addr':1220, 'data':[grip['force_limit_raw']]},
+                            lambda: self.robot.set_register(1220, grip['force_limit_raw']))
+        diagnostics.command('hand_follow_pos', {'hand_pos':[grip['closed_position']]},
+                            lambda: self.robot.move_gripper(grip['closed_position']))
         deadline = time.monotonic() + grip['close_timeout_s']
         stable = 0
         while time.monotonic() < deadline:
             self.check_cancel()
-            state = self.robot.query('get_rm_plus_state_info')['state_info']
-            result = contact_result(state, grip)
+            sample = diagnostics.sample(self.robot)
+            state, result = sample['state'], sample['classification']
+            sample['consecutive_contact_samples_before'] = stable
             if result in ('fault', 'empty_close'):
-                raise ValueError('夹爪异常或空夹到位')
+                sample['consecutive_contact_samples'] = 0
+                diagnostics.decision(result, sample)
+                raise ValueError(contact_failure_message(result, state, grip))
             stable = stable + 1 if result in ('force_contact', 'force_stop') else 0
+            sample['consecutive_contact_samples'] = stable
             if stable >= 3:
+                diagnostics.decision('contact_confirmed', sample)
                 self.update(gripper_contact=state)
                 self.capture_attachment(plan, report)
                 lifting = True
@@ -660,4 +737,7 @@ class GraspController(ReorientationMixin, PlacementMixin, GraspProfilesMixin):
                 self.update(state='completed', message=f"已完成夹持并竖直抬升 {plan['lift_height_m'] * 100:g} 厘米，停留在抬升位置并保持夹持。")
                 return
             time.sleep(.1)
-        raise TimeoutError('未确认稳定接触，停止本次抓取')
+        diagnostics.decision('timeout', diagnostics.data['last_sample'])
+        last_state = (diagnostics.data['last_sample'] or {}).get('state')
+        raise TimeoutError('闭合确认超时，未确认稳定接触，停止本次抓取' +
+                           ('；最后反馈：'+feedback_summary(last_state) if last_state is not None else '；尚无有效反馈'))

@@ -32,9 +32,42 @@ class MotionValidationTests(unittest.TestCase):
     def parse(self,stdout,code=0):
         return parse_kinematics(SimpleNamespace(stdout=stdout,stderr='',returncode=code),self.arm,self.points)
 
+    def test_failure_identifies_stage_sample_and_error_type(self):
+        data=protocol().replace('IK 0 0','IK 1 -1').split('VERIFY')[0]
+        ok,d=self.parse(data,1)
+        self.assertFalse(ok);self.assertEqual(d['failure']['kind'],'ik_failed')
+        self.assertEqual(d['failure']['waypoint'],'pregrasp')
+        ok,d=self.parse(protocol('.2 0 0 0 0 0'),3)
+        self.assertEqual(d['failure']['kind'],'fk_residual')
+        self.assertEqual(d['failure']['sample_index'],0)
+
+    def test_seed_diagnostics_and_missing_binary_capability(self):
+        ok,d=self.parse(protocol()+'SEEDS 0 31 2\n')
+        self.assertTrue(ok);self.assertEqual(d['seed_search'][0]['valid_candidates'],2)
+        with patch('motion_validation.subprocess.run',return_value=SimpleNamespace(stdout=protocol(),stderr='',returncode=0)):
+            ok,d=check_waypoints('fixture',{'flange_T_grip_tcp':np.eye(4).tolist()},self.arm,self.points)
+        self.assertFalse(ok);self.assertIn('多分支路径搜索协议',d['reason'])
+
+    def test_beam_failure_never_accepts_valid_prefix(self):
+        data=protocol()+'BEAM 0 2\nSEARCH_FAIL 0 no_continuous_solution 62\n'
+        ok,d=self.parse(data,1)
+        self.assertFalse(ok);self.assertFalse(d['verified'])
+        self.assertEqual(d['failure']['kind'],'no_continuous_solution');self.assertEqual(d['search_ik_calls'],62)
+
     def test_verified_success(self):
         ok,detail=self.parse(protocol());self.assertTrue(ok);self.assertTrue(detail['verified'])
         self.assertEqual(detail['fk_checks'][0]['position_error_mm'],0)
+
+    def test_linear_branch_jump_rejected_but_joint_endpoint_allowed(self):
+        data=protocol().replace('IK 0 0 0 0 0 0 0 0 0','IK 0 0 38.3 0 0 0 0 0 0')
+        self.points[0]['method']='linear'
+        ok,detail=self.parse(data)
+        self.assertFalse(ok);self.assertFalse(detail['verified'])
+        self.assertEqual(detail['continuity_failure']['joint_index'],1)
+        self.points[0]['method']='joint_pose'
+        self.assertTrue(self.parse(data)[0])
+        self.points[0]['method']='linear'
+        self.assertTrue(self.parse(data.replace('38.3','9.9'))[0])
 
     def test_ik_success_and_false_residual_cannot_hide_wrong_fk(self):
         for pose in ['.16 0 0 0 0 0','0 0 0 0 0 .1']:
@@ -128,6 +161,8 @@ class MotionValidationTests(unittest.TestCase):
                 valid,detail=check_waypoints(os.environ['SAYDO_IK_CHECKER'],{'flange_T_grip_tcp':tool.tolist()},
                     {'joint':joints,'pose':pose},[{'name':'pregrasp','controller_pose':target}])
                 self.assertEqual(valid,expected,detail)
-                if not expected:self.assertGreater(detail['fk_checks'][0]['position_error_mm'],150)
+                if not expected:
+                    self.assertFalse(detail['verified'])
+                    self.assertIn(detail['failure']['kind'],('fk_residual','no_continuous_solution'))
 
 if __name__=='__main__':unittest.main()

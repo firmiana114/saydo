@@ -7,11 +7,12 @@ import numpy as np
 
 from grasp_geometry import controller_pose, transform, minimum_table_clearance
 from reorientation_geometry import pose_waypoint
+from pose_symmetry import object_bounds
 
 
 DEFAULTS = {
     'region_xy_m': None, 'release_gap_m': .003,
-    'approach_height_m': .05, 'retreat_height_m': .05,
+    'approach_height_m': .1, 'retreat_height_m': .05,
     'transfer_speed_percent': 10, 'descent_speed_percent': 5,
     'planning_timeout_s': 20, 'search_step_m': .025, 'linear_sample_step_m': .02,
     'position_tolerance_m': .002, 'orientation_tolerance_deg': 2,
@@ -53,6 +54,10 @@ def object_vertices(tcp, held, vertices):
     if points.ndim != 2 or points.shape[1] != 3 or not len(points) or not np.isfinite(points).all():
         raise ValueError('物品模型顶点无效')
     obj = transform(tcp) @ np.linalg.inv(transform(held['object_T_tcp']))
+    if held.get('pose_mode') == '5d':
+        # All consumers use coordinate extrema; the exact sweep bounds avoid
+        # letting an arbitrary spin of the reconstructed mesh change clearance.
+        return np.array(object_bounds(obj, points, '5d'))
     return points @ obj[:3, :3].T + obj[:3, 3]
 
 
@@ -165,7 +170,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
     release_z = table + settings['release_gap_m'] - lower[2]
     # Round upwards to a controller micrometre, never below the requested gap.
     release_z = np.ceil(release_z * 1e6) / 1e6
-    hover_z = max(current[2, 3], release_z + settings['approach_height_m'])
+    hover_z = release_z + settings['approach_height_m']
     low, high = region_bounds(settings)
     low = np.maximum(low - lower[:2], np.asarray(config['workspace_min_m'])[:2])
     high = np.minimum(high - upper[:2], np.asarray(config['workspace_max_m'])[:2])
@@ -227,6 +232,7 @@ def plan_placement(held, vertices, arm, config, settings, reachable, cancelled, 
             continue
         obj = controller_pose(release['controller_pose']) @ np.linalg.inv(transform(held['object_T_tcp']))
         return {
+            'pose_mode': held.get('pose_mode', '6d'),
             'waypoints': targets, 'validation_points': samples, 'current_arm': arm,
             'base_T_object_target': obj.tolist(), 'object_T_tcp': held['object_T_tcp'],
             'target_tcp_position_m': release['position_m'], 'table_z_m': table,

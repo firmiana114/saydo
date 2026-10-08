@@ -220,7 +220,8 @@ class GraspTests(unittest.TestCase):
                     self.assertEqual(client.call_args.kwargs['writes'], mode == 'execute' and not preview)
                     self.assertEqual(execute.call_count, int(mode == 'execute' and not preview))
                     self.assertEqual(service.status['plan']['can_execute'], mode == 'execute' and not preview)
-                    self.assertEqual(service.status['plan']['force_limit_raw'], 17)
+                    self.assertEqual(service.status['plan']['force_limit_raw'], 10)
+                    self.assertEqual(service.status['plan']['effective_parameters']['open_position'], 1000)
                     self.assertFalse(service.status['plan']['motion_validation']['offline_path_checked'])
                     self.assertTrue(service.status['plan']['motion_validation']['ik_fk_checked']);verify.assert_called_once()
                     execute.reset_mock();verify.side_effect=ValueError('预抓点正解位置误差 200 毫米')
@@ -382,7 +383,7 @@ class GraspTests(unittest.TestCase):
                         reply['state_info'].update(dof_state=[stop_state], pos=[0])
                     return reply
                 with patch.object(robot, 'query', side_effect=failed_close):
-                    with self.assertRaisesRegex(ValueError, '异常或空夹'):
+                    with self.assertRaisesRegex(ValueError, '未确认接触|电流保护'):
                         service.execute(plan, config, {})
                 self.assertEqual(len([c for c in robot.calls if c[0] == 'move']), 2)
             robot.calls.clear()

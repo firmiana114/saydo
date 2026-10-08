@@ -1,5 +1,6 @@
 """Table placement shares the grasp task/device locks and never moves in preview."""
 import copy
+from motion_speed import placement_speed_settings
 import fcntl
 import hashlib
 import json
@@ -13,6 +14,7 @@ import traceback
 import numpy as np
 
 from grasp_geometry import controller_pose, rotation_error, contact_result
+from grasp_library import held_clearance_config
 from grasp_robot import RobotClient
 from motion_validation import check_waypoints, wait_for_pose
 from reorientation_geometry import model_geometry, pose_waypoint
@@ -32,8 +34,9 @@ class PlacementMixin:
     def placement_configuration(self):
         try:
             value = json.loads(self.placement_path.read_text()) if self.placement_path.exists() else {}
-            settings = placement_settings(value, require_region=False)
-            table = json.loads(self.config_path.read_text())['table_z_m']
+            config = json.loads(self.config_path.read_text())
+            settings = placement_settings(placement_speed_settings(config, value), require_region=False)
+            table = config['table_z_m']
             if type(table) not in (int, float) or not np.isfinite(table):
                 raise ValueError('桌面高度无效')
             return {'settings': settings, 'revision': settings_revision(settings), 'table_z_m': table,
@@ -45,14 +48,16 @@ class PlacementMixin:
         if not isinstance(value, dict) or set(value) != {'region_xy_m', 'release_gap_m', 'revision'}:
             raise ValueError('请提交桌面矩形范围、释放间隙及当前配置版本')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能更改放置设置')
             directory = self.root / 'work/grasp';directory.mkdir(parents=True, exist_ok=True)
             temporary = None
             with (directory / 'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 original = self.placement_path.read_text() if self.placement_path.exists() else None
-                old = placement_settings(json.loads(original) if original is not None else {}, require_region=False)
+                config = json.loads(self.config_path.read_text())
+                old = placement_settings(placement_speed_settings(config,
+                    json.loads(original) if original is not None else {}), require_region=False)
                 if value['revision'] != settings_revision(old):
                     raise ValueError('放置设置已变化，请重新载入后保存')
                 settings = placement_settings({**old, **{k: value[k] for k in ('region_xy_m', 'release_gap_m')}})
@@ -82,7 +87,7 @@ class PlacementMixin:
         if not isinstance(value, dict):
             raise ValueError('放置请求必须为 JSON 对象')
         with self.lock:
-            if self.status['busy']:
+            if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有机械臂任务正在处理')
             held = copy.deepcopy(self.held_object)
             if held is None:
@@ -123,8 +128,11 @@ class PlacementMixin:
             robot_lock = (directory.parent / 'robot.lock').open('a')
             fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             raw = self.config_path.read_bytes();config = json.loads(raw)
+            settings = placement_settings(placement_speed_settings(config, settings))
+            report.update(settings=settings, settings_revision=settings_revision(settings))
             report['config_sha256'] = hashlib.sha256(raw).hexdigest()
             self.placement_config_unchanged(report)
+            config = held_clearance_config(config, held)
             self.robot = RobotClient(config['robot_ip'], config['robot_port'], writes=mode == 'execute')
             self.robot.motion_log = report.setdefault('motion_events', [])
             self.check_cancel()
@@ -133,6 +141,8 @@ class PlacementMixin:
             mesh = model_geometry(self.tracker.models_root, held['object_id'])
             if mesh['model_sha256'] != held['model_sha256']:
                 raise ValueError('物品模型已变化，不能沿用夹持关系放置')
+            if mesh.get('pose_mode','6d') != held.get('pose_mode','6d'):
+                raise ValueError('物品位姿模式已变化，不能沿用旧夹持记录放置')
             checker = (self.root / config['ik_checker']).resolve()
             if not checker.is_file():
                 raise ValueError('缺少支持正解回验的离线检查器')

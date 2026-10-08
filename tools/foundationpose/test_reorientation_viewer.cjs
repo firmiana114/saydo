@@ -89,3 +89,14 @@ vm.runInContext('cameraPanel.request(true)',cameraContext).then(()=>{
  assert(element('#reorientation-feedback').textContent.includes('夹持记录已保留'));
  console.log('View widget interaction checks passed: drag, keyboard, reset, cancellation, busy viewing, unchanged pose/translation/angles and API rotation.');
 }).catch(error=>{console.error(error);process.exitCode=1;});
+
+(async()=>{
+ const sent=[];const Panel=vm.runInNewContext(source+'\nReorientationPanel',{post:async(path,value)=>sent.push({path,value})});
+ const panel=Object.create(Panel.prototype);
+ Object.assign(panel,{held:{object_id:'cup',hold_id:'same-hold',orientation_version:7},anglesValid:()=>true,
+  preview:{},execute:{},feedback:{},viewer:{rotation:M.identity(),model:{model_sha256:'mesh'}},positionMode:{value:'adaptive'}});
+ await panel.request(true);assert.equal(sent[0].path,'/api/reorient/preview');assert.equal(sent[0].value.orientation_version,7);
+ panel.held.orientation_version=8;await panel.request(false);assert.equal(sent[1].path,'/api/reorient');assert.equal(sent[1].value.orientation_version,8);
+ panel.disabled=true;await panel.request(false);assert.equal(sent.length,2);
+ console.log('Reorientation requests preserve current holding version and disabled gate.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

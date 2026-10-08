@@ -11,6 +11,8 @@ import numpy as np
 from grasp_geometry import transform, controller_pose, pose_values, minimum_table_clearance
 from object_catalog import select_object
 from motion_validation import check_waypoints as endpoint_reachability
+from pose_symmetry import object_bounds, orientation_variants
+from rotation_steps import checked_step,interpolate,fractions
 
 
 @lru_cache(maxsize=8)
@@ -30,7 +32,8 @@ def model_geometry(models_root, object_id):
     item = select_object(models_root, object_id)
     path = Path(item['mesh']);stat = path.stat()
     return {**_mesh_geometry(str(path), stat.st_mtime_ns, stat.st_size),
-            'object_id': item['id'], 'object_name': item['name'], 'units': 'metres'}
+            'object_id': item['id'], 'object_name': item['name'], 'units': 'metres',
+            'pose_mode': item.get('pose_mode', '6d'), 'pose_mode_revision': item.get('pose_mode_revision')}
 
 
 def checked_rotation(value):
@@ -39,6 +42,17 @@ def checked_rotation(value):
         raise ValueError('目标朝向必须为 3×3 旋转矩阵')
     matrix = np.eye(4);matrix[:3, :3] = rotation
     return transform(matrix)[:3, :3]
+
+
+def rotation_from_rpy_deg(value):
+    """Absolute base-frame object orientation, Rz(z) @ Ry(y) @ Rx(x)."""
+    if not isinstance(value, list) or len(value) != 3 or any(
+            type(v) not in (int, float) or not np.isfinite(v) or not -180 <= v <= 180 for v in value):
+        raise ValueError('target_rpy_deg 必须为三个有限角度，每项在 -180 到 180 度之间')
+    x, y, z = np.deg2rad(value)
+    cx, cy, cz = np.cos([x, y, z]);sx, sy, sz = np.sin([x, y, z])
+    return checked_rotation([[cz*cy, cz*sy*sx-sz*cx, cz*sy*cx+sz*sx],
+        [sz*cy, sz*sy*sx+cz*cx, sz*sy*cx-cz*sx], [-sy, cy*sx, cy*cx]])
 
 
 def reorientation_settings(value):
@@ -66,15 +80,15 @@ def validate_object_pose(tcp, held, vertices, config, adaptive):
     if points.ndim!=2 or points.shape[1]!=3 or not len(points) or not np.isfinite(points).all():
         raise ValueError('物品模型顶点无效')
     obj=tcp@np.linalg.inv(attachment)
-    world=points@obj[:3,:3].T+obj[:3,3]
+    lower, upper = object_bounds(obj, points, held.get('pose_mode', '6d'))
     if not adaptive:
         low,high=np.asarray(config['workspace_min_m']),np.asarray(config['workspace_max_m'])
         xyz=tcp[:3,3]
         if np.any(xyz<low) or np.any(xyz>high) or xyz[2]<config['table_z_m']+minimum_table_clearance(config):
             raise ValueError('固定模式工具端点超出工作区或离桌距离不足')
-        if np.any(world<low-1e-8) or np.any(world>high+1e-8):
+        if np.any(lower<low-1e-8) or np.any(upper>high+1e-8):
             raise ValueError('固定模式物品端点超出工作区')
-    if world[:,2].min()<config['table_z_m']-1e-6:
+    if lower[2]<config['table_z_m']-1e-6:
         raise ValueError('物品模型在端点碰到桌面')
 
 
@@ -85,14 +99,21 @@ def reorientation_waypoints(held, vertices, rotation, current_raw, config, setti
         raise ValueError('自适应姿态的最终末端高度必须高于桌面 10 厘米')
     validate_object_pose(current,held,vertices,config,adaptive)
     validate_object_pose(target_tcp,held,vertices,config,adaptive)
-    target=pose_waypoint('reorient',target_tcp);target['controller_pose'][:3]=list(current_raw[:3])
+    step=checked_step(settings.get('max_rotation_step_deg',15.));waypoints=[]
+    parts=fractions(current[:3,:3],target_tcp[:3,:3],step)
+    if len(parts)>64:raise ValueError('调姿方案超过64段，请增大步长或拆分明确的目标')
+    for index,fraction in enumerate(parts,1):
+        pose=current.copy();pose[:3,:3]=interpolate(current[:3,:3],target_tcp[:3,:3],fraction)
+        validate_object_pose(pose,held,vertices,config,adaptive)
+        target=pose_waypoint('reorient' if len(parts)==1 else f'reorient_{index}',pose)
+        target['controller_pose'][:3]=list(current_raw[:3]);target['method']='joint_pose';waypoints.append(target)
     angle=np.arccos(np.clip((np.trace(current[:3,:3].T@target_tcp[:3,:3])-1)/2,-1,1))
     return {'base_T_object_target':(target_tcp@np.linalg.inv(attachment)).tolist(),
             'object_T_tcp':attachment.tolist(),'fixed_tcp_position_m':current[:3,3].tolist(),
             'fixed_tcp_position_raw':list(current_raw[:3]),'current_arm':{'pose':list(current_raw)},
-            'rotation_angle_deg':float(np.rad2deg(angle)),'waypoints':[target],
+            'rotation_angle_deg':float(np.rad2deg(angle)),'waypoints':waypoints,'max_rotation_step_deg':step,
             'tcp_position_fixed':True,'position_constraint_scope':'endpoints_only',
-            'motion_command':'movej_p','gripper_action':'keep_holding'}
+            'motion_command':'movej_verified_joint_solutions','gripper_action':'keep_holding'}
 
 
 def checked_position_request(mode):
@@ -163,18 +184,21 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
     # Include feedback tolerance and one controller position unit so final measured Z can be strictly above 10 cm.
     minimum_z=np.ceil((table+.10+settings['position_tolerance_m']+1e-6)*1e6)/1e6
     offsets=position_offsets(current[:3,3],minimum_z,settings['search_step_m']) if position_mode=='adaptive' else [np.zeros(3)]
-    for offset in offsets:
+    rotations = orientation_variants(rotation, held, current)
+    single_fixed = position_mode == 'fixed' and held.get('pose_mode', '6d') != '5d'
+    for offset, candidate_rotation in ((offset, candidate) for offset in offsets for candidate in rotations):
         cancelled()
         if time.monotonic()>=deadline:
             raise TimeoutError('姿态位置搜索达到时间预算，未找到可执行方案，未发送运动')
         attempted+=1
-        attempt={'candidate_index':attempted,'offset_m':offset.tolist()};attempts.append(attempt)
+        attempt={'candidate_index':attempted,'offset_m':offset.tolist(),
+                 'candidate_rotation':candidate_rotation.tolist()};attempts.append(attempt)
         if len(attempts)>128:del attempts[64]  # Keep the first and latest 64 diagnostics, regardless of search duration.
         try:
-            plan=adaptive_candidate(held,vertices,rotation,arm,config,settings,offset,adaptive=position_mode=='adaptive')
+            plan=adaptive_candidate(held,vertices,candidate_rotation,arm,config,settings,offset,adaptive=position_mode=='adaptive')
         except ValueError as error:
             attempt['reason']=str(error)
-            if position_mode=='fixed':raise
+            if single_fixed:raise
             continue
         remaining=deadline-time.monotonic()
         if remaining<=0:raise TimeoutError('姿态位置搜索达到时间预算，未找到可执行方案，未发送运动')
@@ -183,7 +207,7 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
         except subprocess.TimeoutExpired:
             attempt['reason']='单个候选逆解检查超时'
             cancelled()
-            if position_mode=='fixed':raise TimeoutError('原地姿态检查超时，未发送运动')
+            if single_fixed:raise TimeoutError('原地姿态检查超时，未发送运动')
             continue
         cancelled()
         if time.monotonic()>deadline:raise TimeoutError('姿态位置搜索达到时间预算，未找到可执行方案，未发送运动')
@@ -192,6 +216,9 @@ def plan_reorientation(held, vertices, rotation, arm, config, settings, reachabl
                        reason=None if valid else detail.get('reason',str(detail)[-700:]))
         if valid:
             plan.update(reachability_check=detail,current_arm=arm,position_mode=position_mode,
+                        pose_mode=held.get('pose_mode','6d'),
+                        requested_axis_z=np.asarray(rotation)[:,2].tolist(),
+                        orientation_goal='object_z_axis' if held.get('pose_mode')=='5d' else 'full_rotation',
                         search_attempts=attempts,search_attempt_count=attempted,search_attempts_truncated=attempted>len(attempts),
                         validation='endpoints_ik_fk_only_controller_joint_path_not_checked',intermediate_path_checked=False)
             return plan

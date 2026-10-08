@@ -70,8 +70,10 @@ class AdaptiveGraspTests(unittest.TestCase):
             robot=Mock()
             robot.query.side_effect=lambda q: raw if q=='get_current_tool_frame' else {'frame_name':'Base','pose':[0]*6}
             with patch('grasp_control.RobotClient',return_value=robot) as client, patch.object(service,'paired_observation',return_value=(arm,observation)), patch.object(service,'calibration',return_value=(handeye,tool)):
-                result=service.teach(True)
+                result=service.teach(True, gripper_parameters={'force_target_raw':10,'open_position':1000}, expected_object_id='cup')
                 self.assertFalse(result['motion_sent'])
+                self.assertEqual(result['gripper_parameters'],{'force_target_raw':10,'open_position':1000})
+                self.assertEqual(service.grasp_library().object('cup')['grasps'][0]['overrides'],result['gripper_parameters'])
                 client.assert_called_once_with('test',8080,writes=False)
                 np.testing.assert_allclose(result['profile']['grasp_point_object_m'],[-.1,0,0])
                 robot.move_linear.assert_not_called();robot.move_gripper.assert_not_called();robot.set_register.assert_not_called()

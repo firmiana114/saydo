@@ -22,10 +22,17 @@ import cv2
 import numpy as np
 
 from live_checks import checked_box, pose_health, bottle_candidates, recovery_due, catchup_frame
-from object_catalog import scan_objects, select_object, inferred_class
+from object_catalog import scan_objects, select_object, inferred_class, save_pose_mode, save_detection_prompt
+from llm_detection import LLMBoxDetector, DetectionCancelled, MODEL, EFFORT, MAX_FRAME_AGE_S
+from local_grounding import LocalGroundingDetector
+from local_qwen import LocalQwenDetector
+from pose_symmetry import canonical_pose, object_rotation_error, pose_fields
 from grasp_control import GraspController
 from live_events import EventLog
 from camera_checks import select_camera
+from agent_api import AgentAPI, AgentError
+from task_runner_proxy import TaskRunnerProxy
+from codex_terminal_proxy import CodexTerminalProxy
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,11 +45,15 @@ class Tracker:
             {'id': None, 'name': args.mesh.parent.name, 'mesh': str(args.mesh), 'detector_class': inferred_class(str(args.mesh))})
         if getattr(args, 'detector_class', None):
             self.object_info['detector_class'] = args.detector_class
+        self.detector_backend = getattr(args, 'detector', 'qwen')
+        self.llm_detector = LLMBoxDetector() if self.detector_backend == 'llm' else None
+        self.local_detector = LocalQwenDetector(ROOT) if self.detector_backend=='qwen' else LocalGroundingDetector(ROOT)
+        self.scene_job = None
         self.pending_object = None
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.latest = self.frozen = self.command = None
-        self.history = deque(maxlen=180)  # 12 s at 15 FPS, bounded RGB-D memory.
+        self.history = deque(maxlen=300 if self.llm_detector else 180)  # LLM: sampled RGB-D buffer, bounded to about 484 MB.
         self.pose_history = deque(maxlen=60)
         self.jpeg = None
         self.generation = 0
@@ -58,7 +69,11 @@ class Tracker:
         self.last_heartbeat = 0.
         self.state['output'] = str(self.output)
         self.state.update(model_sha256=hashlib.sha256(args.mesh.read_bytes()).hexdigest(), object_id=self.object_info['id'], object_name=self.object_info['name'],
-                          detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.object_info['detector_class']))
+                          pose_mode=self.object_info.get('pose_mode', '6d'), pose_mode_revision=self.object_info.get('pose_mode_revision'),
+                          detector_class=self.object_info['detector_class'], auto_detection_supported=bool(self.llm_detector or self.object_info.get(self.local_detector.settings_key) or self.object_info['detector_class']),
+                          detector_backend=self.detector_backend, local_detector_name=self.local_detector.name if not self.llm_detector and self.object_info.get(self.local_detector.settings_key) else None, detection_model=MODEL if self.llm_detector else None,
+                          detection_effort=EFFORT if self.llm_detector else None,
+                          effective_detection_prompt=self.object_info.get('effective_detection_prompt', self.object_info['name']))
         self.grasp = GraspController(ROOT, self, getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'), getattr(args, 'grasp_mode', 'execute'))
         if getattr(args, 'resume_reorientation_report', None):
             self.grasp.restore_reorientation_report(args.resume_reorientation_report)
@@ -68,7 +83,7 @@ class Tracker:
              'robot_commands': False, 'pose_frame': 'color optical camera; translation metres',
              'quality_gate': 'heuristic only; transparent surface depth and model dimensions unvalidated'}, indent=2))
         self.event('session_started', history_frames=self.history.maxlen,
-                   catchup_max_step_s=.3, catchup_max_budget_s=12., catchup_target_age_s=.25)
+                   catchup_max_step_s=.3, catchup_max_budget_s=30. if self.llm_detector else 12., catchup_target_age_s=.25)
 
     def event(self, event, **values):
         return self.events.write(event, **{'generation': self.generation,
@@ -140,7 +155,8 @@ class Tracker:
                          'alignment_seconds': time.perf_counter() - align_started}
                 with self.lock:
                     self.latest = frame
-                    self.history.append(frame)
+                    if not self.llm_detector or not self.history or frame['time']-self.history[-1]['time'] >= .1:
+                        self.history.append(frame)
                     self.state['sequence'] = sequence
                     self.state['camera'] = camera
                     self.state['camera_frame_at'] = frame['time']
@@ -154,6 +170,21 @@ class Tracker:
         finally:
             if started:
                 pipe.stop()
+
+    def localize_frozen_scene(self, frame, targets, check, progress):
+        done=threading.Event();cancel=threading.Event();job={'done':done,'cancel':cancel,'frame':frame,'targets':targets,'progress':progress}
+        with self.lock:
+            if self.scene_job is not None:raise ValueError('已有场景采集请求')
+            self.scene_job=job
+        error=None
+        while not done.wait(.1):
+            try:check()
+            except Exception as failure:error=error or failure;cancel.set()
+            if self.stop.is_set():raise ValueError('视觉服务已停止')
+        if error:raise error
+        check()
+        if 'error' in job:raise ValueError(job['error'])
+        return job['result']
 
     def freeze(self):
         with self.lock:
@@ -185,15 +216,18 @@ class Tracker:
                 raise ValueError('该物品没有可用的自动检测类别，请使用手动框选')
             self.freeze()
             self.command = (self.generation, self.frozen, None)
-            self.state.update(state='detecting', bottle_candidates=[], error=None)
+            self.state.update(state='detecting', bottle_candidates=[], error=None, detection_started_at=time.time(), detection_seconds=None)
+            if not recovery:self.state['recovery_attempts'] = 0
             if recovery:
                 self.state['recovery_attempts'] += 1
 
     def mark_lost(self, error):
         with self.lock:
             self.event('tracking_lost', error=error)
-            self.retry_at = time.monotonic() + self.args.recovery_interval
-            self.state.update(state='recovering' if self.args.auto_recover and self.state.get('auto_detection_supported') else 'lost',
+            self.retry_at = time.monotonic() + max(self.args.recovery_interval, 5. if self.llm_detector else 0.)
+            exhausted = bool(self.llm_detector and self.state['recovery_attempts'] >= 2)
+            if exhausted:error += '；自动识别重试已达2次，请修改提示词或手动重新识别'
+            self.state.update(state='recovering' if self.args.auto_recover and self.state.get('auto_detection_supported') and not exhausted else 'lost',
                               error=error, camera_T_object=None)
 
     def recover_if_due(self):
@@ -211,6 +245,8 @@ class Tracker:
         with self.lock:
             if self.state['state'] != 'choose_candidate' or value['selection_id'] != self.generation:
                 raise ValueError('候选画面已失效，请重新识别')
+            if self.llm_detector and time.time()-self.frozen['time'] > MAX_FRAME_AGE_S:
+                raise ValueError('候选画面已超过30秒，请重新识别')
             index = value['index']
             candidates = self.state['bottle_candidates']
             if not isinstance(index, int) or not 0 <= index < len(candidates):
@@ -246,6 +282,44 @@ class Tracker:
                               pending_object_name=info['name'], quality={}, bottle_candidates=[], pose_frame_at=None,
                               model_extents_m=None, auto_detection_supported=False)
 
+    def set_detection_prompt(self, value):
+        if not isinstance(value, dict) or set(value) != {'id', 'prompt', 'revision'}:
+            raise ValueError('请提交物品、识别提示词和当前版本')
+        with self.lock, self.grasp.lock:
+            if self.grasp.status['busy'] or self.grasp.status.get('stopping'):
+                raise ValueError('任务进行中，请结束任务后修改识别提示词')
+            if self.state['state'] == 'switching':
+                raise ValueError('模型正在切换，请加载完成后再保存')
+            row = save_detection_prompt(self.models_root, value['id'], value['prompt'], value['revision'])
+            if self.state.get('object_id') == row['id']:
+                self.object_info.update(row)
+                self.state['effective_detection_prompt'] = row['effective_detection_prompt']
+                if self.state['state'] not in ('tracking', 'paused', 'ready', 'loading'):
+                    self.generation += 1
+                    self.command = self.frozen = self.jpeg = None
+                    self.pose_history.clear()
+                    self.state.update(state='ready', camera_T_object=None, bottle_candidates=[],
+                                      error='提示词已更新，请重新识别')
+            self.event('detection_prompt_changed', object_id=row['id'], revision=row['detection_prompt_revision'])
+            return {'object': row, 'motion_sent': False}
+
+    def set_pose_mode(self, value):
+        if not isinstance(value, dict) or set(value) != {'id', 'pose_mode', 'revision'}:
+            raise ValueError('请提交物品、位姿模式和当前模型设置版本')
+        with self.lock, self.grasp.lock:
+            if self.grasp.status['busy'] or self.grasp.status.get('stopping') or self.grasp.held_object is not None:
+                raise ValueError('任务进行中或仍持有物品，不能改变位姿模式')
+            directory = self.grasp.root/'work/grasp';directory.mkdir(parents=True, exist_ok=True)
+            with (directory/'robot.lock').open('a') as device_lock:
+                fcntl.flock(device_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                row = save_pose_mode(self.models_root, value['id'], value['pose_mode'], value['revision'])
+                self.grasp.status.update(plan=None, reorientation_plan=None, placement_plan=None,
+                                         grasp_library_changed_at=time.time())
+                if self.state.get('object_id') == row['id']:
+                    self.switch_object(row['id'])
+                self.event('pose_mode_changed', object_id=row['id'], pose_mode=row['pose_mode'])
+                return {'object': row, 'motion_sent': False}
+
     def snapshot(self):
         with self.lock:
             result = dict(self.state)
@@ -254,6 +328,7 @@ class Tracker:
             result['pose_age_s'] = now - result['pose_frame_at'] if result.get('pose_frame_at') is not None else None
             if result['state'] != 'tracking' or result['pose_age_s'] is None or result['pose_age_s'] > 2 or not result.get('quality', {}).get('good'):
                 result['camera_T_object'] = None
+                result['pose_semantics'] = None
             result['grasp'] = self.grasp.snapshot()
             return result
 
@@ -271,11 +346,13 @@ class Tracker:
             if np.max(np.linalg.norm(points - points[-1], axis=1)) > .005:
                 raise ValueError('目标位姿仍在变化，请先保持静止')
             rotations = np.array([r['pose'] for r in rows])[:, :3, :3]
-            angles = np.arccos(np.clip((np.einsum('nij,ij->n', rotations, rotations[-1]) - 1) / 2, -1, 1))
+            mode = s.get('pose_mode', '6d')
+            angles = [object_rotation_error(rotation, rotations[-1], mode) for rotation in rotations]
             if np.max(angles) > np.deg2rad(15):
                 raise ValueError('目标朝向不稳定，请等待稳定跟踪')
             return {'pose': s['camera_T_object'], 'time': s['pose_frame_at'], 'generation': self.generation,
                     'object_id': s.get('object_id'), 'object_name': s.get('object_name'), 'K': s.get('pose_K'),
+                    'pose_mode': mode, 'pose_mode_revision': s.get('pose_mode_revision'),
                     'model_sha256': s.get('model_sha256'), 'camera': s.get('pose_camera')}
 
     def image(self):
@@ -316,7 +393,7 @@ class Tracker:
                 return None
             self.state.update(state='catching_up', camera_T_object=None)
         initial_age = max(0., time.time() - frame['time'])
-        budget = min(12., max(3., initial_age * 2 + 1))
+        budget = min(30. if self.llm_detector else 12., max(3., initial_age * 2 + 1))
         self.event('catchup_started', generation=generation, initial_age_s=initial_age, budget_s=budget)
         while True:
             with self.lock:
@@ -359,6 +436,7 @@ class Tracker:
             from estimater import FoundationPose
             from learning.training.predict_score import ScorePredictor
             from learning.training.predict_pose_refine import PoseRefinePredictor
+            from batched_refiner import BatchedRefiner,batch_score_features,AutocastSam
             from segment_anything import SamPredictor, sam_model_registry
             from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
             from Utils import draw_posed_3d_box, draw_xyz_axis, project_3d_to_2d, nvdiffrast_render
@@ -368,19 +446,25 @@ class Tracker:
             origin, extents = trimesh.bounds.oriented_bounds(mesh)
             bbox = np.stack([-extents / 2, extents / 2])
             context = dr.RasterizeCudaContext()
+            refiner=PoseRefinePredictor()
+            scorer=ScorePredictor()
+            if self.detector_backend=='qwen':refiner=BatchedRefiner(refiner);scorer=batch_score_features(scorer)
             estimator = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
-                scorer=ScorePredictor(), refiner=PoseRefinePredictor(), debug_dir=str(self.output), debug=0, glctx=context)
+                scorer=scorer, refiner=refiner, debug_dir=str(self.output), debug=0, glctx=context)
             sam = SamPredictor(sam_model_registry['vit_b'](checkpoint=str(ROOT / 'work/foundationpose_setup/sam_vit_b_01ec64.pth')).to('cuda'))
+            if self.detector_backend=='qwen':sam=AutocastSam(sam)
             torch.hub.set_dir(str(ROOT / 'work/foundationpose_setup/torch_hub'))
             detector_weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
-            detector = ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
+            detector = None if self.llm_detector or self.detector_backend=='qwen' else ssdlite320_mobilenet_v3_large(weights=detector_weights).eval().cuda()
+            local_settings = self.object_info.get(self.local_detector.settings_key) if not self.llm_detector else None
+            if local_settings or self.detector_backend=='qwen':self.local_detector.ensure_loaded()
             detector_class = self.object_info['detector_class']
-            detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
+            detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] and detector is not None else None
             logging.getLogger().setLevel(logging.WARNING)
             with self.lock:
                 if self.stop.is_set():
                     return
-                self.state.update(state='ready', model_ready=True, model_extents_m=mesh.extents.tolist(), auto_detection_supported=detector_label is not None)
+                self.state.update(state='ready', model_ready=True, local_detector_runtime=getattr(self.local_detector,'ready',None), model_extents_m=mesh.extents.tolist(), auto_detection_supported=bool(self.llm_detector or local_settings or detector_label is not None))
             previous = None
             last_sequence = -1
             failures = 0
@@ -406,14 +490,19 @@ class Tracker:
                                 mesh, origin, bbox = next_mesh, next_origin, np.stack([-next_extents / 2, next_extents / 2])
                                 estimator = next_estimator
                                 self.object_info = info
+                                local_settings = info.get(self.local_detector.settings_key) if not self.llm_detector else None
+                                if local_settings or self.detector_backend=='qwen':self.local_detector.ensure_loaded()
                                 detector_class = info['detector_class']
-                                detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] else None
+                                detector_label = detector_weights.meta['categories'].index(detector_class) if detector_class in detector_weights.meta['categories'] and detector is not None else None
                                 self.state.update(state='ready', model_ready=True, model_sha256=hashlib.sha256(Path(info['mesh']).read_bytes()).hexdigest(), model=info['mesh'], object_id=info['id'],
+                                    pose_mode=info.get('pose_mode', '6d'), pose_mode_revision=info.get('pose_mode_revision'),
                                     object_name=info['name'], pending_object_name=None, detector_class=detector_class,
-                                    auto_detection_supported=detector_label is not None, model_extents_m=mesh.extents.tolist(),
+                                    auto_detection_supported=bool(self.llm_detector or local_settings or detector_label is not None), model_extents_m=mesh.extents.tolist(),
                                     initialization_seconds=None, catchup_seconds=None, catchup_frames=0,
                                     tracked_frames=0, registered_frames=0, recovery_attempts=0,
-                                    auto_recover=self.args.auto_recover and detector_label is not None)
+                                    auto_recover=self.args.auto_recover and bool(self.llm_detector or local_settings or detector_label is not None),
+                                    local_detector_name=self.local_detector.name if local_settings else None,
+                                    effective_detection_prompt=info.get('effective_detection_prompt', info['name']))
                                 previous, last_sequence, failures = None, -1, 0
                                 auto_attempted = not self.args.auto_start
                                 event = {'event': 'object_switched', 'at': time.time(), 'generation': switch_generation,
@@ -429,6 +518,21 @@ class Tracker:
                                     self.state.update(state='model_error', error=str(error), model_ready=False, camera_T_object=None)
                             traceback.print_exc()
                         continue
+                    with self.lock:
+                        scene_job=self.scene_job;self.scene_job=None
+                    if scene_job is not None:
+                        try:
+                            from scene_perception import localize_scene
+                            def scene_check():
+                                if scene_job['cancel'].is_set() or self.stop.is_set():raise ValueError('场景采集已取消')
+                            scene_job['result']=localize_scene(scene_job['frame'],scene_job['targets'],self.models_root,
+                                estimator,sam,context,self.llm_detector,scene_check,scene_job['progress'],self.local_detector)
+                        except Exception as error:scene_job['error']=str(error);traceback.print_exc()
+                        finally:scene_job['done'].set()
+                        # Do not resume an old live pose after spending time on scene inference.
+                        previous=None;last_sequence=-1
+                        with self.lock:self.state.update(state='paused',camera_T_object=None)
+                        continue
                     if self.recover_if_due():
                         continue
                     with self.lock:
@@ -438,7 +542,7 @@ class Tracker:
                         generation = self.generation
                         frame = self.latest
                         startup_ready = self.state['state'] == 'ready'
-                    if self.args.auto_start and detector_label is not None and not auto_attempted and frame is not None and startup_ready:
+                    if self.args.auto_start and (self.llm_detector or local_settings or detector_label is not None) and not auto_attempted and frame is not None and startup_ready:
                         self.automatic()
                         auto_attempted = True
                         continue
@@ -470,9 +574,20 @@ class Tracker:
                             if command:
                                 if box is None:
                                     stage_started = time.perf_counter()
-                                    prediction = predict_detection(detector, rgb)
-                                    candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
-                                        prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), detector_label)
+                                    if self.llm_detector:
+                                        with self.lock:
+                                            prompt = self.object_info.get('effective_detection_prompt', self.object_info['name'])
+                                        candidates = self.llm_detector.detect(frame, prompt,
+                                            lambda: self.stop.is_set() or generation != self.generation)
+                                    elif local_settings:
+                                        candidates = self.local_detector.detect(frame, local_settings,
+                                            lambda: self.stop.is_set() or generation != self.generation)
+                                    elif detector is not None:
+                                        prediction = predict_detection(detector, rgb)
+                                        candidates = bottle_candidates(prediction['boxes'].detach().cpu().numpy(),
+                                            prediction['labels'].detach().cpu().numpy(), prediction['scores'].detach().cpu().numpy(), detector_label)
+                                    else:
+                                        raise ValueError('当前物品没有Qwen检测配置，请手动框选')
                                     timings['detection_s'] = time.perf_counter() - stage_started
                                     self.event('detection_completed', generation=generation, candidates=candidates,
                                                seconds=timings['detection_s'])
@@ -482,12 +597,18 @@ class Tracker:
                                         if generation != self.generation:
                                             continue
                                         self.state['bottle_candidates'] = candidates
-                                        self.state['detection_method'] = f'Torchvision SSDLite COCO {detector_class} -> SAM -> FoundationPose'
+                                        self.state['detection_seconds'] = timings['detection_s']
+                                        self.state['local_detector_runtime'] = getattr(self.local_detector,'ready',None)
+                                        self.state['detection_method'] = f'{MODEL}/{EFFORT} -> SAM -> FoundationPose' if self.llm_detector else (self.local_detector.name+' -> SAM -> FoundationPose' if local_settings else f'Torchvision SSDLite COCO {detector_class} -> SAM -> FoundationPose')
                                         if len(candidates) > 1:
                                             self.state.update(state='choose_candidate', error=None)
                                             continue
                                         self.state['state'] = 'initializing'
                                     box = candidates[0]['box']
+                                if generation != self.generation or self.stop.is_set():
+                                    raise DetectionCancelled()
+                                if self.llm_detector and time.time()-frame['time'] > MAX_FRAME_AGE_S:
+                                    raise ValueError('识别帧已超过30秒，请重新识别')
                                 stage = 'segmentation'
                                 stage_started = time.perf_counter()
                                 sam.set_image(rgb)
@@ -555,7 +676,9 @@ class Tracker:
                         duration = time.perf_counter() - started
                         failures = 0 if quality['good'] else failures + 1
                         lost = not quality['good'] and (bool(command) or failures >= 3)
-                        overlay = draw_posed_3d_box(frame['K'], img=rgb.copy(), ob_in_cam=pose @ np.linalg.inv(origin), bbox=bbox)
+                        pose_mode = self.state.get('pose_mode', '6d')
+                        overlay = (rgb.copy() if pose_mode=='5d' else
+                                   draw_posed_3d_box(frame['K'], img=rgb.copy(), ob_in_cam=pose @ np.linalg.inv(origin), bbox=bbox))
                         visible = rendered > 0
                         overlay[visible] = (.75 * overlay[visible] + .25 * np.array([0, 200, 255])).astype(np.uint8)
                         axis_points = np.vstack([np.zeros(3), np.eye(3) * .05])
@@ -563,8 +686,15 @@ class Tracker:
                         if quality['good'] and np.all(axis_depths > .001):
                             # Draw the actual mesh frame returned as camera_T_object,
                             # not the separately rotated oriented-bounding-box frame.
-                            overlay = draw_xyz_axis(overlay, ob_in_cam=pose, scale=.05, K=frame['K'], thickness=3, is_input_rgb=True)
+                            if pose_mode=='5d':
+                                start = project_3d_to_2d(np.array([0.,0.,0.,1.]), frame['K'], pose)
+                                end = project_3d_to_2d(np.array([0.,0.,.05,1.]), frame['K'], pose)
+                                cv2.line(overlay, tuple(map(int,start)), tuple(map(int,end)), (0,100,255), 3)
+                            else:
+                                overlay = draw_xyz_axis(overlay, ob_in_cam=pose, scale=.05, K=frame['K'], thickness=3, is_input_rgb=True)
                             for axis, name, color in [(0, 'X', (255, 0, 0)), (1, 'Y', (0, 255, 0)), (2, 'Z', (0, 100, 255))]:
+                                if pose_mode=='5d' and axis!=2:
+                                    continue
                                 endpoint = np.array([0., 0., 0., 1.])
                                 endpoint[axis] = .05
                                 u, v = project_3d_to_2d(endpoint, frame['K'], pose)
@@ -578,7 +708,10 @@ class Tracker:
                         with self.lock:
                             if generation != self.generation:
                                 continue
-                            self.state.update(state='lost' if lost else 'tracking', camera_T_object=pose.tolist() if quality['good'] else None,
+                            mode = self.state.get('pose_mode', '6d')
+                            published = canonical_pose(pose, mode)
+                            self.state.update(state='lost' if lost else 'tracking', camera_T_object=published.tolist() if quality['good'] else None,
+                                pose_semantics=pose_fields(published, mode),
                                 quality=quality, inference_seconds=duration, pose_frame_at=frame['time'],
                                 pose_sequence=frame['sequence'], pose_K=frame['K'].tolist(), pose_camera=frame.get('camera'), error=None)
                             if command:
@@ -586,7 +719,7 @@ class Tracker:
                                                   catchup_seconds=catchup_seconds)
                             self.state['registered_frames' if command else 'tracked_frames'] += 1
                             if quality['good'] and not lost:
-                                self.pose_history.append({'pose': pose.tolist(), 'time': frame['time'], 'generation': generation})
+                                self.pose_history.append({'pose': published.tolist(), 'time': frame['time'], 'generation': generation})
                             if lost:
                                 self.mark_lost('深度或位姿匹配不可靠，等待重新识别')
                             self.frozen = None
@@ -609,6 +742,8 @@ class Tracker:
                             self.last_heartbeat = time.monotonic()
                         previous = np.asarray(pose).copy()
                         last_sequence = frame['sequence']
+                    except DetectionCancelled:
+                        continue
                     except Exception as error:
                         failure = self.event('attempt_failed' if command else 'frame_failed',
                             generation=generation, object_id=attempt_object_id, stage=stage,
@@ -634,12 +769,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mesh', type=Path, default=ROOT / 'work/object_models/ob_yibao_350ml/model/model.obj')
     parser.add_argument('--models-root', type=Path, default=ROOT / 'work/object_models')
+    parser.add_argument('--detector', choices=('llm', 'ssdlite', 'qwen'), default='qwen', help='Bounding-box detector: resident Qwen NF4 (default), remote llm, or per-object local/SSDLite')
     parser.add_argument('--detector-class', help='Override initial model COCO class; unknown classes use manual initialization')
     parser.add_argument('--grasp-mode', choices=['preview', 'execute'], default='execute', help='Default execute: the grasp button may send motion after all checks; preview explicitly disables robot writes')
     parser.add_argument('--grasp-config', type=Path, default=ROOT / 'config/grasp/trial.json')
     parser.add_argument('--resume-reorientation-report', type=Path,
                         help='One-use read-only recovery of the latest failed reorientation; operator must confirm the same grasp was never released or moved')
     parser.add_argument('--serial', help='Select a camera by serial; default: the only connected D435I')
+    parser.add_argument('--agent-token-file', type=Path,
+                        help='Enable authenticated Agent routes using an owner-only bearer token file')
     parser.add_argument('--port', type=int, default=8089)
     parser.add_argument('--host', default='127.0.0.1', help='HTTP bind address; use the MSI LAN IP for direct LAN access')
     parser.add_argument('--auto-start', action='store_true', help='Detect a bottle and initialize once after camera/model startup')
@@ -666,6 +804,9 @@ def main():
     except OSError:
         pass
     tracker = Tracker(args)
+    agent_api = AgentAPI(tracker, args.agent_token_file) if args.agent_token_file else None
+    task_runner = TaskRunnerProxy()
+    codex_terminal = CodexTerminalProxy()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *unused):
@@ -677,6 +818,9 @@ def main():
             self.send_response(status)
             self.send_header('Content-Type', mime)
             self.send_header('Cache-Control', 'no-store')
+            if self.path.startswith(('/task-runner/', '/codex-terminal/')):
+                self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'")
+                self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             try:
@@ -686,6 +830,32 @@ def main():
 
         def do_GET(self):
             path = self.path.split('?')[0]
+            if codex_terminal.matches(self.path):
+                try:
+                    self.reply(*codex_terminal.request('GET', self.path, authorization=self.headers.get('Authorization')))
+                except ValueError as error:
+                    self.reply(400, {'error': str(error)})
+                return
+            if task_runner.matches(self.path):
+                try:
+                    self.reply(*task_runner.request('GET', self.path))
+                except ValueError as error:
+                    self.reply(400, {'error': str(error)})
+                return
+            if path.startswith('/api/agent/'):
+                if agent_api is None:
+                    self.reply(404, {'error': {'code': 'AGENT_DISABLED', 'message': 'Agent 接口未启用'}})
+                elif not agent_api.authorized(self.headers.get('Authorization')):
+                    self.reply(401, {'error': {'code': 'UNAUTHORIZED', 'message': 'Agent 认证失败'}})
+                else:
+                    try:
+                        params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                        self.reply(200, agent_api.get(path, params))
+                    except AgentError as error:
+                        self.reply(400, {'error': error.payload})
+                    except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
+                        self.reply(400, {'error': {'code': 'READ_FAILED', 'message': str(error)}})
+                return
             if path == '/':
                 self.reply(200, Path(__file__).with_name('live_tracker.html').read_bytes(), 'text/html; charset=utf-8')
             elif path == '/reorientation_viewer.js':
@@ -700,6 +870,10 @@ def main():
                     self.reply(400, {'error':str(error)})
             elif path == '/grasp_editor.js':
                 self.reply(200, Path(__file__).with_name('grasp_editor.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/teach_grasp_panel.js':
+                self.reply(200, Path(__file__).with_name('teach_grasp_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
+            elif path == '/arm_speed_panel.js':
+                self.reply(200, Path(__file__).with_name('arm_speed_panel.js').read_bytes(), 'application/javascript; charset=utf-8')
             elif path in ('/api/grasp/profiles', '/api/grasp/editor-model'):
                 try:
                     params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -745,20 +919,46 @@ def main():
                 self.reply(404, {'error': 'not found'})
 
         def do_POST(self):
+            if self.path.startswith('/api/agent/'):
+                if agent_api is None:
+                    self.reply(404, {'error': {'code': 'AGENT_DISABLED', 'message': 'Agent 接口未启用'}})
+                    return
+                if not agent_api.authorized(self.headers.get('Authorization')):
+                    self.reply(401, {'error': {'code': 'UNAUTHORIZED', 'message': 'Agent 认证失败'}})
+                    return
             origin = self.headers.get('Origin')
             if origin and origin != 'http://' + self.headers.get('Host', ''):
                 self.reply(403, {'error': 'origin mismatch'})
                 return
             try:
                 size = int(self.headers.get('Content-Length', 0))
-                if not 0 <= size <= 4096:
+                task_request = task_runner.matches(self.path)
+                terminal_request = codex_terminal.matches(self.path)
+                if (task_request or terminal_request) and self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    raise ValueError('Task requests require application/json')
+                if not 0 <= size <= (26000 if terminal_request else 20000 if task_request or self.path == '/api/object/detection-prompt' else 4096):
                     raise ValueError('Invalid request size')
                 value = json.loads(self.rfile.read(size) or b'{}')
-                if self.path == '/api/freeze':
+                if terminal_request:
+                    self.reply(*codex_terminal.request('POST', self.path, value, self.headers.get('Authorization')))
+                    return
+                if task_request:
+                    response = task_runner.request('POST', self.path, value)
+                    if self.path == '/api/task-runs/stop' and response[0] >= 500:
+                        tracker.grasp.abort()
+                    self.reply(*response)
+                    return
+                if self.path.startswith('/api/agent/'):
+                    result = agent_api.post(self.path, value)
+                elif self.path == '/api/freeze':
                     result = tracker.freeze()
                 elif self.path == '/api/object':
                     tracker.switch_object(value['id'])
                     result = {'accepted': True}
+                elif self.path == '/api/object/detection-prompt':
+                    result = tracker.set_detection_prompt(value)
+                elif self.path == '/api/object/pose-mode':
+                    result = tracker.set_pose_mode(value)
                 elif self.path == '/api/automatic':
                     tracker.automatic()
                     result = {'accepted': True}
@@ -780,7 +980,8 @@ def main():
                 elif self.path == '/api/grasp/profiles':
                     result = tracker.grasp.edit_grasp_profiles(value)
                 elif self.path == '/api/grasp/teach':
-                    result = tracker.grasp.teach(value.get('use_current_point', False))
+                    result = tracker.grasp.teach(value.get('use_current_point', False),
+                        gripper_parameters=value.get('gripper_parameters'), expected_object_id=value.get('object_id'))
                 elif self.path == '/api/gripper/status':
                     result = tracker.grasp.hardware_status()
                 elif self.path == '/api/gripper/open':
@@ -791,6 +992,10 @@ def main():
                     result = tracker.grasp.set_open_position(value['value'])
                 elif self.path == '/api/arm/reset':
                     result = tracker.grasp.start_reset()
+                elif self.path == '/api/arm/speed':
+                    if set(value) != {'value', 'revision'}:
+                        raise ValueError('请提交速度百分比和当前配置版本')
+                    result = tracker.grasp.set_arm_speed(value['value'], value['revision'])
                 elif self.path == '/api/arm/reset-zero':
                     result = tracker.grasp.start_reset('zero')
                 elif self.path == '/api/reorient/preview':
@@ -815,6 +1020,8 @@ def main():
                     self.reply(404, {'error': 'not found'})
                     return
                 self.reply(200, result)
+            except AgentError as error:
+                self.reply(400, {'error': error.payload})
             except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
                 self.reply(400, {'error': str(error)})
 
@@ -828,6 +1035,7 @@ def main():
         except Exception as error:
             print('Grasp stop failure:', error, flush=True)
         tracker.stop.set()
+        if hasattr(getattr(tracker,'local_detector',None),'close'):tracker.local_detector.close()
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
@@ -835,6 +1043,7 @@ def main():
         server.serve_forever()
     finally:
         tracker.stop.set()
+        if hasattr(getattr(tracker,'local_detector',None),'close'):tracker.local_detector.close()
         for thread in threads:
             thread.join(timeout=15)
         server.server_close()

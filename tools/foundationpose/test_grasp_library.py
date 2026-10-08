@@ -163,7 +163,7 @@ class GraspLibraryTests(unittest.TestCase):
         entries=[]
         for i,row in enumerate(data['profiles']):
             entries.append({'id':str(i),'name':row['name'],'enabled':True,'priority':0,'profile':row['profile'],
-                            'model_sha256':'mesh','tool_response':self.tool})
+                            'model_sha256':'mesh','tool_response':self.tool,'overrides':{'force_target_raw':75,'open_position':1000}})
         self.library.write_object('cup',{'selection_mode':'auto','selected_id':None,'grasps':entries},revision(self.library.object('cup')))
         config,observation,tool,handeye,_,_,report=self.candidate_args()
         config.update(ik_checker=os.environ['SAYDO_IK_CHECKER'],max_target_distance_m=1.,workspace_min_m=[-1,-1,0],

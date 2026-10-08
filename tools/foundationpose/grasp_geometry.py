@@ -56,7 +56,14 @@ def return_joint_target(config):
     return np.rint(values * 1000).astype(int).tolist()
 
 
-def plan_grasp(raw_tcp, base_object, object_profile, config):
+def checked_tcp_offset(value):
+    if (not isinstance(value, list) or len(value) != 3
+            or any(type(v) not in (int, float) or not np.isfinite(v) or abs(v) > .3 for v in value)):
+        raise ValueError('TCP偏移须为grip_tcp局部X/Y/Z三个有限数值，每轴在−300到300毫米内')
+    return [float(v) for v in value]
+
+
+def plan_grasp(raw_tcp, base_object, object_profile, config, *, grasp_reference_offset_tcp_m=None):
     current = controller_pose(raw_tcp)
     point = np.asarray(object_profile['grasp_point_object_m'], dtype=float)
     if point.shape != (3,) or not np.isfinite(point).all():
@@ -79,7 +86,11 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
     if approach.shape != (3,) or not np.isfinite(approach).all() or not np.isclose(np.linalg.norm(approach), 1):
         raise ValueError('夹爪接近方向必须是单位向量')
     approach = target_rotation @ approach
-    target = (transform(base_object) @ np.r_[point, 1])[:3]
+    reference = (transform(base_object) @ np.r_[point, 1])[:3]
+    offset = np.asarray(checked_tcp_offset([0,0,0] if grasp_reference_offset_tcp_m is None else grasp_reference_offset_tcp_m))
+    # The controller, IK, arrival checks and held-object attachment still use
+    # the configured grip_tcp origin; only the point aligned to the object shifts.
+    target = reference - target_rotation @ offset
     distance = float(np.linalg.norm(target - current[:3, 3]))
     if distance > config['max_target_distance_m']:
         raise ValueError('目标距离超过本次试抓范围')
@@ -97,6 +108,8 @@ def plan_grasp(raw_tcp, base_object, object_profile, config):
         pose = np.rint(pose_values(T) * np.array([1e6]*3 + [1e3]*3)).astype(int).tolist()
         waypoints.append({'name': name, 'position_m': xyz.tolist(), 'controller_pose': pose})
     return {'base_T_object': transform(base_object).tolist(), 'target_position_m': target.tolist(),
+            'grasp_reference_position_m': reference.tolist(), 'grasp_reference_offset_tcp_m': offset.tolist(),
+            'controller_tcp_frame': 'grip_tcp',
             'current_position_m': current[:3, 3].tolist(),
             'orientation_policy': policy, 'target_rotation': target_rotation.tolist(),
             'approach_direction_base': approach.tolist(), 'grasp_point_object_m': point.tolist(), 'waypoints': waypoints, 'target_distance_m': distance,
@@ -128,12 +141,27 @@ def workspace_blockers(plan, config):
         if p.shape != (3,) or not np.isfinite(p).all():
             reasons.append(f'{name}：位置不是有效的三个有限数值')
             continue
+        clearance = p[2] - config['table_z_m']
+        relative_to_table = (f'TCP位于桌面上方 {clearance*1000:.3f} 毫米' if clearance > 0 else
+                             f'TCP位于桌面下方 {-clearance*1000:.3f} 毫米' if clearance < 0 else
+                             'TCP与配置桌面等高')
         for i, axis in enumerate('XYZ'):
             if p[i] < low[i] or p[i] > high[i]:
-                reasons.append(f'{name}：{axis}={p[i]*1000:.3f} 毫米，超出允许范围 [{low[i]*1000:.3f}, {high[i]*1000:.3f}] 毫米')
-        clearance = p[2] - config['table_z_m']
+                below = p[i] < low[i]
+                excess = low[i]-p[i] if below else p[i]-high[i]
+                reason = (f'{name}：{axis}={p[i]*1000:.3f} 毫米，违反基座工作区{axis}限制：'
+                          f'{"低于下限" if below else "高于上限"} {excess*1000:.3f} 毫米'
+                          f'（允许范围 [{low[i]*1000:.3f}, {high[i]*1000:.3f}] 毫米）')
+                if axis == 'Z':
+                    reason += f'；{relative_to_table}（桌面基座Z={config["table_z_m"]*1000:.3f} 毫米）'
+                    if clearance >= 0:
+                        reason += '，此项失败是工作区越界，不是TCP低于桌面'
+                reasons.append(reason)
         if clearance < minimum:
-            reasons.append(f'{name}：工具参考点距配置桌面 {clearance*1000:.3f} 毫米，要求至少 {minimum*1000:.3f} 毫米，差 {(minimum-clearance)*1000:.3f} 毫米（Z={p[2]*1000:.3f}，桌面 Z={config["table_z_m"]*1000:.3f} 毫米）')
+            reasons.append(f'{name}：违反TCP最小离桌距离限制；{relative_to_table}；'
+                           f'TCP距配置桌面 {clearance*1000:.3f} 毫米，要求至少 {minimum*1000:.3f} 毫米，'
+                           f'差 {(minimum-clearance)*1000:.3f} 毫米'
+                           f'（TCP基座Z={p[2]*1000:.3f}，桌面基座Z={config["table_z_m"]*1000:.3f} 毫米）')
     return reasons
 
 

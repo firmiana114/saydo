@@ -1,0 +1,151 @@
+# Saydo 机械臂 MCP 工具
+
+通过标准输入/输出 MCP 将客户端连接到现有 Saydo 后端。MCP 进程只调用固定的 `/api/agent/` 接口；实际动作仍由 `GraspController`、原设备锁和运动检查执行，不接受任意机器人指令、文件路径或配置修改。
+
+项目另提供直接调用 LLM API 的 [任务执行器](../task_runner/README.md)，复用本目录的认证 HTTP 客户端。MCP服务现提供27个工具，执行器无需通过 MCP 或 Codex 启动。
+
+模型选择可启用5D位姿：状态、模型、位姿及夹法接口返回 `pose_mode`，持物记录也保留该模式。5D的矩阵只有位置和Z轴有约束，绕物品自身Z轴的转角自由；抓取中心位于该轴，后端搜索符合已保存接近夹角的方位。`preview_reorient` / `reorient` 的 `target_rpy_deg` 接口保持兼容，但5D只约束该旋转对应的Z轴指向，后端搜索绕轴等价姿态。详见 [5D位姿说明](../foundationpose/README.md#绕物品-z-轴对称的-5d-位姿)。
+
+## 工具
+
+| 工具 | 行为 |
+| --- | --- |
+| `get_status` | 跟踪准备状态、执行模式、夹持记录/版本、放置参数、活动任务编号 |
+| `get_camera_frame` | 最新原始彩色画面，附采图时间、序号和尺寸；拒绝超过一秒的画面；返回原生 MCP 图片块 |
+| `get_tracking_candidates_frame` | 与当前候选框匹配的冻结原图和selection_id，30秒后拒绝；选择目标前使用 |
+| `get_object_pose` | 稳定且新鲜的物品位姿；**相机光学坐标系、米制**，不是基座坐标；不满足原抓取观测条件时明确失败 |
+| `get_robot_state` | 实际七关节角度（度）、TCP 位置（米）/RPY（弧度）、工具/工作坐标、错误与夹爪反馈；不使能、不清错 |
+| `list_objects` / `get_grasp_profiles` | 模型目录及已保存夹法；模型 ID 不等于场景中独立实例 ID |
+| `select_object` / `start_tracking` / `choose_tracking_target` | 选择模型、自动或框选初始化、处理多个候选；无机器人动作，忙时拒绝 |
+| `preview_grasp` / `preview_place` | 使用原检查生成方案，不运动；返回异步任务编号 |
+| `grasp` | 按当前已保存夹法抓取并抬升；请求目标必须与执行时新鲜观测中的物品一致 |
+| `place` | 使用已保存的桌面矩形和实际持物朝向，执行转移、下降、释放、后撤、退出；校验夹持/朝向/放置配置版本 |
+| `preview_reorient` / `reorient` | 已夹持物品的绝对朝向预览/执行；固定TCP终点或自适应移位，继续夹持；成功执行后返回新的朝向版本 |
+| `reset_arm` | `observation` 返回记录的观测姿态；`zero` 返回七关节零位（不是编码器标定）；保持夹爪开合 |
+| `get_object_geometry` | 模型坐标范围、原点/Z轴端点、5D/6D模式及模型摘要 |
+| `plan_held_object_motion` | 指定物品参考点、位置/朝向、坐标系、中间路点，生成只读持物方案 |
+| `plan_release` | 规划到目标后松爪及可选退出；goal=null以当前位置作为最终目标，仍先上移再下降 |
+| `execute_plan` | 核验并执行服务器保存的plan_id，单次消费，不接受临时路径覆盖 |
+| `get_task_diagnostics` | 任务结果及精确关联的新运动诊断报告 |
+| `capture_scene_snapshot` / `get_scene_snapshot` | 动作前一次采集全部目标，固定Base位姿；查询实例状态及有效性 |
+| `get_task` | 按请求编号查询持久化任务，直到 `terminal=true` |
+| `stop_robot` | 取消任务，并发送机械臂和夹爪软件停止，即使当前没有 Saydo 任务；不松爪；分别确认指令应答和采样停稳 |
+
+停止工具是软件停止，不替代现场急停。停止后至少三次关节样本、覆盖 100 毫秒、每轴变化不超过 0.03°，且夹爪速度为零、当前动作任务退出，才报告 `stationary_observed=true`。未确认时锁住新的动作入口，返回 `STOP_UNCONFIRMED`，需现场核对；停止工具本身可以再次调用。停止不会自动恢复旧的夹持记录。
+
+`start_tracking` 的框为当前 640×360 图像的 `[x0,y0,x1,y1]`。先用 `select_object` 后等待 `get_status.tracking.model_ready`；自动检测默认使用Terra/low及物品提示词，必须结合图像确认实例，不能将另一只杯子当作目标模型。多个候选时使用 `get_tracking_candidates_frame`，以返回的selection_id和当前候选序号选择；不要用最新相机帧替代候选原图。当前未实现多实例长期身份跟踪。
+
+## 静态场景快照
+
+新的grasp/preview_grasp工具要求scene_id和instance_id；先用capture_scene_snapshot声明全部源物品与参照物，再等待scene_ready。后续规划可用scene_object参考系及命名特征，参见 [场景快照参数与约束](../foundationpose/SCENE_SNAPSHOTS.md)。更新后已有Codex会话须重新启动以刷新工具参数。
+
+## 通用持物运动
+
+推荐链路为抓取 → plan_held_object_motion → execute_plan → plan_release → execute_plan。支持只旋转、只平移、完整物品位姿和分阶段路点；不再依赖旧place的固定矩形区域。参数、版本更新、坐标含义、执行限制及示例见 [通用持物运动说明](../foundationpose/OBJECT_MOTION.md)。新目标以物品参考点为准，与下面旧姿态接口固定TCP终点的语义不同。
+
+## 姿态调整参数
+
+`preview_reorient` 和 `reorient` 基础参数为6项，另支持max_rotation_step_deg（默认15，范围1–15）：`object_id`、`hold_id`、`orientation_version`、`target_rpy_deg`、`position_mode`、`request_id`。前三项从最新 `get_status.grasp.held_object` 读取；`target_rpy_deg=[X,Y,Z]` 为物品模型相对零偏移 Base 基座的绝对朝向，单位度，每项在−180到180之间，转换顺序为 `Rz(Z) @ Ry(Y) @ Rx(X)`。不是相对增量，也不是TCP朝向，不能默认零角度等于物品直立。
+
+`position_mode` 必须为 `fixed` 或 `adaptive`：前者只固定TCP最终位置，不保证中途位置恒定；后者允许现有后端搜索移位。后端从匹配的夹持记录取得模型摘要，继续核对实际模型、工具、夹持、工作区/桌面、运动学与到位反馈，不接受速度、力度或开度覆盖。
+
+工具返回异步任务编号，使用 `get_task` 等待。预览终态为 `reorient_preview`，不修改夹持朝向版本；成功执行为 `completed`，保持同一 `hold_id`，`orientation_version` 加1。结果包含 `reorientation_plan` 与最新 `held_object.current_object_rotation`，后者是基座坐标系中的物品旋转矩阵。后续放置/调整使用新版本；旧请求重复提交仍按原 `request_id` 返回原任务，不会再次运动。实际动作失败后禁止重放原方案；只有result.recovery.can_replan=true才允许按新夹持版本重新规划原目标。旧入口也按最大15度分段，通过正逆解核验的关节解用movej逐段执行，保留固定TCP终点语义。MCP客户端须遵守每目标5次规划/3次执行预算；SayDo在程序中强制计数。
+
+## 夹法参数输出
+
+`get_grasp_profiles` 返回每条夹法的 `effective_parameters`：`force_target_raw`、`force_limit_raw`、`open_position`、`pregrasp_distance_m`、`tcp_offset_m`（grip_tcp局部米制三元素偏移）、`lift_height_m`、`arm_speed_percent` 及单位。力度和开度来自该夹法的保存值，不从全局夹爪设置继承；它们不是当前硬件寄存器读回值。缺少绑定值时返回 `parameter_error`，执行拒绝该候选。
+
+`get_status` 的 `grasp.grasp_configuration` 和 `get_robot_state` 的 `controller.grasp_configuration` 提供当前物品的选择方式及各夹法参数摘要。Agent 输出不包含旧全局力度/开度字段。抓取任务的 `result.plan.effective_parameters` 记录实际选用的参数；历史任务保留当时的值。
+
+当前初始化规则：纸杯力度 10，其他物品 75；马克杯抓取张开位置 200，其他物品 1000。前端“记录夹法”表单可填写新夹法参数，保存不发送夹爪动作。MCP 抓取入参仍是物品编号和请求编号，不允许单次请求暗中覆盖夹法参数。
+
+## 规划坐标参数
+
+reference_object_id只用于tracked_object。scene_object应使用scene_id/reference_instance_id，并令reference_object_id=null；reference_feature_id为可选模型特征。工具Schema字段说明明确这些互斥约束。只读规划参数错误可以按具体提示纠正，保持原目标并遵守规划预算；不能把真实执行错误或未知结果作为参数错误直接重发。SayDo已实现本地校验、错误回传及最多5次规划纠错。
+
+## 任务和失败语义
+
+每次预览或动作必须提供唯一 `request_id`（8–96 位字母、数字、下划线或连字符）。同编号同参数返回原任务，不重复执行；同编号不同参数拒绝。HTTP 断连、超时或损坏响应不自动重试；先以该编号 `get_task`，需要重发也必须使用同一个编号及原参数。
+
+请求先存入 `work/agent/tasks.sqlite`，再进入原控制器。状态回调在控制器锁内保存结果，避免后来的网页任务覆盖旧结果。服务重启把未结束记录标为 `interrupted` / `outcome_unknown=true`，不恢复或重放动作。状态记录故障明确报 `TASK_STATE_UNCERTAIN`，禁止以新编号绕过。
+
+`terminal=true` 可能表示完成、预览完成、拒绝、失败或取消，必须查看 `state` 和 `result/error`。控制器动作完成不等于已经独立证明物品放稳、接触桌面或未发生滑动；Agent 应再次观察并区分已验证事实与未知结果。端点运动学检查仍不等于完整环境碰撞检查。
+
+## 安装与启动
+
+MCP 使用独立 Python 3.11+ 环境，不修改 FoundationPose 环境：
+
+```sh
+python3 -m venv ~/.local/share/saydo-mcp/venv
+~/.local/share/saydo-mcp/venv/bin/python -m pip install -r tools/robot_agent/requirements.txt
+python3 tools/robot_agent/install.py --base-url http://127.0.0.1:8089
+```
+
+安装器默认在 `~/.codex/config.toml` 中登记 `mcp_servers.saydo_robot`；不存在配置时创建仅包含 MCP 的文件，不设置模型、模型服务商、推理强度、全局审批或 Skills。已有的其他设置保持原样。后端令牌独立于模型 API Key，保存为权限 600 的 `~/.local/share/saydo-mcp/robot-backend-token`，与客户端配置分开维护。重复安装保留令牌；MCP 不跟随 HTTP 重定向，不通过环境代理发送后端凭据。可用 `--agent-home`、`--python`、`--token-file` 指定路径。
+
+使用其他 MCP 客户端时，启动命令为 `~/.local/share/saydo-mcp/venv/bin/python`，参数为项目内 `tools/robot_agent/server.py` 的绝对路径、`--base-url`、实际后端 URL、`--token-file` 和上述令牌的绝对路径。工具本身不依赖 Codex 的模型配置或登录方式。
+
+后端需显式启用 Agent 路由（按实际监听地址调整，安装器的 URL 必须一致）：
+
+```sh
+source tools/foundationpose/runtime_env.sh
+python tools/foundationpose/live_tracker.py --host 127.0.0.1 --port 8089 --auto-start \
+  --mesh work/object_models/ob_yibao_350ml/model/model.obj \
+  --grasp-mode execute \
+  --agent-token-file ~/.local/share/saydo-mcp/robot-backend-token
+```
+
+启动、自动识别和连接 MCP 不发送机械臂动作。`--grasp-mode preview` 可关闭抓取/姿态调整/放置/复位执行，预览和观察仍可用；停止工具仍可发停止命令。不要在活动任务或需保留夹持记录时重启后端。
+
+MSI 已恢复 `codex` 入口，当前专用配置为 `gpt-6-astra / low`（保留操作员选择），也可显式选择已验证的 `gpt-6-sol` 或 `gpt-6-luna`。入口链接到本目录 `codex_launcher.py`，再启动 `~/.local/lib/codex/0.156.0/bin/codex` 官方 CLI；从项目权限600的 `.env` 读取模型密钥、Responses地址和模型代理，仅在当前进程环境传递密钥，不写入仓库、命令参数或 `auth.json`。自定义提供方使用 API Key，无需 ChatGPT 登录。CLI 升级时需同步更新启动脚本中的官方二进制路径。
+
+在 MSI 运行 `codex` 即可使用；可用 `codex -m gpt-6-astra` 临时换模型，或 `codex -c model_reasoning_effort=high` 临时换强度。启动器固定使用 `~/.local/share/saydo-codex/codex-home` 作为 `CODEX_HOME`，配置文件、会话与普通 `~/.codex` 分开；切换至同级 `workspace`，不在源码目录启动。专用配置保存提供方、默认模型及MCP服务登记，工具目录由服务提供。
+
+`model_instructions_file` 指向本目录 `agent_instructions.md`，替换内置编程助手提示词，只保留机械臂任务规则。关闭AGENTS及其备用文件加载、主机Skills自动发现、已知内置Skills、记忆导入、插件和Hooks；不读取旧开发会话。启动时只枚举专用配置、工作目录及其祖先、用户和系统Skills目录中的文件名，刷新显式禁用列表，避免新增或符号链接的开发Skills进入上下文；不读取这些Skills的内容。项目本身的 `AGENTS.md`、开发Skills和其他coding agent内容继续保留给正常开发使用，不为隔离任务入口而删除。升级CLI后应重新核对实际模型上下文与新增内置Skills。
+
+该入口用于MCP验证：持久配置为只读沙箱，关闭终端执行、子Agent、插件、Apps、浏览器/计算机操作及项目指令加载；沙箱升级和请求写入权限被拒绝。按用户要求，专用配置现为 `approval_policy="never"`、`mcp_servers.saydo_robot.default_tools_approval_mode="approve"`，MCP读写工具无需手动审批；这不会授予文件写入权限。文件编辑工具即使仍出现在本版本工具定义中，也必须被只读权限拒绝，不能靠提示词代替权限检查。不要用 `--yolo`、`--sandbox`、其他配置目录或配置覆盖绕过限制；这些是当前入口的运行限制，不是对机器账户所有者的系统权限隔离。已有会话需退出后重新启动。非交互验证用 `codex exec --skip-git-repo-check "任务"`。
+
+SayDo网页执行器仍独立运行，模型选择及execute模式不受影响。两者共用后端设备锁，不应同时提交设备动作；MCP运动工具按用户任务直接调用，仍须通过后端设备检查，不能将文件只读等同于禁止机械臂运动。
+
+通用安装器默认设置 `writes` 工具审批策略；MSI专用入口已另行改为上述 `approve`，重新登记时需保留此差异。停止工具可直接调用。未开放改标定、改运动参数、任意关节运动、清除错误或重启服务的 Agent 工具。`saydo-agent` 旧入口仍不使用。
+
+认证只针对新增的 `/api/agent/` 路由；原网页接口沿用既有部署方式和访问边界，本次没有将其改造成新的认证体系。
+
+## 验证
+
+```sh
+SAYDO_IK_CHECKER="$PWD/work/grasp/rm75_ik_check" work/foundationpose_env/bin/python -m unittest discover -s tools/foundationpose -p 'test_*.py' -q
+~/.local/share/saydo-mcp/venv/bin/python -m unittest discover -s tools/robot_agent -p 'test_*.py' -v
+```
+
+动作测试使用模拟控制器；覆盖实际 HTTP 认证、任务去重/冲突/重启、物品和夹持绑定、停止失败锁定、最新画面和过期位姿。MCP SDK 测试覆盖原生图片块、19 个工具的模式和参数、任务查询及错误语义。实机联调仅调用观察/状态工具，不以真实抓取、放置、复位或停止作为自动验收。
+
+2026-09-22 验证：175 项后端测试、11 项 MCP/客户端/安装器测试和 7 组前端检查通过。真实相机和机械臂读取成功；GPT-6 Astra/high 通过实际 MCP 工具读取状态并识别相机朝向天花板。当前无目标物品，位姿接口明确返回 `POSE_NOT_READY`，不把不存在的位姿交给 Agent。有效目标位姿和真实动作效果需在适当场景下单独验收。完整结果见根目录 `HANDOFF_REPORT.md`。
+
+统一放置由plan_release生成：最终目标沿Base +Z上方100 mm预放置点→保持最终朝向直线下降→确认到位后松爪→可选退出。高度由config/grasp/trial.json的release_preplacement_height_m配置，缺省0.1 m（允许0.01～0.3 m）。同一个物品参考点定义两端位置，不按模型名或特征类型分支。旧区域放置保留区域选点，approach_height_m同样配置为0.1 m。
+
+
+## 固定机位全局观察
+
+`observe_global()` 返回独立固定相机（当前为 RealSense D405） 的一张新 RGB 图片（MCP 原生 ImageContent），以及 `camera_role=fixed_global`、序列号、唯一 observation_id、主机接收时间 captured_at（Unix 秒）、传感器时间及其时钟域、分辨率和帧龄。默认采集 1280×720/15 fps，等待15帧曝光稳定后取图，结束立即释放相机；外层12秒超时会终止采集进程，返回超过2秒的图片被拒绝（D405关闭流约需1秒，帧龄如实包含释放设备耗时）。并发读取使用设备锁，忙时明确失败，不缓存、不改用其他设备、不复位相机。
+
+它只用于全局外观观察：`calibrated_to_robot_base=false`、`usable_for_robot_target=false`。图片不能用于基座目标、毫米测量、眼在手框选、精确入孔/接触/无碰撞证明，不替代已有场景快照和运动反馈。`get_camera_frame` 继续读取眼在手相机。
+
+采集由 MCP/任务执行器所在机器上的独立 Python 子进程完成，不经过8089，不需要重启视觉后端或新增常驻服务。运行工具的机器须连接指定相机，并配置本机 `config/cameras/global.json`（Git忽略）：
+
+```json
+{
+  "serial": "218622270784",
+  "camera_name": "RealSense D405",
+  "eye_in_hand_serial": "405622073572",
+  "python": "/home/pc/saydo/work/foundationpose_env/bin/python",
+  "sdk_path": "/home/pc/saydo/work/foundationpose_realsense_py311"
+}
+```
+
+以上为MSI部署示例。运行环境需含 pyrealsense2、OpenCV、NumPy；两台相机序列号必须不同，型号和序列号均匹配才采集。目前支持D405与D435i的彩色流；旧配置缺少camera_name时按D435i兼容，切换相机须显式更新型号和序列号。固定机位不存在或型号不符时拒绝采集。其他机器独立提供自己的配置与环境，不能仅将机器人HTTP地址指向MSI就远程访问此本机相机。配置文件每次调用重新读取；无需把实际配置提交Git。
+
+SayDo第5页同样提供 `observe_global`，在read_only/preview/execute模式均可用，作为原生图片送入模型，普通任务结果只记录元数据。更新后重启空闲任务执行器生效；已有MCP会话需重新建立连接刷新工具目录。采集失败返回 CAMERA_UNAVAILABLE，无图片，不替换为旧图或眼在手图。
+
+
+机位来源标记：眼在手图片明确返回camera_role=eye_in_hand、camera_label、camera_serial和source_tool；observe_global为fixed_global。MCP指令要求实际动作后调用observe_global，独立MCP会话仍由其模型遵守此规则。SayDo第5页另由执行器强制自动采图并检查缺失证据，见任务执行器README；两种调用来源在任务记录中明确区分。
