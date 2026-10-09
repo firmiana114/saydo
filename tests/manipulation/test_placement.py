@@ -872,7 +872,7 @@ class PlacementControlTests(unittest.TestCase):
     def test_external_config_change_before_motion_blocks(self):
         robot = self.robot()
 
-        def changed(*_):
+        def changed(*_, **unused):
             self.path.write_text(json.dumps({**self.config, 'table_z_m': 0}))
             return True, {}
 

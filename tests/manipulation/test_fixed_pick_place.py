@@ -205,7 +205,9 @@ class PlanningTests(unittest.TestCase):
             return_value=(self.grasp, self.config)
         )
 
-    def check(self, checker, tool, arm, points, timeout=3):
+    def check(
+        self, checker, tool, arm, points, timeout=3, environment=None
+    ):
         self.assertEqual(arm, self.arm)
         self.assertTrue(points[0]['name'].startswith('pregrasp_'))
         return (
@@ -249,7 +251,9 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_failure_in_descent_never_saves_or_executes_a_prefix(self):
-        def reject(checker, tool, arm, points, timeout=3):
+        def reject(
+            checker, tool, arm, points, timeout=3, environment=None
+        ):
             if any(p['name'].startswith('release_descent') for p in points):
                 return False, {'reason': 'descent failure'}
             return self.check(checker, tool, arm, points, timeout)

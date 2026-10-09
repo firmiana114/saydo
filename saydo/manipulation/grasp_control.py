@@ -18,6 +18,7 @@ import yaml
 
 from saydo.geometry import grasp_geometry
 from saydo.robot import arms
+from saydo.robot import collision_model
 from saydo.robot import grasp_robot
 from saydo.robot import motion_validation
 from saydo.perception import camera_checks
@@ -109,6 +110,24 @@ class GraspController(
                 else '方案预览模式，不发送运动或夹爪写入命令。'
             ),
         }
+
+    def collision_environment(
+        self, config: dict
+    ) -> collision_model.Environment:
+        """返回这台臂规划时要避开的障碍物：桌面和本机登记的立杆。
+
+        Args:
+            config: 这台臂的抓取配置，桌面高度取自 `table_z_m`。
+
+        Returns:
+            障碍物设置，坐标在这台臂的基座坐标系里。
+
+        Raises:
+            ValueError: 本机的障碍物文件格式不对或数值无效。
+        """
+        return collision_model.load_environment(
+            self.root, self.arm.arm_id, config['table_z_m']
+        )
 
     def camera_reuse_path(self, config: dict) -> pathlib.Path:
         """返回这台臂的“同型号相机复用手眼标定”策略文件的路径。
@@ -400,6 +419,18 @@ class GraspController(
                 or np.max(np.abs(last - first)) > 30
             ):
                 raise ValueError('机械臂未停稳或关节反馈无效，不能复位')
+            # 复位是从当前姿态直接转到目标关节角，发令前先查这条路径。
+            path_check = collision_model.check_path(
+                [last / 1000, np.asarray(target, dtype=float) / 1000],
+                tool['flange_T_grip_tcp'],
+                self.collision_environment(config),
+            )
+            report['collision_check'] = path_check
+            if path_check['violation'] is not None:
+                raise ValueError(
+                    '复位路径不安全：' + path_check['violation']['message']
+                    + '；请先手动把机械臂移到空旷处再复位'
+                )
             self.check_cancel()
             self.actuated = True
             report.update(active_stage=label, robot_motion_sent=True)
@@ -1438,8 +1469,33 @@ class GraspController(
             )
 
     def verify_motion_targets(
-        self, plan, config, report, arm, waypoints, timeout=3.
-    ):
+        self,
+        plan: dict,
+        config: dict,
+        report: dict,
+        arm: dict,
+        waypoints: list,
+        timeout: float = 3.,
+    ) -> dict:
+        """发令前离线检查一串路点；只做计算，不发送指令。
+
+        检查逆解、正解回验、关节连续性，以及机械臂和夹爪会不会碰到
+        桌面或立杆。结果追加到 `report['kinematics_checks']`。
+
+        Args:
+            plan: 抓取方案，取其中的 `flange_T_grip_tcp`。
+            config: 这台臂的抓取配置。
+            report: 本次任务的诊断记录。
+            arm: 机械臂当前状态，关节为原始单位（0.001 度）。
+            waypoints: 要检查的路点序列。
+            timeout: 逆解搜索的时间上限，单位秒。
+
+        Returns:
+            检查记录，含各路点的关节解 `joint_solutions_deg`。
+
+        Raises:
+            ValueError: 缺少离线检查器，或检查不通过（原因写在消息里）。
+        """
         self.check_cancel()
         executable = (self.root / config['ik_checker']).resolve()
         if not executable.is_file():
@@ -1452,6 +1508,7 @@ class GraspController(
             arm,
             waypoints,
             timeout=timeout,
+            environment=self.collision_environment(config),
         )
         report.setdefault('kinematics_checks', []).append(
             {

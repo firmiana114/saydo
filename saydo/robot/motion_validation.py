@@ -3,8 +3,11 @@
 import copy
 import subprocess
 import time
+from typing import Any, Optional, Tuple
+
 import numpy as np
 from saydo.geometry import grasp_geometry
+from saydo.robot import collision_model
 
 POSITION_TOLERANCE_M = .002
 ORIENTATION_TOLERANCE_RAD = np.deg2rad(2)
@@ -240,7 +243,83 @@ def note_joint_change(report, stage, basis, reference, actual, limit_deg=.5):
     return deviation
 
 
-def check_waypoints(executable, tool, arm, waypoints, timeout=3.):
+def check_environment(
+    detail: dict,
+    tool: dict,
+    arm: dict,
+    waypoints: list,
+    environment: collision_model.Environment,
+) -> Tuple[bool, dict]:
+    """在逆解结果上检查全程会不会碰到桌面或立杆；只做计算。
+
+    Args:
+        detail: `parse_kinematics` 成功时给出的记录，含各路点的关节解
+            `joint_solutions_deg`；检查结果写入它的 `collision_check`。
+        tool: 工具记录，取其中的 `flange_T_grip_tcp`。
+        arm: 机械臂当前状态，关节为原始单位（0.001 度）。
+        waypoints: 被检查的路点，用于在报错里写出路点名称。
+        environment: `collision_model.Environment`，这台臂的障碍物。
+
+    Returns:
+        `(通过与否, detail)`。不通过时 `detail['reason']` 写明哪一部分
+        在走向哪个路点时离什么太近，`detail['failure']` 的 `kind` 为
+        `collision`。
+    """
+    start_deg = np.asarray(arm['joint'], dtype=float) / 1000
+    report = collision_model.check_path(
+        [start_deg, *detail['joint_solutions_deg']],
+        tool['flange_T_grip_tcp'],
+        environment,
+    )
+    detail['collision_check'] = report
+    violation = report['violation']
+    if violation is None:
+        return True, detail
+    index = violation['waypoint_index'] - 1
+    name = waypoints[index].get('name', str(index))
+    detail.update(
+        verified=False,
+        reason=f'{name}：{violation["message"]}',
+        failure={
+            'kind': 'collision',
+            'sample_index': index,
+            'waypoint': name,
+            'controller_pose': waypoints[index]['controller_pose'],
+            'joint_deg': violation['joint_deg'],
+        },
+    )
+    return False, detail
+
+
+def check_waypoints(
+    executable: Any,
+    tool: dict,
+    arm: dict,
+    waypoints: list,
+    timeout: float = 3.,
+    environment: Optional[collision_model.Environment] = None,
+) -> Tuple[bool, dict]:
+    """对一串路点做逆解、正解回验和连续性检查，再检查会不会碰到障碍物。
+
+    只做计算，不发送任何指令。
+
+    Args:
+        executable: 离线检查器（由 `grasp_ik.cc` 构建）的路径。
+        tool: 工具记录，取其中的 `flange_T_grip_tcp`。
+        arm: 机械臂当前状态，关节为原始单位（0.001 度）。
+        waypoints: 路点序列，每个含 `controller_pose`，可带 `name` 和
+            `method`（`linear` 表示直线段，相邻关节解变化不得超过 10 度）。
+        timeout: 逆解搜索的时间上限，单位秒。
+        environment: `collision_model.Environment`；给出时，在逆解通过
+            之后沿关节角直线逐点检查机械臂和夹爪离桌面、立杆的距离。
+            None 表示不做这项检查。
+
+    Returns:
+        `(通过与否, 记录)`。不通过时记录的 `reason` 是给操作者看的原因。
+
+    Raises:
+        ValueError: 没有路点，或起始关节角无效。
+    """
     if not waypoints:
         raise ValueError('至少需要一个待验证航点')
     joints = np.asarray(arm['joint'], dtype=float)
@@ -277,7 +356,10 @@ def check_waypoints(executable, tool, arm, waypoints, timeout=3.):
                 ),
             },
         )
-    return parse_kinematics(result, arm, waypoints)
+    valid, detail = parse_kinematics(result, arm, waypoints)
+    if not valid or environment is None:
+        return valid, detail
+    return check_environment(detail, tool, arm, waypoints, environment)
 
 
 def wait_for_pose(

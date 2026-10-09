@@ -260,7 +260,26 @@ class FixedPickPlaceMixin:
         ):
             raise ValueError('夹法库已变化')
 
-    def plan_fixed_pick_place(self, request, report):
+    def plan_fixed_pick_place(self, request: dict, report: dict) -> dict:
+        """规划一次完整的固定抓放：抓取、抬升、调姿、入孔、松爪、退出。
+
+        只读规划，不发送任何运动或夹爪指令。把试管架上声明为空的孔位
+        按离试管的远近排序，取第一个全程通过检查的孔位；检查包括逆解、
+        连续性、离桌高度，以及机械臂和夹爪会不会碰到桌面或立杆。
+
+        Args:
+            request: 含场景编号 `scene_id`、试管与试管架的实例编号、
+                空孔位列表 `free_slots` 和释放间隙 `release_gap_m`。
+            report: 本次规划的诊断记录，过程信息写入其中。
+
+        Returns:
+            完整方案：选中的孔位、抓取与释放两部分的路点和固定关节角、
+            配置绑定和有效期。
+
+        Raises:
+            ValueError: 场景或夹法不可用、抓取路径不通过，或没有任何
+                孔位全程通过检查。
+        """
         config = json.loads(self.config_path.read_text())
         self.robot = grasp_robot.RobotClient(
             config['robot_ip'], config['robot_port'], writes=False
@@ -319,8 +338,9 @@ class FixedPickPlaceMixin:
         )
         tool = {'flange_T_grip_tcp': grasp['flange_T_grip_tcp']}
         checker = self.root / effective['ik_checker']
+        environment = self.collision_environment(effective)
         ok, detail = motion_validation.check_waypoints(
-            checker, tool, arm, prefix
+            checker, tool, arm, prefix, environment=environment
         )
         if not ok:
             raise ValueError('抓取完整采样路径失败：' + detail['reason'])
@@ -342,7 +362,8 @@ class FixedPickPlaceMixin:
             if len(full_points) > 480:
                 raise ValueError('全程超过480个采样点')
             return motion_validation.check_waypoints(
-                checker, tool, arm, full_points, timeout
+                checker, tool, arm, full_points, timeout,
+                environment=environment,
             )
 
         for slot, goal, frame, distance in goals:

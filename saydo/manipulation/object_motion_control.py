@@ -430,7 +430,8 @@ class ObjectMotionMixin:
                     goal,
                     frame,
                     lambda points, timeout: motion_validation.check_waypoints(
-                        checker, tool, arm, points, timeout
+                        checker, tool, arm, points, timeout,
+                        environment=self.collision_environment(config),
                     ),
                     self.check_cancel,
                     release,

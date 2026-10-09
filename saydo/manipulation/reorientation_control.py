@@ -596,7 +596,8 @@ class ReorientationMixin:
                 config,
                 settings,
                 lambda waypoints, timeout: motion_validation.check_waypoints(
-                    checker, tool, arm, waypoints, timeout
+                    checker, tool, arm, waypoints, timeout,
+                    environment=self.collision_environment(config),
                 ),
                 self.check_cancel,
                 position_mode,

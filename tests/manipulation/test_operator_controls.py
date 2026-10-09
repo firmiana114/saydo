@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
 import yaml
 
 from saydo.manipulation import grasp_control
@@ -31,7 +32,10 @@ class OperatorControlsTests(unittest.TestCase):
         self.tool = {'tool_name': 'grip_tcp', 'pose': [0] * 6, 'payload': 1061}
         (self.root / 'tool.yaml').write_text(
             yaml.safe_dump(
-                {'controller_readback': {'tool_response_raw': self.tool}}
+                {
+                    'controller_readback': {'tool_response_raw': self.tool},
+                    'flange_T_grip_tcp': np.eye(4).tolist(),
+                }
             )
         )
         self.service = grasp_control.GraspController(self.root, None, self.path)

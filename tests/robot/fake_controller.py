@@ -22,6 +22,13 @@ TOOL_RESPONSE = {
     'tool_name': 'grip_tcp',
     'pose': [0, 0, 222500, 0, 0, 2611],
 }
+# 与上面的工具位姿对应的变换：只沿法兰 Z 轴平移（测试不关心绕轴转角）。
+FLANGE_T_GRIP_TCP = [
+    [1., 0., 0., 0.],
+    [0., 1., 0., 0.],
+    [0., 0., 1., .2225],
+    [0., 0., 0., 1.],
+]
 IDLE_GRIPPER = {
     'sys_err': 0,
     'sys_state': 0,
@@ -158,7 +165,10 @@ def write_arm_config(
     tool_path.parent.mkdir(parents=True, exist_ok=True)
     tool_path.write_text(
         yaml.safe_dump(
-            {'controller_readback': {'tool_response_raw': TOOL_RESPONSE}}
+            {
+                'controller_readback': {'tool_response_raw': TOOL_RESPONSE},
+                'flange_T_grip_tcp': FLANGE_T_GRIP_TCP,
+            }
         )
     )
     path = arm.config_path(root)
