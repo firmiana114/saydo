@@ -331,5 +331,188 @@ class TestHTTP(unittest.TestCase):
         self.assertEqual(self.server.cameras['d405'].state, 'idle')
 
 
+
+class TestSecondArmCameraAndHold(unittest.TestCase):
+    """2 臂相机一路，以及把相机让给采集程序再归还。"""
+
+    KEY = monitor.ARM2_CAMERA_KEY
+
+    def setUp(self):
+        self.server = http.server.ThreadingHTTPServer(
+            ('127.0.0.1', 0), monitor.Handler
+        )
+        self.server.daemon_threads = True
+        self.server.cameras = {
+            'd435i': FixtureCamera(
+                1280, 720, 15, 'd435i', '405622073572', arm='arm1'
+            ),
+            'd405': FixtureCamera(1280, 720, 15, 'd405', '218622270784'),
+            self.KEY: FixtureCamera(
+                1280, 720, 15, self.KEY, '344422070678', arm='arm2'
+            ),
+        }
+        self.worker = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.worker.start()
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        for camera in self.server.cameras.values():
+            camera.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join()
+
+    def request(self, path, method='GET', body=None):
+        connection = http.client.HTTPConnection(
+            *self.server.server_address, timeout=3
+        )
+        try:
+            connection.request(
+                method, path, None if body is None else json.dumps(body)
+            )
+            response = connection.getresponse()
+            return response.status, json.loads(response.read() or b'{}')
+        finally:
+            connection.close()
+
+    def open_stream(self, key):
+        connection = http.client.HTTPConnection(
+            *self.server.server_address, timeout=3
+        )
+        connection.request('GET', '/stream/' + key)
+        response = connection.getresponse()
+        self.addCleanup(connection.close)
+        return response
+
+    def test_second_arm_camera_is_listed_as_an_eye_in_hand_d435i(self):
+        row = self.request('/api/status')[1]['cameras'][self.KEY]
+        self.assertEqual(row['camera'], 'RealSense D435I')
+        self.assertEqual(row['camera_role'], 'eye_in_hand')
+        self.assertEqual(row['camera_serial'], '344422070678')
+        self.assertEqual(row['arm'], 'arm2')
+        self.assertEqual(row['held_s'], 0)
+        self.assertEqual(self.open_stream(self.KEY).status, 200)
+
+    def test_held_camera_refuses_preview_until_it_is_returned(self):
+        self.assertEqual(self.open_stream(self.KEY).status, 200)
+        self.assertEqual(self.open_stream('d435i').status, 200)
+        code, state = self.request(
+            f'/api/cameras/{self.KEY}/pause', 'POST', {'hold_s': 30}
+        )
+        self.assertEqual(code, 200)
+        row = state['cameras'][self.KEY]
+        self.assertEqual(row['state'], 'idle')
+        self.assertGreater(row['held_s'], 25)
+        # 页面此时自动重连也连不上，采集程序可以放心打开相机。
+        refused = self.open_stream(self.KEY)
+        self.assertEqual(refused.status, 409)
+        self.assertIn('让给采集程序', json.loads(refused.read())['error'])
+        self.assertEqual(self.server.cameras[self.KEY].state, 'idle')
+        # 只让出这一台，另一路预览不受影响。
+        self.assertEqual(state['cameras']['d435i']['state'], 'streaming')
+        self.assertEqual(state['cameras']['d435i']['held_s'], 0)
+        code, state = self.request(
+            f'/api/cameras/{self.KEY}/resume', 'POST', {}
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(state['cameras'][self.KEY]['held_s'], 0)
+        self.assertEqual(self.open_stream(self.KEY).status, 200)
+
+    def test_hold_expires_on_its_own_and_is_capped(self):
+        camera = self.server.cameras[self.KEY]
+        self.request(
+            f'/api/cameras/{self.KEY}/pause', 'POST', {'hold_s': 99999}
+        )
+        self.assertLessEqual(camera.status()['held_s'], monitor.MAX_HOLD_S)
+        with mock.patch.object(
+            monitor.time, 'monotonic', return_value=camera.hold_until + 1
+        ):
+            self.assertEqual(camera.status()['held_s'], 0)
+            camera.subscribe()
+
+    def test_plain_pause_and_pause_all_do_not_hold(self):
+        self.request(f'/api/cameras/{self.KEY}/pause', 'POST')
+        self.request('/api/pause', 'POST', {'hold_s': 30})
+        for row in self.request('/api/status')[1]['cameras'].values():
+            self.assertEqual(row['held_s'], 0)
+
+    def test_invalid_hold_is_rejected_without_touching_the_camera(self):
+        self.assertEqual(self.open_stream(self.KEY).status, 200)
+        for body in ({'hold_s': -1}, {'hold_s': 'long'}, {'other': 1}, [30]):
+            code, reply = self.request(
+                f'/api/cameras/{self.KEY}/pause', 'POST', body
+            )
+            self.assertEqual(code, 400, body)
+            self.assertIn('error', reply)
+        self.assertEqual(self.server.cameras[self.KEY].state, 'streaming')
+
+
+class TestCameraSelectionAtStartup(unittest.TestCase):
+    def start(self, arguments, settings=None):
+        created = []
+
+        class Server:
+            def __init__(self, address, handler):
+                created.append(self)
+
+            def serve_forever(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            if settings is not None:
+                path = root / 'config/cameras/global.json'
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(settings))
+            with mock.patch.object(monitor, 'PROJECT', root), mock.patch.object(
+                http.server, 'ThreadingHTTPServer', Server
+            ), mock.patch.object(monitor.signal, 'signal'), mock.patch.object(
+                monitor.logging, 'basicConfig'
+            ), mock.patch('sys.argv', ['server.py', *arguments]):
+                monitor.main()
+        return created[0].cameras
+
+    def test_second_arm_camera_comes_from_the_local_config(self):
+        cameras = self.start(
+            [],
+            {
+                'camera_name': 'RealSense D405',
+                'serial': '218622270784',
+                'eye_in_hand_serial': '405622073572',
+                'arm2_eye_in_hand_serial': '344422070678',
+            },
+        )
+        self.assertEqual(
+            list(cameras), ['d435i', 'd405', monitor.ARM2_CAMERA_KEY]
+        )
+        second = cameras[monitor.ARM2_CAMERA_KEY]
+        self.assertEqual((second.serial, second.arm), ('344422070678', 'arm2'))
+        # 2 臂相机不共享 8089 的画面：8089 只读 1 臂的相机。
+        self.assertIsNone(second.tracker)
+        self.assertEqual(cameras['d435i'].arm, 'arm1')
+
+    def test_without_a_second_serial_the_page_keeps_two_cameras(self):
+        cameras = self.start([], {'eye_in_hand_serial': '405622073572'})
+        self.assertEqual(list(cameras), ['d435i', 'd405'])
+
+    def test_second_arm_camera_requires_the_first_to_be_named(self):
+        with self.assertRaises(SystemExit):
+            self.start(['--arm2-serial', '344422070678'])
+        with self.assertRaises(SystemExit):
+            self.start(
+                [
+                    '--arm2-serial',
+                    '344422070678',
+                    '--eye-in-hand-serial',
+                    '344422070678',
+                ]
+            )
+
+
 if __name__ == '__main__':
     unittest.main()

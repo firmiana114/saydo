@@ -102,7 +102,7 @@ class CollectionTests(unittest.TestCase):
         with mock.patch.object(
             collect.capture.Robot, 'query', side_effect=self.mock_robot(.001)
         ), mock.patch.object(
-            collect, 'pause_preview'
+            collect, 'borrow_preview_camera'
         ) as preview, mock.patch.object(collect, 'run_capture') as capture:
             result = collect.collect_once(self.root, settle_seconds=0)
         self.assertEqual(result['state'], 'duplicate')
@@ -122,7 +122,7 @@ class CollectionTests(unittest.TestCase):
         with mock.patch.object(
             collect.capture.Robot, 'query', side_effect=self.mock_robot(.03)
         ), mock.patch.object(
-            collect, 'pause_preview', return_value='idle'
+            collect, 'borrow_preview_camera'
         ), mock.patch.object(
             collect, 'run_capture', side_effect=capture
         ) as call:
@@ -147,7 +147,7 @@ class CollectionTests(unittest.TestCase):
 
     def test_requested_camera_is_the_one_checked_and_captured(self):
         call = self.capture_new(.03)
-        preview = self.patch(collect, 'pause_preview')
+        preview = self.patch(collect, 'borrow_preview_camera')
         result = collect.collect_once(
             self.root, '192.168.1.18', settle_seconds=0, serial='test-only'
         )
@@ -158,13 +158,98 @@ class CollectionTests(unittest.TestCase):
         preview.assert_not_called()
         self.assertEqual(result['preview_before_capture'], 'camera_free')
 
-    def test_preview_is_paused_only_when_the_target_camera_is_in_use(self):
+    def preview_service(self, cameras):
+        """系统边界上的替身：扮演 8088 预览服务，记录收到的请求。"""
+        calls = []
+
+        def request(path, body=None):
+            calls.append((path, body))
+            if path.endswith('/pause'):
+                for key, row in cameras.items():
+                    if path in ('/api/pause', f'/api/cameras/{key}/pause'):
+                        row['state'] = 'idle'
+            states = [row['state'] for row in cameras.values()]
+            return {
+                'state': 'streaming' if 'streaming' in states else 'idle',
+                'cameras': cameras,
+            }
+
+        self.patch(collect, '_preview_request', side_effect=request)
+        return calls
+
+    def test_busy_camera_is_borrowed_from_preview_and_returned(self):
         self.users.return_value = [4321]
-        self.capture_new(.03)
-        preview = self.patch(collect, 'pause_preview', return_value='idle')
+        cameras = {
+            'd435i': {'camera_serial': 'other', 'state': 'streaming'},
+            'd435i_arm2': {'camera_serial': 'test-only', 'state': 'streaming'},
+        }
+        calls = self.preview_service(cameras)
+        capture = self.capture_new(.03)
+        capture.side_effect = self.after(
+            capture.side_effect, lambda: calls.append('captured')
+        )
         result = collect.collect_once(self.root, settle_seconds=0)
-        preview.assert_called_once_with()
+        self.assertEqual(result['state'], 'captured')
         self.assertEqual(result['preview_before_capture'], 'idle')
+        # 只借目标相机，另一路预览不受影响；先借、后采、再还。
+        self.assertEqual(cameras['d435i']['state'], 'streaming')
+        self.assertEqual(
+            calls,
+            [
+                ('/api/status', None),
+                (
+                    '/api/cameras/d435i_arm2/pause',
+                    {'hold_s': collect.PREVIEW_HOLD_S},
+                ),
+                'captured',
+                ('/api/cameras/d435i_arm2/resume', {}),
+            ],
+        )
+
+    @staticmethod
+    def after(function, extra):
+        def wrapped(*args):
+            result = function(*args)
+            extra()
+            return result
+
+        return wrapped
+
+    def test_borrowed_camera_is_returned_even_if_capture_fails(self):
+        self.users.return_value = [4321]
+        cameras = {
+            'd435i_arm2': {'camera_serial': 'test-only', 'state': 'idle'}
+        }
+        calls = self.preview_service(cameras)
+        capture = self.capture_new(.03)
+        capture.side_effect = RuntimeError('Capture returned no result')
+        with self.assertRaisesRegex(RuntimeError, 'no result'):
+            collect.collect_once(self.root, settle_seconds=0)
+        self.assertEqual(calls[-1], ('/api/cameras/d435i_arm2/resume', {}))
+
+    def test_camera_unknown_to_preview_falls_back_to_pausing_everything(self):
+        self.users.return_value = [4321]
+        cameras = {'d435i': {'camera_serial': 'other', 'state': 'streaming'}}
+        calls = self.preview_service(cameras)
+        self.capture_new(.03)
+        collect.collect_once(self.root, settle_seconds=0)
+        self.assertEqual(calls, [('/api/status', None), ('/api/pause', {})])
+
+    def test_failed_return_is_logged_and_does_not_lose_the_sample(self):
+        self.users.return_value = [4321]
+        self.patch(
+            collect,
+            'borrow_preview_camera',
+            return_value={'state': 'idle', 'camera': 'd435i_arm2'},
+        )
+        self.patch(
+            collect, '_preview_request', side_effect=OSError('preview gone')
+        )
+        self.capture_new(.03)
+        with self.assertLogs(collect.LOG, 'WARNING') as logs:
+            result = collect.collect_once(self.root, settle_seconds=0)
+        self.assertEqual(result['state'], 'captured')
+        self.assertIn('d435i_arm2', logs.output[0])
 
     def test_unknown_camera_stops_before_capture(self):
         self.select.side_effect = ValueError('没有找到序列号为 x 的 D435i')
@@ -182,7 +267,7 @@ class CollectionTests(unittest.TestCase):
         with mock.patch.object(
             collect.capture.Robot, 'query', side_effect=self.mock_robot(.05)
         ), mock.patch.object(
-            collect, 'pause_preview', return_value='idle'
+            collect, 'borrow_preview_camera'
         ), mock.patch.object(collect, 'run_capture', side_effect=capture):
             result = collect.collect_once(self.root, settle_seconds=0)
         self.assertEqual(result['state'], 'rejected')
@@ -211,7 +296,7 @@ class CollectionTests(unittest.TestCase):
         with mock.patch.object(
             collect.capture.Robot, 'query', side_effect=self.mock_robot(.03)
         ), mock.patch.object(
-            collect, 'pause_preview', return_value='idle'
+            collect, 'borrow_preview_camera'
         ), mock.patch.object(
             collect, 'run_capture', side_effect=capture
         ) as call:

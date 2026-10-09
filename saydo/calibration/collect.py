@@ -4,6 +4,7 @@
 import argparse
 import fcntl
 import json
+import logging
 import math
 import os
 import pathlib
@@ -18,6 +19,12 @@ from typing import Optional, Tuple
 import numpy as np
 from saydo.calibration import capture
 from saydo.calibration import geometry
+
+LOG = logging.getLogger(__name__)
+PREVIEW_URL = 'http://127.0.0.1:8088'
+# 借用相机的时长，单位秒。取采集子进程的限时（45 秒），正常情况下
+# 几秒后就会主动归还。
+PREVIEW_HOLD_S = 45.
 
 
 def atomic_json(path, data):
@@ -129,34 +136,86 @@ def comparisons(pose, samples, duplicate_mm=10, duplicate_deg=5):
     return results
 
 
-def pause_preview():
-    base = 'http://127.0.0.1:8088'
+def _preview_request(path: str, body: Optional[dict] = None) -> dict:
+    """向本机的相机预览服务发一次请求并返回它的状态。"""
+    request = urllib.request.Request(
+        PREVIEW_URL + path,
+        data=None if body is None else json.dumps(body).encode(),
+        method='GET' if body is None else 'POST',
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.load(response)
 
-    def status():
-        with urllib.request.urlopen(
-            base + '/api/status', timeout=3
-        ) as response:
-            return json.load(response)
 
+def borrow_preview_camera(serial: str) -> dict:
+    """向相机预览服务借用一台相机：让它停止预览并暂时不再打开这台相机。
+
+    预览页面在画面断开后会自动重连。只是“暂停”的话，重连会在采集
+    开始前把相机又占回去，所以要让预览服务在一段时间内拒绝新的连接，
+    采集结束后再用 `return_preview_camera` 归还。
+
+    Args:
+        serial: 要借用的相机的序列号。
+
+    Returns:
+        含 `state`（`not_running` 表示预览服务没有运行，其余是借用后
+        预览服务报告的状态）和 `camera`（预览服务里这路相机的键；
+        预览服务不认识这台相机或没有运行时为 None，此时无需归还）。
+
+    Raises:
+        RuntimeError: 无法确认预览服务的状态，或它没有在限时内释放相机。
+    """
     try:
-        value = status()
+        status = _preview_request('/api/status')
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, ConnectionRefusedError):
-            return 'not_running'
+            return {'state': 'not_running', 'camera': None}
         raise RuntimeError('Could not establish preview status') from exc
-    if value['state'] in ('streaming', 'starting', 'stopping'):
-        request = urllib.request.Request(
-            base + '/api/pause', data=b'', method='POST'
-        )
-        with urllib.request.urlopen(request, timeout=8) as response:
-            value = json.load(response)
-        deadline = time.monotonic() + 6
-        while value['state'] != 'idle' and time.monotonic() < deadline:
-            time.sleep(.2)
-            value = status()
-    if value['state'] not in ('idle', 'error'):
+    key = next(
+        (
+            name
+            for name, row in status.get('cameras', {}).items()
+            if row.get('camera_serial') == serial
+        ),
+        None,
+    )
+    if key is None:
+        # 预览服务不认识这台相机：按旧办法释放它的全部预览，无法借用。
+        if status['state'] in ('streaming', 'starting', 'stopping'):
+            status = _preview_request('/api/pause', {})
+        path = None
+    else:
+        path = f'/api/cameras/{key}/pause'
+        status = _preview_request(path, {'hold_s': PREVIEW_HOLD_S})
+
+    def state() -> str:
+        return (status['cameras'][key] if key else status)['state']
+
+    deadline = time.monotonic() + 6
+    while state() not in ('idle', 'error') and time.monotonic() < deadline:
+        time.sleep(.2)
+        status = _preview_request('/api/status')
+    if state() not in ('idle', 'error'):
         raise RuntimeError('Preview has not released camera')
-    return value['state']
+    return {'state': state(), 'camera': key}
+
+
+def return_preview_camera(key: str) -> None:
+    """把借来的相机还给预览服务；页面随后会自动恢复这一路预览。
+
+    归还失败不影响已经采到的样本，所以只记录、不抛出：预览服务最多在
+    `PREVIEW_HOLD_S` 秒后自行恢复。
+
+    Args:
+        key: `borrow_preview_camera` 返回的相机键。
+    """
+    try:
+        _preview_request(f'/api/cameras/{key}/resume', {})
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        LOG.warning(
+            '相机 %s 未能提前归还给预览服务（%r），它将在 %.0f 秒内自行恢复',
+            key, error, PREVIEW_HOLD_S,
+        )
 
 
 def run_capture(
@@ -376,7 +435,7 @@ def collect_once(
                     plan['validation_candidate_ids']
                 ),
                 'validation_target_count': plan['validation_target_count'],
-                'preview_policy': 'never_restore',
+                'preview_policy': 'borrowed_camera_is_returned',
                 **details,
             }
             if fitting:
@@ -433,16 +492,23 @@ def collect_once(
                 '当前姿态接近已有样本，跳过采集。',
                 duplicates=duplicate,
             )
-        # 只有目标相机被占用时才去暂停预览：预览服务读的是别的相机时，
-        # 没有必要打断它。
+        # 只有目标相机被占用时才去借：预览服务读的是别的相机时，没有
+        # 必要打断它。
         camera = capture.select_camera(serial)
-        preview = (
-            pause_preview()
+        borrowed = (
+            borrow_preview_camera(camera['serial'])
             if capture.camera_users(camera)
-            else 'camera_free'
+            else {'state': 'camera_free', 'camera': None}
         )
-        time.sleep(settle_seconds)
-        directory, sample = run_capture(session, robot_ip, camera['serial'])
+        preview = borrowed['state']
+        try:
+            time.sleep(settle_seconds)
+            directory, sample = run_capture(
+                session, robot_ip, camera['serial']
+            )
+        finally:
+            if borrowed['camera'] is not None:
+                return_preview_camera(borrowed['camera'])
         if sample['status'] != 'candidate':
             return finish(
                 'rejected',

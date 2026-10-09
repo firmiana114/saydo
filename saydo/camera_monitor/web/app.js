@@ -1,6 +1,29 @@
+/**
+ * 按元素编号取页面元素。
+ * @param {string} id 元素编号。
+ * @return {!Element} 对应的元素。
+ */
 const $ = id => document.getElementById(id);
+
+/**
+ * 创建一路相机在页面上的状态。
+ * @param {boolean} present 服务是否提供这一路。
+ * @return {{active: boolean, startAt: number, present: boolean,
+ *     wanted: boolean, resume: boolean}} 初始状态：active 表示画面流已
+ *     连接；wanted 表示用户想看这一路；resume 表示相机被采集程序借走，
+ *     归还后要自动重连。
+ */
+function cameraState(present) {
+  return {
+    active: false, startAt: 0, present, wanted: false, resume: false
+  };
+}
+
+// 2 臂手上的相机只有服务配置了才提供，先按“没有”处理，等状态返回再显示。
 const cameras = {
-  d435i: {active: false, startAt: 0}, d405: {active: false, startAt: 0}
+  d435i: cameraState(true),
+  d405: cameraState(true),
+  d435i_arm2: cameraState(false),
 };
 const labels = {
   idle: '空闲',
@@ -11,6 +34,11 @@ const labels = {
 };
 let errors = 0;
 
+/**
+ * 收起一路画面，恢复成“未预览”的样子。
+ * @param {string} id 相机的键。
+ * @param {string=} title 占位区显示的文字。
+ */
 function clearFeed(id, title = '预览已释放') {
   cameras[id].active = false;
   $(id + '-feed').removeAttribute('src');
@@ -20,11 +48,17 @@ function clearFeed(id, title = '预览已释放') {
   $(id + '-start').disabled = false;
 }
 
+/**
+ * 开始预览一路相机。
+ * @param {string} id 相机的键。
+ */
 function start(id) {
-  if (cameras[id].active) {
+  if (cameras[id].active || !cameras[id].present) {
     return;
   }
   cameras[id].active = true;
+  cameras[id].wanted = true;
+  cameras[id].resume = false;
   cameras[id].startAt = Date.now();
   $(id + '-error').textContent = '';
   $(id + '-start').disabled = true;
@@ -33,9 +67,16 @@ function start(id) {
   $(id + '-feed').src = '/stream/' + id + '?t=' + Date.now();
 }
 
+/**
+ * 由用户释放预览；不再自动重连。
+ * @param {string=} id 相机的键；不给时释放全部。
+ * @return {!Promise<void>} 请求结束后完成。
+ */
 async function stop(id) {
   const ids = id ? [id] : Object.keys(cameras);
   ids.forEach(key => {
+    cameras[key].wanted = false;
+    cameras[key].resume = false;
     clearFeed(key);
     $(key + '-stop').disabled = true;
   });
@@ -66,6 +107,37 @@ for (const id of Object.keys(cameras)) {
 $('start-all').onclick = () => Object.keys(cameras).forEach(start);
 $('stop-all').onclick = () => stop();
 
+/**
+ * 相机被采集程序借走时收起画面，归还后自动重连。
+ *
+ * 只在“借走再归还”这一种情况下自动重连。别的原因断开（出错、被别处
+ * 释放）仍由用户决定是否重新开始，避免页面和其他程序抢相机。
+ * @param {string} id 相机的键。
+ * @param {!Object} s 服务返回的这一路状态。
+ */
+function followHold(id, s) {
+  const camera = cameras[id];
+  if (s.held_s > 0) {
+    if (camera.wanted) {
+      camera.resume = true;
+    }
+    if (camera.active) {
+      clearFeed(id);
+    }
+    $(id + '-title').textContent =
+        '相机已借给采集程序，结束后自动恢复预览';
+    $(id + '-start').disabled = true;
+    return;
+  }
+  if (camera.resume && s.state === 'idle') {
+    start(id);
+  }
+}
+
+/**
+ * 读取服务状态并刷新页面。
+ * @return {!Promise<void>} 刷新结束后完成。
+ */
 async function status() {
   try {
     const r = await fetch('/api/status', {cache: 'no-store'});
@@ -75,6 +147,10 @@ async function status() {
     const data = await r.json();
     errors = 0;
     $('service-error').textContent = '';
+    for (const id of Object.keys(cameras)) {
+      cameras[id].present = id in data.cameras;
+      $(id + '-card').hidden = !cameras[id].present;
+    }
     for (const [id, s] of Object.entries(data.cameras)) {
       if (!cameras[id]) {
         continue;
@@ -122,6 +198,7 @@ async function status() {
             id, s.state === 'error' ? '暂时无法读取此机位' : '预览已释放'
         );
       }
+      followHold(id, s);
     }
   } catch (e) {
     if (++errors >= 2) {

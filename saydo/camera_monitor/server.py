@@ -17,6 +17,7 @@ import time
 import uuid
 import http.server
 import urllib.parse
+from typing import Optional
 
 from saydo import paths
 
@@ -24,6 +25,11 @@ from saydo import paths
 WEB = pathlib.Path(__file__).resolve().with_name('web')
 PROJECT = paths.ROOT
 LOG = logging.getLogger('camera_monitor')
+# 页面与接口里各路相机的键。2 臂手上的相机只有配置了序列号才出现。
+ARM2_CAMERA_KEY = 'd435i_arm2'
+# 把相机让给采集程序的最长时间，单位秒。采集程序结束时会主动归还；
+# 这个上限只是防止它异常退出后预览永远连不上。
+MAX_HOLD_S = 60.
 
 
 def camera_users(serial):
@@ -56,9 +62,41 @@ def camera_users(serial):
 
 
 class Camera:
+    """一路相机的按需预览：有人看时才打开设备，最后一个人离开就释放。
+
+    Attributes:
+        camera_id: 这路相机在页面和接口里的键。
+        name: 相机型号，用来在已连接的设备里找到它。
+        role: `eye_in_hand`（装在机械臂手上）或 `movable_global`
+            （不固定的全局相机）。
+        arm: 装在哪台机械臂手上（`arm1`、`arm2`）；全局相机为 None。
+        hold_until: 让给采集程序的截止时刻（`time.monotonic()` 的值）；
+            在此之前不接受新的预览连接。
+    """
+
     def __init__(
-        self, width, height, fps, camera_id='d435i', serial=None, tracker=None
-    ):
+        self,
+        width: int,
+        height: int,
+        fps: int,
+        camera_id: str = 'd435i',
+        serial: Optional[str] = None,
+        tracker: Optional[object] = None,
+        arm: Optional[str] = None,
+    ) -> None:
+        """创建一路预览；不打开设备。
+
+        Args:
+            width: 请求的图像宽度，单位像素。
+            height: 请求的图像高度，单位像素。
+            fps: 请求的帧率。
+            camera_id: 这路相机的键；`d405` 是全局相机，其余都是手上
+                的 D435i。
+            serial: 相机序列号；None 表示只连着一台该型号时就用它。
+            tracker: 8089 的客户端；给出时优先共享 8089 的画面而不
+                打开设备。
+            arm: 相机装在哪台机械臂手上；全局相机为 None。
+        """
         self.width, self.height, self.target_fps = width, height, fps
         self.requested_size = (width, height)
         self.cv = threading.Condition()
@@ -73,18 +111,29 @@ class Camera:
         self.frame_at = None
         self.fps = 0.0
         self.camera_id, self.serial, self.tracker = camera_id, serial, tracker
-        self.name = (
-            'RealSense D435I' if camera_id == 'd435i' else 'RealSense D405'
-        )
-        self.role = 'eye_in_hand' if camera_id == 'd435i' else 'movable_global'
+        is_global = camera_id == 'd405'
+        self.name = 'RealSense D405' if is_global else 'RealSense D435I'
+        self.role = 'movable_global' if is_global else 'eye_in_hand'
+        self.arm = arm
+        self.hold_until = 0.
         self.source = None
         self.frame_metadata = {}
         self.usb = None
 
-    def status(self):
+    def status(self) -> dict:
+        """返回这路相机的当前状态；不打开设备。
+
+        Returns:
+            状态、相机身份、帧率和最近一帧的时间等。`held_s` 是还要
+            让给采集程序多少秒，0 表示没有被让出。
+        """
         with self.cv:
             return dict(
                 state=self.state,
+                arm=self.arm,
+                held_s=round(
+                    max(0., self.hold_until - time.monotonic()), 1
+                ),
                 error=self.error,
                 camera=self.name,
                 usb=self.usb,
@@ -106,8 +155,35 @@ class Camera:
                 ),
             )
 
-    def subscribe(self):
+    def hold(self, seconds: float) -> None:
+        """把相机让给采集程序一段时间：这期间不接受新的预览连接。
+
+        为什么需要它：页面在预览断开后会自动重连。如果不先挡住，
+        重连会和采集程序抢同一台相机，让采集失败。
+
+        Args:
+            seconds: 让出的时长，单位秒；0 表示立即归还。超过上限
+                `MAX_HOLD_S` 时按上限计。
+        """
+        seconds = min(max(0., float(seconds)), MAX_HOLD_S)
         with self.cv:
+            self.hold_until = time.monotonic() + seconds if seconds else 0.
+
+    def subscribe(self) -> int:
+        """登记一个预览连接，必要时启动采集线程。
+
+        Returns:
+            本次采集的代次，断开时原样交还给 `unsubscribe`。
+
+        Raises:
+            RuntimeError: 相机已让给采集程序、正在释放，或连接数已满。
+        """
+        with self.cv:
+            remaining = self.hold_until - time.monotonic()
+            if remaining > 0:
+                raise RuntimeError(
+                    f'相机已让给采集程序，约 {remaining:.0f} 秒内归还。'
+                )
             if (
                 self.thread
                 and self.thread.is_alive()
@@ -398,6 +474,8 @@ def monitor_status(cameras):
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    """预览服务的请求处理：页面、状态、画面流、截图和释放预览。"""
+
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, fmt, *args):
@@ -545,24 +623,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
             camera.unsubscribe(epoch)
             self.close_connection = True
 
-    def do_POST(self):
-        routes = {'/api/pause': list(self.server.cameras)}
-        routes.update(
-            {f'/api/cameras/{key}/pause': [key] for key in self.server.cameras}
-        )
+    def do_POST(self) -> None:
+        """处理释放预览、让出相机和归还相机三类请求；不控制机械臂。
+
+        `/api/pause` 释放全部预览。`/api/cameras/<键>/pause` 释放一路，
+        请求体里带 `{"hold_s": 秒数}` 时同时把相机让给采集程序。
+        `/api/cameras/<键>/resume` 提前归还。
+        """
+        cameras = self.server.cameras
+        routes = {'/api/pause': ('pause', list(cameras))}
+        for key in cameras:
+            routes[f'/api/cameras/{key}/pause'] = ('pause', [key])
+            routes[f'/api/cameras/{key}/resume'] = ('resume', [key])
         if self.path not in routes:
             return self.send_body(404, b'{"error":"Not found"}')
         origin = self.headers.get('Origin')
         if origin and origin != 'http://' + self.headers.get('Host', ''):
             return self.send_body(403, b'{"error":"Origin mismatch"}')
-        for key in routes[self.path]:
-            self.server.cameras[key].stop()
-        self.send_body(
-            200, json.dumps(monitor_status(self.server.cameras)).encode()
-        )
+        operation, keys = routes[self.path]
+        hold_s = 0.
+        try:
+            size = int(self.headers.get('Content-Length') or 0)
+            if not 0 <= size <= 200:
+                raise ValueError('请求体过大')
+            body = json.loads(self.rfile.read(size) or b'{}')
+            if not isinstance(body, dict) or set(body) - {'hold_s'}:
+                raise ValueError('只接受 hold_s')
+            hold_s = body.get('hold_s', 0)
+            if type(hold_s) not in (int, float) or not 0 <= hold_s:
+                raise ValueError('hold_s 必须是非负数')
+        except ValueError as exc:
+            return self.send_body(
+                400, json.dumps({'error': str(exc)}).encode()
+            )
+        for key in keys:
+            if operation == 'resume':
+                cameras[key].hold(0)
+                continue
+            # 先挡住新连接再停，避免页面在两步之间重连进来。
+            if hold_s and len(keys) == 1:
+                cameras[key].hold(hold_s)
+                LOG.info('%s 让给采集程序 %.0f 秒', key, hold_s)
+            cameras[key].stop()
+        self.send_body(200, json.dumps(monitor_status(cameras)).encode())
 
 
-def main():
+def main() -> None:
+    """启动相机预览服务；只读取相机，不控制机械臂。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8088)
@@ -571,6 +678,13 @@ def main():
     parser.add_argument('--fps', type=int, default=15)
     parser.add_argument('--eye-in-hand-serial')
     parser.add_argument('--fixed-serial')
+    parser.add_argument(
+        '--arm2-serial',
+        help=(
+            '2 臂手上 D435i 的序列号；缺省读取配置里的 '
+            'arm2_eye_in_hand_serial，都没有时不提供这一路'
+        ),
+    )
     parser.add_argument(
         '--tracker-url',
         help=(
@@ -601,8 +715,14 @@ def main():
             else None
         )
     )
-    if eye_serial and eye_serial == fixed_serial:
-        parser.error('两台相机序列号不能相同')
+    arm2_serial = args.arm2_serial or settings.get('arm2_eye_in_hand_serial')
+    known = [s for s in (eye_serial, fixed_serial, arm2_serial) if s]
+    if len(set(known)) != len(known):
+        parser.error('各路相机的序列号不能相同')
+    if arm2_serial and not eye_serial:
+        # 两台 D435i 同时连着时，1 臂那一路也必须写明序列号，否则它在
+        # 8089 停止时会因为“找不到唯一的 D435I”而无法直接采集。
+        parser.error('提供 2 臂相机时，必须同时指定 1 臂相机的序列号')
     tracker = None
     if args.tracker_url:
         from saydo.agent import client
@@ -614,12 +734,16 @@ def main():
     )
     server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
+    size = (args.width, args.height, args.fps)
     server.cameras = {
-        'd435i': Camera(
-            args.width, args.height, args.fps, 'd435i', eye_serial, tracker
-        ),
-        'd405': Camera(args.width, args.height, args.fps, 'd405', fixed_serial),
+        'd435i': Camera(*size, 'd435i', eye_serial, tracker, arm='arm1'),
+        'd405': Camera(*size, 'd405', fixed_serial),
     }
+    if arm2_serial:
+        # 2 臂的相机不经 8089：8089 目前只读 1 臂的相机。
+        server.cameras[ARM2_CAMERA_KEY] = Camera(
+            *size, ARM2_CAMERA_KEY, arm2_serial, arm='arm2'
+        )
 
     def shutdown(*_):
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -630,6 +754,13 @@ def main():
         'Monitor listening on %s:%s; camera stays idle until /stream is opened',
         args.host,
         args.port,
+    )
+    LOG.info(
+        '提供的相机：%s',
+        '，'.join(
+            f'{key}={camera.serial or "自动"}'
+            for key, camera in server.cameras.items()
+        ),
     )
     try:
         server.serve_forever()
