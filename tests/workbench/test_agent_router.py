@@ -15,6 +15,7 @@ from saydo.robot import arms
 from saydo.robot import grasp_robot
 from saydo.workbench import agent_api
 from saydo.workbench import agent_router
+from saydo.workbench import arm_vision
 from saydo.workbench import arm_camera
 from saydo.workbench import live_tracker
 from saydo.workbench import no_vision
@@ -270,6 +271,7 @@ class ControllerCreationTests(unittest.TestCase):
         self.root = pathlib.Path(directory.name)
         self.tracker = live_tracker.Tracker.__new__(live_tracker.Tracker)
         self.tracker.models_root = self.root / 'models'
+        self.tracker.live_arm_id = 'arm1'
 
     def create(self):
         with mock.patch.object(live_tracker, 'ROOT', self.root):
@@ -278,7 +280,11 @@ class ControllerCreationTests(unittest.TestCase):
     def test_only_the_first_arm_until_the_second_is_configured(self):
         controllers = self.create()
         self.assertEqual(list(controllers), ['arm1'])
-        self.assertIs(controllers['arm1'].tracker, self.tracker)
+        vision = controllers['arm1'].tracker
+        self.assertIsInstance(vision, arm_vision.ArmVision)
+        self.assertIs(vision.tracker, self.tracker)
+        self.assertTrue(vision.live)
+        self.assertIs(vision.grasp, controllers['arm1'])
         self.assertEqual(
             controllers['arm1'].config_path,
             self.root / 'config/grasp/trial.json',

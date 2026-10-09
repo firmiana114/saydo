@@ -29,6 +29,7 @@ class NoVision:
         generation: 跟踪代次，仅为与跟踪器保持同名属性。
         command: 待处理的跟踪指令，恒为 None。
         grasp: 使用本对象的动作控制器，由创建方在控制器建好后填入。
+        live: 实时跟踪是否接在这台臂上，恒为 False。
     """
 
     def __init__(self, models_root: pathlib.Path, arm: arms.Arm) -> None:
@@ -52,6 +53,7 @@ class NoVision:
         self.generation = 0
         self.command: Optional[dict] = None
         self.grasp: Any = None
+        self.live = False
 
     def snapshot(self) -> dict:
         """返回与跟踪器同形的状态，其中不含画面和位姿。

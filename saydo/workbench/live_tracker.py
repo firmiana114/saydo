@@ -37,6 +37,7 @@ from saydo.robot import arms
 from saydo.workbench import agent_api as workbench_agent_api
 from saydo.workbench import agent_router
 from saydo.workbench import arm_camera
+from saydo.workbench import arm_vision
 from saydo.workbench import no_vision
 from saydo.workbench import task_runner_proxy
 
@@ -155,9 +156,12 @@ class Tracker:
         # 从这里取用（库装在 work/ 下，只在那条线程里加入搜索路径）。
         self._realsense = None
         self._realsense_loaded = threading.Event()
+        # 实时跟踪接在哪台臂手上的相机；页面可以切换，见 set_live_arm。
+        self.live_arm_id = arms.DEFAULT_ARM_ID
+        self.state['live_arm'] = self.live_arm_id
         self.arms = self._create_controllers(args)
-        # 页面和本类里只针对 1 臂的旧代码仍通过 self.grasp 访问它。
-        self.grasp = self.arms[arms.DEFAULT_ARM_ID]
+        # 页面的各项操作都通过 self.grasp 作用在当前实时跟踪的那台臂上。
+        self.grasp = self.arms[self.live_arm_id]
         if getattr(args, 'resume_reorientation_report', None):
             self.grasp.restore_reorientation_report(
                 args.resume_reorientation_report
@@ -201,10 +205,10 @@ class Tracker:
     ) -> Dict[str, grasp_control.GraspController]:
         """为本机已配置的每台臂创建一个动作控制器；不连接控制器。
 
-        1 臂使用本跟踪器读取的相机。其余的臂如果在抓取配置里写了
-        `camera_serial`，就各开一条取图线程，支持场景快照；没写的使用
-        占位视觉来源：读取状态、复位、夹爪和停止可用，需要画面的操作
-        会明确报错。
+        每台臂各有一个视觉来源（`self.visions`）。1 臂的相机由本跟踪器
+        的取图线程读取；其余的臂如果在抓取配置里写了 `camera_serial`，
+        就各开一条取图线程；没写的使用占位视觉来源：读取状态、复位、
+        夹爪和停止可用，需要画面的操作会明确报错。
 
         Args:
             args: 启动参数；`grasp_config` 只覆盖 1 臂的抓取配置路径。
@@ -215,9 +219,10 @@ class Tracker:
         mode = getattr(args, 'grasp_mode', 'execute')
         controllers = {}
         self.arm_cameras = []
+        self.visions = {}
         for arm in arms.configured(ROOT):
             if arm.arm_id == arms.DEFAULT_ARM_ID:
-                vision = self
+                vision = arm_vision.ArmVision(self, arm)
                 config_path = pathlib.Path(
                     getattr(args, 'grasp_config', arm.config_path(ROOT))
                 )
@@ -244,8 +249,8 @@ class Tracker:
             controller = grasp_control.GraspController(
                 ROOT, vision, config_path, mode, arm
             )
-            if vision is not self:
-                vision.grasp = controller
+            vision.grasp = controller
+            self.visions[arm.arm_id] = vision
             controllers[arm.arm_id] = controller
         return controllers
 
@@ -287,7 +292,9 @@ class Tracker:
         )
 
     def capture(self) -> None:
-        """1 臂相机的取图线程：持续把最新的彩色与深度帧放进 `latest`。
+        """1 臂相机的取图线程：持续把最新的彩色与深度帧交给 1 臂的视觉来源。
+
+        实时跟踪接在 1 臂上时，视觉来源会把画面同时送进 `latest`。
 
         相机出错时记录原因并让整个服务停止，由操作者处理后重启。
         """
@@ -416,21 +423,7 @@ class Tracker:
                     'sensor_age_at_receive_s': received_at - captured_at,
                     'alignment_seconds': time.perf_counter() - align_started,
                 }
-                with self.lock:
-                    self.latest = frame
-                    if (
-                        not self.llm_detector
-                        or not self.history
-                        or frame['time'] - self.history[-1]['time'] >= .1
-                    ):
-                        self.history.append(frame)
-                    self.state['sequence'] = sequence
-                    self.state['camera'] = camera
-                    self.state['camera_frame_at'] = frame['time']
-                    self.state['sensor_age_at_receive_s'] = frame[
-                        'sensor_age_at_receive_s'
-                    ]
-                    self.state['alignment_seconds'] = frame['alignment_seconds']
+                self.visions[arms.DEFAULT_ARM_ID].publish(frame)
         except Exception as error:
             self.event(
                 'camera_failed',
@@ -445,6 +438,128 @@ class Tracker:
         finally:
             if started:
                 pipe.stop()
+
+    def accept_frame(self, arm_id: str, frame: dict) -> None:
+        """接收一帧相机画面；只采用当前实时跟踪的那台臂的画面。
+
+        各臂的取图线程都会调用本函数。
+
+        Args:
+            arm_id: 这一帧来自哪台臂手上的相机。
+            frame: 一帧画面，含彩色图、深度图、内参、相机身份和时间。
+        """
+        with self.lock:
+            if arm_id != self.live_arm_id:
+                return
+            self.latest = frame
+            if (
+                not self.llm_detector
+                or not self.history
+                or frame['time'] - self.history[-1]['time'] >= .1
+            ):
+                self.history.append(frame)
+            self.state['sequence'] = frame['sequence']
+            self.state['camera'] = frame['camera']
+            self.state['camera_frame_at'] = frame['time']
+            self.state['sensor_age_at_receive_s'] = frame[
+                'sensor_age_at_receive_s'
+            ]
+            self.state['alignment_seconds'] = frame.get('alignment_seconds')
+
+    def arm_choices(self) -> list:
+        """列出本机的各台臂，供页面显示“当前机械臂”的切换按钮。
+
+        Returns:
+            每台臂一项：编号 `arm`、名称 `label`、是否有相机可做实时
+            跟踪 `camera`、是不是当前实时跟踪的臂 `live`。
+        """
+        return [
+            {
+                'arm': arm_id,
+                'label': controller.arm.label,
+                'camera': isinstance(
+                    self.visions.get(arm_id), arm_vision.ArmVision
+                ),
+                'live': arm_id == self.live_arm_id,
+            }
+            for arm_id, controller in self.arms.items()
+        ]
+
+    def set_live_arm(self, arm_id: Any) -> dict:
+        """把实时跟踪切换到另一台臂手上的相机；不发送任何机械臂指令。
+
+        定位模型只有一份，实时跟踪同一时间只能接一台相机。切换后页面
+        上的画面、找框、跟踪以及抓取、示教、复位等操作都作用在新的
+        这台臂上；原来那台臂仍可通过场景快照定位和动作。切换会丢弃
+        当前的跟踪结果，状态回到“已暂停”。
+
+        Args:
+            arm_id: 要切换到的臂的编号。
+
+        Returns:
+            含 `live_arm`（切换后的臂）、`changed`（是否真的换了）和
+            `motion_sent`（恒为 False）。
+
+        Raises:
+            ValueError: 臂不存在或没有接相机、有臂正在执行任务、模型
+                正在切换，或正在采集场景快照。
+        """
+        if arm_id not in self.arms:
+            raise ValueError(f'本机没有配置机械臂 {arm_id!r}')
+        vision = self.visions[arm_id]
+        if not isinstance(vision, arm_vision.ArmVision):
+            raise ValueError(
+                f'{self.arms[arm_id].arm.label}没有接相机，不能做实时跟踪'
+            )
+        with self.lock:
+            if arm_id == self.live_arm_id:
+                return {
+                    'live_arm': arm_id, 'changed': False, 'motion_sent': False
+                }
+            for controller in self.arms.values():
+                with controller.lock:
+                    occupied = (
+                        controller.status['busy']
+                        or controller.status.get('stopping')
+                    )
+                if occupied:
+                    raise ValueError(
+                        f'{controller.arm.label}任务进行中，不能切换当前机械臂'
+                    )
+            if self.state['state'] == 'switching':
+                raise ValueError('模型正在切换，请加载完成后再切换机械臂')
+            if self.scene_job is not None:
+                raise ValueError('正在采集场景快照，请完成后再切换机械臂')
+            previous = self.live_arm_id
+            frame = vision.own_frame()
+            # 代次加一：处理循环里按旧相机算到一半的结果随之作废。
+            self.generation += 1
+            self.command = None
+            self.frozen = None
+            self.jpeg = None
+            self.history.clear()
+            self.pose_history.clear()
+            self.last_attempt_sequence = -1
+            self.live_arm_id = arm_id
+            self.grasp = self.arms[arm_id]
+            self.latest = frame
+            self.state.update(
+                state='paused',
+                error=None,
+                live_arm=arm_id,
+                camera_T_object=None,
+                pose_frame_at=None,
+                quality={},
+                bottle_candidates=[],
+                camera=frame['camera'] if frame else None,
+                sequence=frame['sequence'] if frame else 0,
+            )
+            if frame:
+                self.state['camera_frame_at'] = frame['time']
+            else:
+                self.state.pop('camera_frame_at', None)
+            self.event('live_arm_changed', previous=previous, arm=arm_id)
+        return {'live_arm': arm_id, 'changed': True, 'motion_sent': False}
 
     def localize_frozen_scene(self, frame, targets, check, progress):
         done = threading.Event()
@@ -747,7 +862,14 @@ class Tracker:
                 )
                 return {'object': row, 'motion_sent': False}
 
-    def snapshot(self):
+    def snapshot(self) -> dict:
+        """返回页面轮询用的完整状态；不连接任何设备。
+
+        Returns:
+            跟踪状态的副本，另加画面与位姿距今的秒数、当前实时跟踪
+            的那台臂的动作控制器状态（`grasp`）和各臂的列表（`arms`）。
+            位姿过期（超过 2 秒）或质量不合格时不给出位姿。
+        """
         with self.lock:
             result = dict(self.state)
             now = time.time()
@@ -770,6 +892,7 @@ class Tracker:
                 result['camera_T_object'] = None
                 result['pose_semantics'] = None
             result['grasp'] = self.grasp.snapshot()
+            result['arms'] = self.arm_choices()
             return result
 
     def grasp_observation(self):
@@ -2097,10 +2220,10 @@ def main() -> None:
                     WEB.joinpath('teach_grasp_panel.js').read_bytes(),
                     'application/javascript; charset=utf-8',
                 )
-            elif path == '/arm_speed_panel.js':
+            elif path in ('/arm_speed_panel.js', '/arm_switch_panel.js'):
                 self.reply(
                     200,
-                    WEB.joinpath('arm_speed_panel.js').read_bytes(),
+                    WEB.joinpath(path[1:]).read_bytes(),
                     'application/javascript; charset=utf-8',
                 )
             elif path in ('/api/grasp/profiles', '/api/grasp/editor-model'):
@@ -2244,6 +2367,8 @@ def main() -> None:
                     result = agent_api.post(self.path, value)
                 elif self.path == '/api/freeze':
                     result = tracker.freeze()
+                elif self.path == '/api/live-arm':
+                    result = tracker.set_live_arm(value.get('arm'))
                 elif self.path == '/api/object':
                     tracker.switch_object(value['id'])
                     result = {'accepted': True}

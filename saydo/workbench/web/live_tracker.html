@@ -222,6 +222,34 @@
       flex-shrink: 0;
     }
 
+    #arm-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #arm-switch[hidden] {
+      display: none;
+    }
+
+    #arm-switch button {
+      padding: 5px 11px;
+      font-size: 12px;
+    }
+
+    #arm-switch button[aria-pressed="true"] {
+      background: #1f5f99;
+      border-color: #1f5f99;
+      color: #fff;
+      opacity: 1;
+      cursor: default;
+    }
+
+    #arm-switch-feedback {
+      font-size: 12px;
+      color: #476178;
+    }
+
     #status {
       font-size: 12px;
       color: #476178;
@@ -1505,7 +1533,7 @@
         <p id="object-info"></p>
       </div>
       <div class="workspace-global">
-        <span id="status" role="status">正在连接…</span><button id="objects-open">切换物品</button>
+        <span id="arm-switch-feedback" role="status"></span><span id="arm-switch" role="group" aria-label="当前机械臂" hidden></span><span id="status" role="status">正在连接…</span><button id="objects-open">切换物品</button>
       </div>
     </header>
     <div id="message" role="status"></div>
@@ -1806,6 +1834,7 @@
   <script src="/grasp_editor.js"></script>
   <script src="/teach_grasp_panel.js"></script>
   <script src="/arm_speed_panel.js"></script>
+  <script src="/arm_switch_panel.js"></script>
   <script>
     const canvas = document.querySelector('#view');
     const ctx = canvas.getContext('2d');
@@ -2289,6 +2318,11 @@
     let openingGripper = false;
     let resetting = false;
     const armSpeedPanel = new ArmSpeedPanel((path, data) => post(path, data));
+    // 切换当前机械臂后整页重新载入：夹法、放置、调姿等面板都按臂保存，
+    // 重新载入比逐个面板清空更不容易漏。
+    const armSwitchPanel = new ArmSwitchPanel(
+        (path, data) => post(path, data), () => location.reload()
+    );
     const teachPanel = new TeachGraspPanel((path, data) => post(path, data));
     const resetButton = document.querySelector('#arm-reset');
     const zeroResetButton = document.querySelector('#arm-reset-zero');
@@ -2517,6 +2551,7 @@
                 graspEditorPanel.pending
         );
         teachPanel.update(s, actionPending);
+        armSwitchPanel.update(s, actionPending);
         openButton.disabled = !!g.busy || actionPending || !g.motion_enabled;
         document.querySelector('#grasp').disabled =
             g.busy || actionPending || s.state !== 'tracking' || !s.quality?.good;

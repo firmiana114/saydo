@@ -1,30 +1,30 @@
-"""第二台及以后的机械臂手上相机：持续取图，供场景快照使用。
+"""第二台及以后的机械臂手上相机的取图线程。
 
-8089 的跟踪器（`live_tracker.Tracker`）读取 1 臂手上的相机并做实时跟踪。
-其余的臂由本模块各开一条取图线程，只做一件事：把最新的一帧彩色和深度
-图放在 `latest` 里。场景快照拿这一帧去定位物品，定位用的模型仍是跟踪器
-里那一份（显存只够放一份），所以定位请求转交给跟踪器处理。
+8089 的跟踪器（`live_tracker.Tracker`）自己读取 1 臂手上的相机。其余的臂
+由本模块各开一条取图线程，把最新的一帧彩色和深度图交给这台臂的视觉
+来源（`arm_vision.ArmVision`，本类继承它）。这一帧有两个用途：
 
-本模块不做实时跟踪：这台臂只支持“先采集场景快照、再按快照动作”的流程。
-需要实时跟踪位姿的操作会得到一句明确的报错。
+- 场景快照：拿它去定位物品。定位用的模型是跟踪器里那一份（显存只够
+  放一份），所以定位请求转交给跟踪器处理。
+- 实时跟踪：操作者在页面上把当前机械臂切换到这台臂时，画面同时送进
+  跟踪器，由它做实时跟踪。
 
 与 1 臂的取图不同，这里相机出错不会让整个服务停止：记录后隔几秒重试，
-1 臂的工作不受影响。
+其他臂的工作不受影响。
 """
 
 from __future__ import annotations
 
-import pathlib
-import threading
 import time
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
 
 from saydo.perception import vision_refinement
 from saydo.robot import arms
+from saydo.workbench import arm_vision
 
 # 与跟踪器对 1 臂相机的取流设置一致：彩色 1280×720、深度 640×360、15 帧/秒，
 # 对齐后缩到 640×360 交给定位模型。两台臂的画面规格相同，同一套模型和
@@ -42,24 +42,12 @@ MAX_COLOR_DEPTH_GAP_MS = 100
 RETRY_INTERVAL_S = 5.
 
 
-class ArmCamera:
-    """一台机械臂手上相机的取图线程，对外的属性与跟踪器同名。
-
-    动作控制器和 Agent 接口把它当作这台臂的“视觉来源”使用。
+class ArmCamera(arm_vision.ArmVision):
+    """一台机械臂手上相机的取图线程，同时是这台臂的视觉来源。
 
     Attributes:
-        arm: 这台相机装在哪台臂手上。
         serial: 相机序列号。
-        models_root: 物品模型目录。
-        lock: 保护 `latest` 与 `state` 的可重入锁。
-        state: 视觉状态。`camera`（相机身份与内参）、`camera_frame_at`
-            （最近一帧的时间）、`camera_state`（`starting`、`streaming`、
-            `error`）、`model_ready`（定位模型是否就绪，取自跟踪器）。
-        latest: 最近一帧；还没有画面时为 None。
-        frozen: 冻结的候选画面；本类不做实时跟踪，恒为 None。
-        generation: 跟踪代次；场景采集会改它，本类不使用。
-        command: 待处理的跟踪指令；本类不使用。
-        grasp: 使用本对象的动作控制器，由创建方在控制器建好后填入。
+        depth_quadratic_per_m: 深度读数的二次项校正系数。
     """
 
     def __init__(
@@ -79,81 +67,10 @@ class ArmCamera:
             depth_quadratic_per_m: 这台相机深度读数的二次项校正系数，
                 取自该臂的相机校正文件；0 表示不校正。
         """
+        super().__init__(tracker, arm)
         self.depth_quadratic_per_m = float(depth_quadratic_per_m)
-        self.tracker = tracker
-        self.arm = arm
         self.serial = serial
-        self.models_root = pathlib.Path(tracker.models_root)
-        self.lock = threading.RLock()
-        self.unsupported = (
-            f'{arm.label}只支持先采集场景快照再动作，'
-            '不支持实时跟踪位姿（实时跟踪只接 1 臂的相机）'
-        )
-        self.state: Dict[str, Any] = {
-            'state': 'scene_snapshot_only',
-            'error': None,
-            'camera_state': 'starting',
-            'sequence': 0,
-            'model_ready': False,
-        }
-        self.latest: Optional[dict] = None
-        self.frozen: Optional[dict] = None
-        self.generation = 0
-        self.command: Optional[tuple] = None
-        self.grasp: Any = None
         self._last_logged_error: Optional[str] = None
-
-    def snapshot(self) -> dict:
-        """返回与跟踪器同形的状态；不含实时跟踪的位姿。
-
-        Returns:
-            视觉状态、最近一帧距今的秒数，以及这台臂动作控制器的状态。
-        """
-        with self.lock:
-            self.state['model_ready'] = bool(
-                self.tracker.state.get('model_ready')
-            )
-            result = dict(self.state)
-        frame_at = result.get('camera_frame_at')
-        result['camera_age_s'] = (
-            time.time() - frame_at if frame_at is not None else None
-        )
-        result['pose_age_s'] = None
-        result['grasp'] = self.grasp.snapshot()
-        return result
-
-    def localize_frozen_scene(
-        self, frame: dict, targets: list, check: Any, progress: Any
-    ) -> list:
-        """在一帧冻结的画面里定位全部目标；交给跟踪器的定位模型处理。
-
-        Args:
-            frame: 本相机的一帧画面。
-            targets: 要定位的目标（物品编号、实例编号、可选的框）。
-            check: 定位期间反复调用的检查函数，抛出异常即取消。
-            progress: 接收进度文字的函数。
-
-        Returns:
-            各目标在相机坐标系里的位姿与质量信息。
-
-        Raises:
-            ValueError: 已有另一个场景采集在进行、被取消，或定位失败。
-        """
-        return self.tracker.localize_frozen_scene(
-            frame, targets, check, progress
-        )
-
-    def _unsupported(self, *unused_args: Any, **unused_kwargs: Any) -> Any:
-        raise ValueError(self.unsupported)
-
-    # 以下操作都依赖实时跟踪，本类一律报同一句错。逐个列出而不是用
-    # __getattr__ 兜底，是为了让拼错的属性名照常报 AttributeError。
-    grasp_observation = _unsupported
-    switch_object = _unsupported
-    automatic = _unsupported
-    freeze = _unsupported
-    initialize = _unsupported
-    choose = _unsupported
 
     def run(self) -> None:
         """取图线程的入口：持续取图，出错后隔几秒重试，直到服务停止。"""
@@ -175,9 +92,7 @@ class ArmCamera:
 
     def _record_failure(self, message: str, trace: str = '') -> None:
         """把相机错误写进状态；同一条错误只记一次日志，避免重试时刷屏。"""
-        with self.lock:
-            self.latest = None
-            self.state.update(camera_state='error', error=message)
+        self.camera_failed(message)
         if message != self._last_logged_error:
             self._last_logged_error = message
             self.tracker.event(
@@ -319,18 +234,7 @@ class ArmCamera:
 
     def _publish(self, frame: dict) -> None:
         """发布一帧；第一帧（或出错恢复后的第一帧）时记录相机已连接。"""
-        with self.lock:
-            connected = self.state['camera_state'] != 'streaming'
-            self.latest = frame
-            self.state.update(
-                camera_state='streaming',
-                error=None,
-                sequence=frame['sequence'],
-                camera=frame['camera'],
-                camera_frame_at=frame['time'],
-                model_ready=bool(self.tracker.state.get('model_ready')),
-            )
-        if connected:
+        if self.publish(frame):
             self._last_logged_error = None
             self.tracker.event(
                 'arm_camera_connected',

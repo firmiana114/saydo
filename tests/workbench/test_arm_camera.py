@@ -44,6 +44,10 @@ class ArmCameraTestCase(unittest.TestCase):
             event=lambda name, **values: self.events.append((name, values)),
             realsense_module=lambda: self.rs,
             localize_frozen_scene=mock.Mock(),
+            # 实时跟踪接在 1 臂上：本相机只供场景快照使用。
+            live_arm_id='arm1',
+            accept_frame=mock.Mock(),
+            lock=threading.RLock(),
         )
         self.arm = arms.by_id('arm2')
         self.camera = arm_camera.ArmCamera(self.tracker, self.arm, SERIAL)
@@ -158,18 +162,18 @@ class FrameTests(ArmCameraTestCase):
         self.assertEqual(frame['depth_quadratic_per_m'], -.035)
 
     def test_live_tracking_operations_are_refused_with_the_reason(self):
-        for name in (
-            'grasp_observation',
-            'switch_object',
-            'automatic',
-            'freeze',
-            'initialize',
-            'choose',
+        for name, arguments in (
+            ('grasp_observation', ()),
+            ('switch_object', ('bottle',)),
+            ('automatic', ()),
+            ('freeze', ()),
+            ('initialize', ({},)),
+            ('choose', ({},)),
         ):
             with self.subTest(name=name), self.assertRaisesRegex(
-                ValueError, '2臂.*场景快照.*不支持实时跟踪'
+                ValueError, '实时跟踪现在接在1臂.*2臂.*场景快照.*切换'
             ):
-                getattr(self.camera, name)('anything')
+                getattr(self.camera, name)(*arguments)
 
     def test_scene_localization_uses_the_shared_models(self):
         self.tracker.localize_frozen_scene.return_value = ['rows']

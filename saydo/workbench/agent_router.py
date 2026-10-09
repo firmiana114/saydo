@@ -119,8 +119,9 @@ class ArmRouter:
 
         Returns:
             含 `default_arm` 和 `arms` 列表。每一项有臂编号、名字、左右、
-            是否有任务在进行、持物记录、正在处理的任务编号，以及这台臂
-            是否已接入视觉。
+            是否有任务在进行、持物记录、正在处理的任务编号、这台臂是否
+            已接入视觉，以及实时跟踪现在是不是接在它的相机上
+            （`live_tracking`；不是的臂只能先采集场景快照再动作）。
         """
         rows = []
         for arm_id, api in self.apis.items():
@@ -141,6 +142,7 @@ class ArmRouter:
                     'vision_available': (
                         api.tracker.state.get('state') != 'vision_unavailable'
                     ),
+                    'live_tracking': bool(getattr(api.tracker, 'live', True)),
                 }
             )
         return {'default_arm': arms.DEFAULT_ARM_ID, 'arms': rows}

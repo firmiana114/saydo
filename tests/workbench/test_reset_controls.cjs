@@ -69,6 +69,9 @@ vm.runInContext(
 vm.runInContext(
     fs.readFileSync(WEB_DIR + '/arm_speed_panel.js', 'utf8'), sandbox
 );
+vm.runInContext(
+    fs.readFileSync(WEB_DIR + '/arm_switch_panel.js', 'utf8'), sandbox
+);
 vm.runInContext(source, sandbox);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
