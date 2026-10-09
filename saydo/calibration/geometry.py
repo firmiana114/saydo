@@ -28,16 +28,31 @@ def pose_matrix(raw):
     return matrix
 
 
-def zero_reference_frames(tool, work):
-    if (
-        tool.get('tool_name') not in {'Arm_Tip', 'he_ref'}
-        or work.get('frame_name') != 'Base'
-    ):
+def zero_reference_frames(tool: dict, work: dict) -> None:
+    """确认控制器报告的位姿就是法兰在基座坐标里的位姿。
+
+    手眼标定要的是“法兰相对基座”。控制器报告的却是“当前工具相对
+    当前工作坐标系”。只有工具没有偏移、工作坐标系就是基座时，两者才
+    相同。这里只检查、不替操作者切换设置。
+
+    Args:
+        tool: 控制器对 `get_current_tool_frame` 的应答。
+        work: 控制器对 `get_current_work_frame` 的应答。
+
+    Raises:
+        ValueError: 工具不是零偏移的 `Arm_Tip` 或 `he_ref`，或工作
+            坐标系不是零偏移的 `Base`。报错里写明当前的名字和数值。
+    """
+    tool_name, work_name = tool.get('tool_name'), work.get('frame_name')
+    if tool_name not in {'Arm_Tip', 'he_ref'} or work_name != 'Base':
         raise ValueError(
-            'Only zero-offset Arm_Tip or he_ref in Base is supported; no frame '
-            'changes are performed'
+            f'当前工具是 {tool_name}、工作坐标系是 {work_name}；手眼采集'
+            '要求工具为零偏移的 Arm_Tip 或 he_ref、工作坐标系为 Base。'
+            '请在示教器上切换，程序不会代为切换'
         )
-    for frame in [tool, work]:
+    for label, name, frame in (
+        ('工具', tool_name, tool), ('工作坐标系', work_name, work)
+    ):
         pose = frame.get('pose')
         if (
             not isinstance(pose, list)
@@ -45,8 +60,8 @@ def zero_reference_frames(tool, work):
             or any(v != 0 for v in pose)
         ):
             raise ValueError(
-                'Nonzero or missing tool/work transform; explicit conversion '
-                'is required'
+                f'{label} {name} 的偏移不是零（控制器原始值 {pose}）；'
+                '手眼采集要求零偏移，否则需要另做坐标换算'
             )
 
 

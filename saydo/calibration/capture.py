@@ -6,11 +6,13 @@ import contextlib
 import datetime
 import hashlib
 import json
+import os
 import socket
 import subprocess
 import time
 import uuid
 import pathlib
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -60,9 +62,133 @@ class Robot:
             raise RuntimeError('Matching controller reply not received')
 
 
-def main():
+def select_camera(serial: Optional[str] = None) -> dict:
+    """在已连接的相机里选出要采集的那台 D435i；只枚举，不打开设备。
+
+    两台机械臂手上各有一台 D435i，同时连着时必须指明用哪一台，
+    否则可能拿 1 臂相机的图去配 2 臂的位姿。
+
+    Args:
+        serial: 相机序列号（RealSense SDK 报告的那个）；None 表示
+            “只连着一台 D435i 时就用它”。
+
+    Returns:
+        含 `serial`（SDK 序列号）、`name`（型号）和 `asic_serial`
+        （芯片序列号，系统的 USB 设备信息里记的是它，用来找这台相机
+        对应的视频设备节点；读不到时为 None）。
+
+    Raises:
+        ValueError: 找不到指定的相机，或没有指定而连接的 D435i 不是
+            恰好一台。
+    """
+    cameras = []
+    for device in rs.context().query_devices():
+        name = device.get_info(rs.camera_info.name)
+        if 'D435' not in name.upper():
+            continue
+        cameras.append(
+            {
+                'serial': device.get_info(rs.camera_info.serial_number),
+                'name': name,
+                'asic_serial': (
+                    device.get_info(rs.camera_info.asic_serial_number)
+                    if device.supports(rs.camera_info.asic_serial_number)
+                    else None
+                ),
+            }
+        )
+    connected = '、'.join(camera['serial'] for camera in cameras) or '无'
+    if serial is None:
+        if len(cameras) != 1:
+            raise ValueError(
+                f'连接着 {len(cameras)} 台 D435i（{connected}），'
+                '请用 --serial 指定要采集的那一台'
+            )
+        return cameras[0]
+    for camera in cameras:
+        if camera['serial'] == serial:
+            return camera
+    raise ValueError(
+        f'没有找到序列号为 {serial} 的 D435i；已连接的 D435i：{connected}'
+    )
+
+
+def video_nodes(
+    asic_serial: Optional[str],
+    sysfs: pathlib.Path = pathlib.Path('/sys/class/video4linux'),
+    dev: pathlib.Path = pathlib.Path('/dev'),
+) -> List[str]:
+    """列出一台相机在系统里对应的视频设备节点。
+
+    Args:
+        asic_serial: 相机的芯片序列号；None 表示无法区分相机。
+        sysfs: 系统列出视频设备的目录，测试时换成临时目录。
+        dev: 设备节点所在目录，测试时换成临时目录。
+
+    Returns:
+        视频设备节点的路径。无法区分相机时返回全部视频节点，这样占用
+        检查会偏严（别的相机在用也算占用），不会漏掉真正的占用。
+    """
+    everything = sorted(str(path) for path in dev.glob('video*'))
+    if asic_serial is None:
+        return everything
+    nodes = []
+    for item in sysfs.glob('video*'):
+        for parent in item.resolve().parents:
+            recorded = parent / 'serial'
+            if (parent / 'idVendor').exists() and recorded.exists():
+                if recorded.read_text().strip() == asic_serial:
+                    nodes.append(str(dev / item.name))
+                break
+    return sorted(nodes) or everything
+
+
+def camera_users(camera: dict) -> List[int]:
+    """查出哪些进程正占用着一台相机；不打开设备。
+
+    只看这一台相机，所以 8089 在用 1 臂相机时仍可以采集 2 臂相机。
+
+    Args:
+        camera: `select_camera` 的返回值。
+
+    Returns:
+        占用者的进程号，升序；不含本进程。
+
+    Raises:
+        RuntimeError: 系统工具 fuser 运行失败，无法判断是否被占用。
+    """
+    nodes = video_nodes(camera.get('asic_serial'))
+    if not nodes:
+        return []
+    result = subprocess.run(
+        ['fuser', *nodes], capture_output=True, text=True, timeout=3
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            f'无法检查相机占用状态（fuser 退出码 {result.returncode}）'
+        )
+    return sorted(
+        {
+            int(word)
+            for word in result.stdout.split()
+            if word.isdigit() and int(word) != os.getpid()
+        }
+    )
+
+
+def main() -> int:
+    """采集一组静止样本并写入会话目录；只读查询机械臂，不发送任何指令。
+
+    Returns:
+        进程退出码：0 表示样本通过筛选成为候选，1 表示被拒收。无论
+        哪种结果都会留下 `sample.json`，拒收原因写在其中。
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--robot-ip', default='192.168.1.19')
+    parser.add_argument(
+        '--serial',
+        help='要采集的 D435i 的序列号；只连着一台时可以不写',
+    )
     parser.add_argument('--session', default=datetime.date.today().isoformat())
     args = parser.parse_args()
     if (
@@ -145,29 +271,15 @@ def main():
             'NOT_ASSESSED: tool mass/center of mass and workspace clearance '
             'need separate verification'
         )
-        # Refuse to compete with preview or other video capture processes.
-        nodes = list(pathlib.Path('/dev').glob('video*'))
-        if nodes:
-            users = subprocess.run(
-                ['fuser', *map(str, nodes)],
-                capture_output=True,
-                text=True,
-                timeout=3,
+        camera = select_camera(args.serial)
+        serial = camera['serial']
+        # 不与预览或其他取图进程抢同一台相机；别的相机被占用不受影响。
+        users = camera_users(camera)
+        if users:
+            raise RuntimeError(
+                f'相机 {serial} 正被进程 {users} 占用；'
+                '请先释放这台相机的预览或停止占用它的服务'
             )
-            if users.returncode not in (0, 1) or users.stdout.strip():
-                raise RuntimeError(
-                    'Video device in use; release camera preview before '
-                    'capturing'
-                )
-        devices = list(rs.context().query_devices())
-        matches = [
-            d
-            for d in devices
-            if 'D435' in d.get_info(rs.camera_info.name).upper()
-        ]
-        if len(matches) != 1:
-            raise ValueError('Expected exactly one D435i camera')
-        serial = matches[0].get_info(rs.camera_info.serial_number)
         config = rs.config()
         config.enable_device(serial)
         config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 15)

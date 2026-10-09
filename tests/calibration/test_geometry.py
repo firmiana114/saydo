@@ -72,6 +72,18 @@ class GeometryChecks(unittest.TestCase):
             ), self.assertRaises(ValueError):
                 geometry.zero_reference_frames(tool, work)
 
+    def test_rejection_names_the_current_tool_and_work_frame(self):
+        with self.assertRaisesRegex(ValueError, 'Arm_Tip.*World.*Base'):
+            geometry.zero_reference_frames(
+                {'tool_name': 'Arm_Tip', 'pose': [0] * 6},
+                {'frame_name': 'World', 'pose': [0] * 6},
+            )
+        with self.assertRaisesRegex(ValueError, r'工具 he_ref.*200000'):
+            geometry.zero_reference_frames(
+                {'tool_name': 'he_ref', 'pose': [0, 0, 200000, 0, 0, 0]},
+                {'frame_name': 'Base', 'pose': [0] * 6},
+            )
+
     def test_error_blocks_acceptance(self):
         states = [{'err': [4116], 'joint': [0] * 7, 'pose': [0] * 6}] * 3
         with self.assertRaises(ValueError):
