@@ -11,11 +11,13 @@ import tempfile
 import threading
 import time
 import traceback
+from typing import Optional
 
 import numpy as np
 import yaml
 
 from saydo.geometry import grasp_geometry
+from saydo.robot import arms
 from saydo.robot import grasp_robot
 from saydo.robot import motion_validation
 from saydo.perception import camera_checks
@@ -43,10 +45,42 @@ class GraspController(
     placement_control.PlacementMixin,
     grasp_profiles_control.GraspProfilesMixin,
 ):
-    def __init__(self, root, tracker, config_path, mode='execute'):
+    """一台机械臂的动作控制器：抓取、放置、调姿、持物移动和复位的总入口。
+
+    各类动作的实现分在各个父类里，本类保存它们共用的状态：当前任务状态
+    `status`、持物记录 `held_object`、取消标志和与控制器的连接。同一台臂
+    同一时刻只处理一个任务（`status['busy']`）；每台臂创建一个实例，
+    实例之间互不共享状态，所以两台臂可以同时各做各的。
+    """
+    def __init__(
+        self,
+        root: pathlib.Path,
+        tracker: object,
+        config_path: pathlib.Path,
+        mode: str = 'execute',
+        arm: Optional[arms.Arm] = None,
+    ) -> None:
+        """创建一台臂的动作控制器；不连接控制器，不发送任何指令。
+
+        每台臂一个控制器，各有自己的任务状态、持物记录和设备锁，
+        所以两台臂可以同时各执行一个任务。
+
+        Args:
+            root: 项目根目录。
+            tracker: 这台臂的视觉来源（提供当前画面、物品位姿和相机
+                身份）；只做不需要视觉的操作时可以是 None。
+            config_path: 这台臂的抓取配置文件。
+            mode: `execute` 允许发送运动和夹爪指令；`preview` 只生成
+                方案。
+            arm: 这个控制器管的是哪台臂；缺省为 1 臂。
+        """
         self.root, self.tracker, self.config_path, self.mode = (
             pathlib.Path(root), tracker, pathlib.Path(config_path), mode
         )
+        self.arm = arm if arm is not None else arms.default()
+        # 任务诊断、场景快照、方案库都写在这台臂自己的目录里。
+        self.state_dir = self.arm.state_path(self.root)
+        self.robot_lock_path = self.arm.lock_path(self.root)
         self.lock = threading.RLock()
         self.cancelled = threading.Event()
         self.thread = None
@@ -59,6 +93,7 @@ class GraspController(
         self.status = {
             'state': 'idle',
             'busy': False,
+            'arm': self.arm.arm_id,
             'mode': mode,
             'motion_enabled': mode == 'execute',
             'message': (
@@ -67,6 +102,20 @@ class GraspController(
                 else '方案预览模式，不发送运动或夹爪写入命令。'
             ),
         }
+
+    def camera_reuse_path(self, config: dict) -> pathlib.Path:
+        """返回这台臂的“同型号相机复用手眼标定”策略文件的路径。
+
+        Args:
+            config: 这台臂的抓取配置。`camera_reuse_file` 缺省时用
+                1 臂最初的位置。
+
+        Returns:
+            策略文件的路径；文件不一定存在，不存在表示不允许复用。
+        """
+        return self.root / config.get(
+            'camera_reuse_file', 'config/calibration/camera_reuse.yaml'
+        )
 
     def snapshot(self):
         with self.lock:
@@ -95,13 +144,26 @@ class GraspController(
                 'pregrasp_distance_m': config.get('pregrasp_distance_m'),
             }
 
-    def set_open_position(self, value):
+    def set_open_position(self, value: int) -> dict:
+        """把抓取前的夹爪张开位置保存到这台臂的抓取配置；不发送夹爪指令。
+
+        Args:
+            value: 张开位置，夹爪原始值 0–1000（1000 为完全张开，不是毫米）。
+
+        Returns:
+            保存结果；`motion_sent` 恒为 False，新值下一次抓取时生效。
+
+        Raises:
+            ValueError: 数值无效、这台臂有任务在进行，或配置被其他程序
+                同时修改。
+            BlockingIOError: 这台臂的设备锁被其他程序占用。
+        """
         if type(value) is not int or not 0 <= value <= 1000:
             raise ValueError('抓取时夹爪打开位置必须为 0–1000 的整数原始值')
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能更改抓取张开位置')
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             report = {
                 'started_at': time.time(),
@@ -236,7 +298,22 @@ class GraspController(
         ):
             raise ValueError('返回关节角度误差超过 0.5 度或反馈无效')
 
-    def run_reset(self, config, target, target_kind='observation'):
+    def run_reset(
+        self, config: dict, target: list, target_kind: str = 'observation'
+    ) -> None:
+        """把机械臂移动到复位姿态；会发送运动指令，夹爪开合保持不变。
+
+        在工作线程里运行。先占住这台臂的设备锁，核对型号、关节使能、工具
+        参数和夹爪状态，确认机械臂已停稳，再用关节运动到目标。本函数不
+        抛出异常：结果写入 `status` 和记录目录下的 `reset_jobs/`；出错时
+        如果已经发出运动，先发送停止。
+
+        Args:
+            config: 这台臂的抓取配置。
+            target: 七个关节的目标角度，控制器原始单位（0.001 度）。
+            target_kind: `observation`（已记录的观测桌面姿态）或 `zero`
+                （七关节零位），只影响提示文字和记录。
+        """
         label = (
             '机械臂复位(零位)'
             if target_kind == 'zero'
@@ -245,7 +322,7 @@ class GraspController(
         destination = (
             '七关节零位' if target_kind == 'zero' else '已记录的观测桌面姿态'
         )
-        directory = self.root / 'work/grasp'
+        directory = self.state_dir
         report = {
             'started_at': time.time(),
             'operation': 'reset',
@@ -388,7 +465,21 @@ class GraspController(
             'message': message,
         }
 
-    def set_force_config(self, value):
+    def set_force_config(self, value: int) -> dict:
+        """设置夹爪力度；执行模式下会向夹爪写入力度寄存器，不产生运动。
+
+        预览模式只把数值记在内存里供下一次方案使用，不连接硬件。
+
+        Args:
+            value: 力度原始值 1–100，不是牛顿。
+
+        Returns:
+            当前力度配置，其中 `write_acknowledged` 表示本次是否已下发并
+            收到应答。
+
+        Raises:
+            ValueError: 数值无效、这台臂有任务在进行，或下发未得到确认。
+        """
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('抓取任务进行中，不能更改力度')
@@ -402,7 +493,7 @@ class GraspController(
                 return self.force_config()
             config = json.loads(self.config_path.read_text())
             grip = config['gripper']
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             report = {
                 'started_at': time.time(),
@@ -464,7 +555,16 @@ class GraspController(
                 )
             return self.force_config()
 
-    def open_gripper(self):
+    def open_gripper(self) -> dict:
+        """把夹爪完全张开；会发送夹爪指令，并清除这台臂的持物记录。
+
+        Returns:
+            指令的应答情况。应答只表示夹爪接受了指令，不表示已张开到位。
+
+        Raises:
+            ValueError: 预览模式、这台臂有任务在进行、夹爪身份或状态
+                异常，或指令未得到确认。
+        """
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('抓取任务进行中，不能打开夹爪')
@@ -472,7 +572,7 @@ class GraspController(
                 raise ValueError('预览模式不发送夹爪运动指令')
             config = json.loads(self.config_path.read_text())
             grip = config['gripper']
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             report = {
                 'started_at': time.time(),
@@ -603,10 +703,30 @@ class GraspController(
 
     def teach(
         self,
-        use_current_point=False,
-        gripper_parameters=None,
-        expected_object_id=None,
-    ):
+        use_current_point: bool = False,
+        gripper_parameters: Optional[dict] = None,
+        expected_object_id: Optional[str] = None,
+    ) -> dict:
+        """把夹爪当前相对物品的姿态记录成一套新夹法；只读，不发送运动指令。
+
+        操作者先手动把夹爪摆到想要的夹持姿态，本函数读取机械臂位姿和
+        视觉给出的物品位姿，算出两者的相对关系并存入夹法库。
+
+        Args:
+            use_current_point: True 时连夹持位置一起记录；False 时只记录
+                朝向，位置沿用抓取配置里的值。
+            gripper_parameters: 与这套夹法绑定的夹爪力度和张开位置；
+                缺省用该物品的默认值。
+            expected_object_id: 调用方认为正在跟踪的物品，用来防止页面
+                显示的物品与实际跟踪的物品不一致。
+
+        Returns:
+            新夹法的编号、内容和绑定的夹爪参数。
+
+        Raises:
+            ValueError: 没有可用的物品位姿、这台臂有任务在进行、工具或
+                工作坐标系与记录不一致，或夹法未通过几何检查。
+        """
         if type(use_current_point) is not bool:
             raise ValueError('记录位置选项必须为布尔值')
         observation = copy.deepcopy(self.tracker.grasp_observation())
@@ -643,7 +763,7 @@ class GraspController(
             )
             self.actuated = False
             self.cancelled.clear()
-        directory = self.root / 'work/grasp'
+        directory = self.state_dir
         report = {
             'at': time.time(),
             'observation': observation,
@@ -838,7 +958,24 @@ class GraspController(
         if guard is not None:
             guard()
 
-    def calibration(self, config):
+    def calibration(self, config: dict) -> tuple:
+        """读取这台臂的手眼标定和工具记录，并确认它们可以使用。
+
+        确认三件事：标定和工具原点已被用户接受；原始记录文件没有被改动
+        （比对 SHA-256）；当前相机就是标定时的那台，或配置允许同型号
+        相机复用。
+
+        Args:
+            config: 这台臂的抓取配置。
+
+        Returns:
+            `(handeye, tool)` 两份记录。`handeye` 里附带
+            `runtime_camera_binding`（相机与标定的对应关系）和
+            `runtime_camera`（当前相机身份）。
+
+        Raises:
+            ValueError: 标定未被接受、原始记录被改动，或相机与标定不匹配。
+        """
         handeye = yaml.safe_load(
             (self.root / config['handeye_file']).read_text()
         )
@@ -858,7 +995,7 @@ class GraspController(
                 != source['sha256']
             ):
                 raise ValueError('标定原始记录哈希变化')
-        policy_path = self.root / 'config/calibration/camera_reuse.yaml'
+        policy_path = self.camera_reuse_path(config)
         policy = (
             yaml.safe_load(policy_path.read_text())
             if policy_path.exists()
@@ -1049,7 +1186,18 @@ class GraspController(
         report['grasp_profile'] = profile
         return plan, config
 
-    def run(self, observation, preview=False):
+    def run(self, observation: dict, preview: bool = False) -> None:
+        """规划并执行一次抓取和抬升；执行模式下会发送运动指令和夹爪指令。
+
+        在工作线程里运行。执行模式下先占住这台臂的设备锁，核对机械臂、
+        夹爪和标定，选出可行的夹法和路径，再依次到预抓取位、下探、闭合、
+        抬升，最后按配置返回。本函数不抛出异常：结果写入 `status` 和
+        记录目录下的 `jobs/`；出错时如果已经发出运动，先发送停止。
+
+        Args:
+            observation: 点击抓取时冻结的视觉观测，或场景快照里的一个实例。
+            preview: True 时只生成方案，不发送任何写入指令。
+        """
         mode = 'preview' if preview else self.mode
         report = {
             'started_at': time.time(),
@@ -1069,7 +1217,7 @@ class GraspController(
                 self.config_path.read_bytes()
             ).hexdigest()
             if mode == 'execute':
-                lock_path = self.root / 'work/grasp/robot.lock'
+                lock_path = self.robot_lock_path
                 lock_path.parent.mkdir(parents=True, exist_ok=True)
                 robot_lock = lock_path.open('a')
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1183,7 +1331,7 @@ class GraspController(
             report['result'] = self.snapshot()
             if robot_lock is not None:
                 robot_lock.close()
-            directory = self.root / 'work/grasp/jobs'
+            directory = self.state_dir / 'jobs'
             directory.mkdir(parents=True, exist_ok=True)
             (directory / f'{time.time_ns()}.json').write_text(
                 json.dumps(report, indent=2, ensure_ascii=False)

@@ -5,13 +5,13 @@ This utility never connects to the robot or changes its state.
 """
 
 import argparse
-import fcntl
 import json
 import os
 import pathlib
 import tempfile
 
 from saydo.objects import grasp_library
+from saydo.robot import arms
 
 
 def migration_plan(library):
@@ -136,9 +136,8 @@ if __name__ == '__main__':
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     library = grasp_library.GraspLibrary(args.root, args.models_root)
-    library.directory.mkdir(parents=True, exist_ok=True)
-    with (library.directory / 'robot.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    # 夹法库各臂共用：迁移期间占住全部臂的设备锁。
+    with arms.all_locked(args.root):
         print(
             json.dumps(
                 migrate(library, args.apply), ensure_ascii=False, indent=2

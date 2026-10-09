@@ -17,9 +17,31 @@ def fingerprint(value):
 
 
 class ObjectPlanStore:
-    def __init__(self, root):
+    """持物移动方案的仓库（SQLite 文件），每台臂一个。
+
+    方案先规划并保存，之后凭编号领取执行。方案只在生成它的那次后端
+    运行期间有效，有时限，而且只能被领取一次，避免同一条路线被重复
+    执行或在现场已经变化之后执行。
+    """
+    def __init__(
+        self, root: pathlib.Path, state_directory: str = 'work/grasp'
+    ) -> None:
+        """打开一台臂的方案库，文件不存在时创建。
+
+        方案里的路径是按某一台臂的关节算出来的，所以每台臂一个库，
+        一台臂规划的方案不会被另一台臂取去执行。
+
+        Args:
+            root: 项目根目录。
+            state_directory: 该臂的运行记录目录，相对项目根目录；
+                缺省是 1 臂的目录。
+        """
         self.session_id = uuid.uuid4().hex
-        self.path = pathlib.Path(root) / 'work/grasp/object_motion_plans.sqlite'
+        self.path = (
+            pathlib.Path(root)
+            / state_directory
+            / 'object_motion_plans.sqlite'
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.closing(self.connect()) as db, db:
             db.execute(

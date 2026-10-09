@@ -18,6 +18,7 @@ import time
 import traceback
 import urllib.request
 import urllib.parse
+from typing import Any, Dict
 
 import cv2
 import numpy as np
@@ -31,7 +32,10 @@ from saydo.geometry import pose_symmetry
 from saydo.manipulation import grasp_control
 from saydo.workbench import live_events
 from saydo.perception import camera_checks
+from saydo.robot import arms
 from saydo.workbench import agent_api as workbench_agent_api
+from saydo.workbench import agent_router
+from saydo.workbench import no_vision
 from saydo.workbench import task_runner_proxy
 
 from saydo import paths
@@ -39,10 +43,17 @@ from saydo import paths
 ROOT = paths.ROOT
 # 工作台页面与页面脚本所在的目录。
 WEB = pathlib.Path(__file__).resolve().with_name('web')
+LOG = logging.getLogger(__name__)
 
 
 class Tracker:
-    def __init__(self, args):
+    """8089 的核心对象：读取 1 臂手上相机、跟踪物品，并持有各臂的控制器。
+
+    视觉部分（相机、找框、位姿估计）目前只服务 1 臂。`arms` 里是本机
+    已配置的每台臂的动作控制器，`grasp` 是其中 1 臂的那一个。
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.models_root = pathlib.Path(
             getattr(args, 'models_root', ROOT / 'work/object_models')
@@ -138,12 +149,9 @@ class Tracker:
                 'effective_detection_prompt', self.object_info['name']
             ),
         )
-        self.grasp = grasp_control.GraspController(
-            ROOT,
-            self,
-            getattr(args, 'grasp_config', ROOT / 'config/grasp/trial.json'),
-            getattr(args, 'grasp_mode', 'execute'),
-        )
+        self.arms = self._create_controllers(args)
+        # 页面和本类里只针对 1 臂的旧代码仍通过 self.grasp 访问它。
+        self.grasp = self.arms[arms.DEFAULT_ARM_ID]
         if getattr(args, 'resume_reorientation_report', None):
             self.grasp.restore_reorientation_report(
                 args.resume_reorientation_report
@@ -175,11 +183,46 @@ class Tracker:
         )
         self.event(
             'session_started',
+            arms=list(self.arms),
             history_frames=self.history.maxlen,
             catchup_max_step_s=.3,
             catchup_max_budget_s=30. if self.llm_detector else 12.,
             catchup_target_age_s=.25,
         )
+
+    def _create_controllers(
+        self, args: argparse.Namespace
+    ) -> Dict[str, grasp_control.GraspController]:
+        """为本机已配置的每台臂创建一个动作控制器；不连接控制器。
+
+        1 臂使用本跟踪器读取的相机。其余的臂暂时没有相机，使用占位
+        视觉来源：读取状态、复位、夹爪和停止可用，需要画面的操作会
+        明确报错。
+
+        Args:
+            args: 启动参数；`grasp_config` 只覆盖 1 臂的抓取配置路径。
+
+        Returns:
+            臂编号到动作控制器的映射，顺序与登记表一致。
+        """
+        mode = getattr(args, 'grasp_mode', 'execute')
+        controllers = {}
+        for arm in arms.configured(ROOT):
+            if arm.arm_id == arms.DEFAULT_ARM_ID:
+                vision = self
+                config_path = getattr(
+                    args, 'grasp_config', arm.config_path(ROOT)
+                )
+            else:
+                vision = no_vision.NoVision(self.models_root, arm)
+                config_path = arm.config_path(ROOT)
+            controller = grasp_control.GraspController(
+                ROOT, vision, config_path, mode, arm
+            )
+            if vision is not self:
+                vision.grasp = controller
+            controllers[arm.arm_id] = controller
+        return controllers
 
     def event(self, event, **values):
         return self.events.write(
@@ -585,35 +628,58 @@ class Tracker:
             )
             return {'object': row, 'motion_sent': False}
 
-    def set_pose_mode(self, value):
+    def set_pose_mode(self, value: dict) -> dict:
+        """保存一个物品的位姿模式（6D 或 5D）；不发送任何指令。
+
+        位姿模式是物品模型的设置，各臂共用，而且它决定夹持记录怎么
+        解释。所以要求全部机械臂都没有任务在执行，也都没有夹着物品。
+
+        Args:
+            value: 含物品编号 `id`、位姿模式 `pose_mode` 和页面载入时的
+                模型设置版本 `revision`。
+
+        Returns:
+            保存后的物品信息；`motion_sent` 恒为 False。
+
+        Raises:
+            ValueError: 请求无效、有臂在执行任务或夹着物品，或模型设置
+                在页面载入之后已被改动。
+            BlockingIOError: 有一台臂的设备锁被占用。
+        """
         if (
             not isinstance(value, dict)
             or set(value) != {'id', 'pose_mode', 'revision'}
         ):
             raise ValueError('请提交物品、位姿模式和当前模型设置版本')
         with self.lock, self.grasp.lock:
-            if (
-                self.grasp.status['busy']
-                or self.grasp.status.get('stopping')
-                or self.grasp.held_object is not None
-            ):
-                raise ValueError('任务进行中或仍持有物品，不能改变位姿模式')
-            directory = self.grasp.root / 'work/grasp'
-            directory.mkdir(parents=True, exist_ok=True)
-            with (directory / 'robot.lock').open('a') as device_lock:
-                fcntl.flock(device_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for controller in self.arms.values():
+                with controller.lock:
+                    occupied = (
+                        controller.status['busy']
+                        or controller.status.get('stopping')
+                        or controller.held_object is not None
+                    )
+                if occupied:
+                    raise ValueError(
+                        f'{controller.arm.label}任务进行中或仍持有物品，'
+                        '不能改变位姿模式'
+                    )
+            with arms.all_locked(self.grasp.root):
                 row = object_catalog.save_pose_mode(
                     self.models_root,
                     value['id'],
                     value['pose_mode'],
                     value['revision'],
                 )
-                self.grasp.status.update(
-                    plan=None,
-                    reorientation_plan=None,
-                    placement_plan=None,
-                    grasp_library_changed_at=time.time(),
-                )
+                # 各臂已算好的方案都是按旧的位姿模式算的，一并作废。
+                for controller in self.arms.values():
+                    with controller.lock:
+                        controller.status.update(
+                            plan=None,
+                            reorientation_plan=None,
+                            placement_plan=None,
+                            grasp_library_changed_at=time.time(),
+                        )
                 if self.state.get('object_id') == row['id']:
                     self.switch_object(row['id'])
                 self.event(
@@ -1708,7 +1774,32 @@ class Tracker:
             print('Model failure:', repr(error), flush=True)
 
 
-def main():
+def abort_all(tracker: Any) -> None:
+    """取消全部机械臂的当前任务；正在运动的臂会收到停止指令。
+
+    逐台处理，一台失败不影响其余各臂；全部处理完后再把第一处失败抛出。
+
+    Args:
+        tracker: 跟踪器，名下有各臂的动作控制器。
+
+    Raises:
+        Exception: 有臂的停止指令未得到确认时，抛出第一处的原始错误。
+    """
+    first_error = None
+    for arm_id, controller in agent_router.controllers_of(tracker).items():
+        try:
+            controller.abort()
+        except Exception as error:
+            # 保护代码：一台臂停止失败时仍必须继续停其余的臂。
+            LOG.warning('%s 停止指令未确认：%r', arm_id, error)
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
+
+
+def main() -> None:
+    """启动 8089 服务：读取相机、跟踪物品，并提供页面和 Agent 接口。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--mesh',
@@ -1823,7 +1914,7 @@ def main():
         pass
     tracker = Tracker(args)
     agent_api = (
-        workbench_agent_api.AgentAPI(tracker, args.agent_token_file)
+        agent_router.ArmRouter(tracker, args.agent_token_file)
         if args.agent_token_file
         else None
     )
@@ -2088,7 +2179,7 @@ def main():
                         self.path == '/api/task-runs/stop'
                         and response[0] >= 500
                     ):
-                        tracker.grasp.abort()
+                        abort_all(tracker)
                     self.reply(*response)
                     return
                 if self.path.startswith('/api/agent/'):
@@ -2157,10 +2248,10 @@ def main():
                 elif self.path == '/api/place':
                     result = tracker.grasp.start_placement(value)
                 elif self.path == '/api/grasp/stop':
-                    tracker.grasp.abort()
+                    abort_all(tracker)
                     result = {'cancelled': True}
                 elif self.path == '/api/stop':
-                    tracker.grasp.abort()
+                    abort_all(tracker)
                     tracker.stop.set()
                     result = {'stopping': True}
                     threading.Thread(
@@ -2187,7 +2278,7 @@ def main():
 
     def shutdown(*unused):
         try:
-            tracker.grasp.abort()
+            abort_all(tracker)
         except Exception as error:
             print('Grasp stop failure:', error, flush=True)
         tracker.stop.set()

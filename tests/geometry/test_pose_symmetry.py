@@ -13,6 +13,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from saydo.objects import object_catalog
+from saydo.robot import arms
 from saydo.geometry import pose_symmetry
 from saydo.workbench import live_tracker
 from saydo.manipulation import reorientation_geometry
@@ -356,7 +357,16 @@ class ModelModeTests(unittest.TestCase):
             root=self.root,
             status={'busy': True},
             held_object=None,
+            arm=arms.by_id('arm1'),
         )
+        other = types.SimpleNamespace(
+            lock=threading.RLock(),
+            root=self.root,
+            status={'busy': False, 'plan': {'stale': True}},
+            held_object=None,
+            arm=arms.by_id('arm2'),
+        )
+        tracker.arms = {'arm1': tracker.grasp, 'arm2': other}
         tracker.state = {'object_id': 'bottle'}
         tracker.event = mock.Mock()
         tracker.switch_object = mock.Mock()
@@ -373,8 +383,14 @@ class ModelModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tracker.set_pose_mode(request)
         tracker.grasp.held_object = None
+        # 位姿模式是各臂共用的模型设置：另一台臂夹着物品时同样不能改。
+        other.held_object = {'hold_id': 'other'}
+        with self.assertRaisesRegex(ValueError, '2臂'):
+            tracker.set_pose_mode(request)
+        other.held_object = None
         result = tracker.set_pose_mode(request)
         self.assertFalse(result['motion_sent'])
+        self.assertIsNone(other.status['plan'])
         tracker.switch_object.assert_called_once_with('bottle')
 
     def test_tracking_stability_uses_axis_only_for_5d(self):

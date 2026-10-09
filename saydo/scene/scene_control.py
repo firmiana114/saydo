@@ -18,16 +18,35 @@ from saydo.contracts import scene_contract
 
 
 class SceneMixin:
-    def scenes(self):
+    """场景快照：机械臂静止时拍下全部目标并换算到基座坐标，供后续动作引用。
+    """
+
+    def scenes(self) -> scene_scene_snapshot.SceneStore:
+        """返回这台臂的场景快照库，首次使用时创建。
+        """
         if not hasattr(self, '_scenes'):
-            self._scenes = scene_scene_snapshot.SceneStore(self.root)
+            self._scenes = scene_scene_snapshot.SceneStore(
+                self.root, self.arm.state_directory
+            )
         return self._scenes
 
-    def scene_binding(self, config):
+    def scene_binding(self, config: dict) -> dict:
+        """计算采集场景时所依据的标定文件指纹和控制器地址。
+
+        快照里的基座坐标是用这些标定算出来的。之后引用快照时再算一次
+        并比对，文件或地址变了就说明快照不再可信。
+
+        Args:
+            config: 这台臂的抓取配置。
+
+        Returns:
+            含 `files`（文件用途到内容 SHA-256 的映射，文件不存在时为
+            None）和 `robot`（控制器地址与端口）。
+        """
         paths = {
             'tool': self.root / config['tool_file'],
             'handeye': self.root / config['handeye_file'],
-            'camera_reuse': self.root / 'config/calibration/camera_reuse.yaml',
+            'camera_reuse': self.camera_reuse_path(config),
         }
         return {
             'files': {
@@ -131,9 +150,20 @@ class SceneMixin:
         scene_scene_snapshot.arm_still(a, b)
         return b
 
-    def run_scene_capture(self, scene, request_id):
+    def run_scene_capture(self, scene: dict, request_id: str) -> None:
+        """采集一份场景快照；只读，不发送运动指令。
+
+        在工作线程里运行，占住这台臂的设备锁，保证采集期间机械臂不被
+        其他任务移动。确认机械臂静止后冻结一帧画面，依次定位全部目标
+        并换算到这台臂的基座坐标。本函数不抛出异常：结果写入 `status`
+        和场景快照库。
+
+        Args:
+            scene: `SceneStore.begin` 创建的待采集场景。
+            request_id: 发起本次任务的请求编号。
+        """
         try:
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             with (directory / 'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

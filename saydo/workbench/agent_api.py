@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -43,8 +44,33 @@ def json_value(value):
 
 
 class AgentAPI:
-    def __init__(self, tracker, token_path):
-        self.tracker, self.grasp = tracker, tracker.grasp
+    """一台机械臂的 Agent 接口：查询状态、开始任务、停止。
+
+    每台臂一个实例，各自记录自己正在处理的任务，所以两台臂可以同时
+    各有一个任务。任务记录写在各实例共用的一个数据库里，任务编号在
+    两台臂之间不能重复。只有一台臂时直接使用本类；多台臂时由
+    `agent_router.ArmRouter` 按请求里的臂编号分发到对应的实例。
+    """
+
+    def __init__(
+        self,
+        tracker: Any,
+        token_path: pathlib.Path,
+        grasp: Optional[Any] = None,
+    ) -> None:
+        """创建接口；把上次运行遗留的未结束任务标为“结果未知”。
+
+        Args:
+            tracker: 这台臂的视觉来源（跟踪器，或没有相机时的占位
+                对象）。
+            token_path: 访问令牌文件，权限必须是仅属主可读写。
+            grasp: 这台臂的动作控制器；缺省用 `tracker.grasp`。
+
+        Raises:
+            ValueError: 令牌文件权限过宽或令牌过短。
+        """
+        self.tracker = tracker
+        self.grasp = grasp if grasp is not None else tracker.grasp
         path = pathlib.Path(token_path)
         if path.stat().st_mode & 0o077:
             raise ValueError(
@@ -427,7 +453,25 @@ class AgentAPI:
                 'accepted': True, 'motion_sent': False, 'status': self.status()
             }
 
-    def start(self, request):
+    def start(self, request: dict) -> dict:
+        """登记并开始一个任务；执行类操作会发送运动指令或夹爪指令。
+
+        先校验参数，再把任务写入数据库，然后交给这台臂的动作控制器在
+        工作线程里处理，本函数立即返回。同一个 `request_id` 重复提交
+        不会重复执行，只返回原任务的当前状态。
+
+        Args:
+            request: 含 `operation`（操作名）、`request_id`（调用方
+                生成的任务编号）和 `arguments`（该操作的参数）。
+
+        Returns:
+            任务记录。被控制器拒绝的任务状态为 `rejected`，原因在
+            `error` 里。
+
+        Raises:
+            AgentError: 参数无效、编号已用于别的请求、这台臂正忙，或
+                服务处于预览模式却要求执行。
+        """
         if (
             not isinstance(request, dict)
             or set(request) != {'operation', 'request_id', 'arguments'}
@@ -654,6 +698,7 @@ class AgentAPI:
                 )
             task = {
                 'task_id': task_id,
+                'arm': self.grasp.arm.arm_id,
                 'operation': operation,
                 'arguments': args,
                 'session_id': self.session_id,
@@ -860,7 +905,19 @@ class AgentAPI:
             finally:
                 self.stop_lock.release()
 
-    def get(self, path, params):
+    def get(self, path: str, params: dict) -> dict:
+        """处理一次只读查询；不发送任何指令。
+
+        Args:
+            path: 请求路径，不含查询串。
+            params: 查询参数，每个值是字符串列表（`parse_qs` 的结果）。
+
+        Returns:
+            可直接序列化为 JSON 的应答。
+
+        Raises:
+            AgentError: 路径未知，或查询的对象不存在、已失效。
+        """
         if path == '/api/agent/status':
             return self.status()
         if path == '/api/agent/frame':
@@ -906,7 +963,7 @@ class AgentAPI:
             ):
                 raise AgentError('DIAGNOSTICS_INVALID', '诊断引用无效')
             path = (
-                self.grasp.root / 'work/grasp' / ref['directory'] / ref['file']
+                self.grasp.state_dir / ref['directory'] / ref['file']
             )
             if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
                 raise AgentError('DIAGNOSTICS_INVALID', '诊断文件无效或过大')

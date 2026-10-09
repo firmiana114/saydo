@@ -29,9 +29,14 @@ def settings_revision(settings):
 
 
 class PlacementMixin:
+    """把夹持的物品放到桌面指定范围：放置设置的读写、规划与执行。
+    """
+
     @property
-    def placement_path(self):
-        return self.root / 'config/grasp/placement.json'
+    def placement_path(self) -> pathlib.Path:
+        """这台臂的放置设置文件；文件不一定存在。
+        """
+        return self.root / self.arm.placement_file
 
     def placement_configuration(self):
         try:
@@ -58,7 +63,22 @@ class PlacementMixin:
         except (ValueError, OSError, KeyError, TypeError) as error:
             return {'configured': False, 'error': str(error)}
 
-    def save_placement_config(self, value):
+    def save_placement_config(self, value: dict) -> dict:
+        """保存这台臂的桌面放置范围和释放间隙；不发送运动指令。
+
+        Args:
+            value: 含 `region_xy_m`（桌面矩形范围，这台臂的基座坐标，
+                单位米）、`release_gap_m`（松爪时物品底部离桌面的间隙，
+                单位米）和 `revision`（页面载入时的设置版本）。
+
+        Returns:
+            保存后的放置设置；`motion_sent` 恒为 False。
+
+        Raises:
+            ValueError: 请求无效、这台臂有任务在进行，或设置在页面载入
+                之后已被改动。
+            BlockingIOError: 这台臂的设备锁被其他程序占用。
+        """
         if (
             not isinstance(value, dict)
             or set(value) != {'region_xy_m', 'release_gap_m', 'revision'}
@@ -67,7 +87,7 @@ class PlacementMixin:
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能更改放置设置')
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             temporary = None
             with (directory / 'robot.lock').open('a') as lock:
@@ -213,7 +233,20 @@ class PlacementMixin:
         if current.get('revision') != report['settings_revision']:
             raise ValueError('放置设置在规划后变化，停止本次放置')
 
-    def run_placement(self, held, settings, preview=False):
+    def run_placement(
+        self, held: dict, settings: dict, preview: bool = False
+    ) -> None:
+        """规划并执行一次桌面放置；执行模式下会发送运动指令和夹爪指令。
+
+        在工作线程里运行，占住这台臂的设备锁。本函数不抛出异常：结果
+        写入 `status` 和记录目录下的 `placement_jobs/`；出错时如果已经
+        发出运动，先发送停止。
+
+        Args:
+            held: 这台臂当前的夹持记录。
+            settings: 已校验的放置设置。
+            preview: True 时只生成方案，不发送任何写入指令。
+        """
         mode = 'preview' if preview else self.mode
         report = {
             'started_at': time.time(),
@@ -228,7 +261,7 @@ class PlacementMixin:
             'contact_confirmed': False,
             'active_stage': '放置前检查',
         }
-        directory = self.root / 'work/grasp/placement_jobs'
+        directory = self.state_dir / 'placement_jobs'
         robot_lock = None
         try:
             directory.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,7 @@ import copy
 from saydo.manipulation import motion_speed
 import fcntl
 import json
+import pathlib
 import threading
 import time
 import traceback
@@ -23,6 +24,9 @@ from saydo.manipulation import reorientation_geometry
 
 
 class ReorientationMixin:
+    """调姿：夹着物品把它转到指定朝向，完成后继续夹持。
+    """
+
     def held_snapshot(self):
         if self.held_object is None:
             return None
@@ -405,23 +409,31 @@ class ReorientationMixin:
                     self.held_object = None
             return False
 
-    def restore_reorientation_report(self, report_path):
-        """Explicit, one-use startup recovery after the operator confirms the same grasp.
+    def restore_reorientation_report(self, report_path: pathlib.Path) -> bool:
+        """从一份失败的调姿记录恢复夹持记录；只读，不发送运动指令。
 
-        Never automatically scan old jobs for a hold. This opt-in entry point is
-        only for a record lost by an older service version; all hardware is read-only.
+        仅在启动时由操作者显式指定、且操作者已确认物品仍被同一次夹持
+        夹着时使用，每份记录只能用一次。程序不会自动翻找旧记录来恢复
+        夹持：这个入口只用于补救旧版本服务丢失的记录。
+
+        Args:
+            report_path: 这台臂 `reorient_jobs/` 目录下的一份调姿记录。
+
+        Returns:
+            是否已恢复夹持记录。失败原因写入 `status` 和恢复记录，不抛出
+            异常。
         """
         recovery = {
             'started_at': time.time(),
             'restored': False,
             'robot_motion_sent': False,
         }
-        directory = self.root / 'work/grasp/reorientation_recovery'
+        directory = self.state_dir / 'reorientation_recovery'
         try:
             if self.status['busy'] or self.held_object is not None:
                 raise ValueError('已有任务或夹持记录，不能从历史记录恢复')
             path = report_path.resolve()
-            jobs = (self.root / 'work/grasp/reorient_jobs').resolve()
+            jobs = (self.state_dir / 'reorient_jobs').resolve()
             if (
                 path.parent != jobs
                 or not path.stem.isdigit()
@@ -456,7 +468,7 @@ class ReorientationMixin:
                 claim.write(str(time.time()) + '\n')
             recovery['source_report'] = str(path.relative_to(self.root))
             config = json.loads(self.config_path.read_text())
-            with (self.root / 'work/grasp/robot.lock').open('a') as robot_lock:
+            with self.robot_lock_path.open('a') as robot_lock:
                 fcntl.flock(robot_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.robot = grasp_robot.RobotClient(
                     config['robot_ip'], config['robot_port'], writes=False
@@ -498,12 +510,26 @@ class ReorientationMixin:
 
     def run_reorient(
         self,
-        held,
-        rotation,
-        preview=False,
-        position_mode='fixed',
-        max_rotation_step_deg=15.,
-    ):
+        held: dict,
+        rotation: list,
+        preview: bool = False,
+        position_mode: str = 'fixed',
+        max_rotation_step_deg: float = 15.,
+    ) -> None:
+        """规划并执行一次调姿；执行模式下会发送运动指令，夹爪保持闭合。
+
+        在工作线程里运行，占住这台臂的设备锁。本函数不抛出异常：结果
+        写入 `status` 和记录目录下的 `reorient_jobs/`；出错时如果已经
+        发出运动，先发送停止。
+
+        Args:
+            held: 这台臂当前的夹持记录。
+            rotation: 物品的目标朝向，相对这台臂基座的 3×3 旋转矩阵。
+            preview: True 时只生成方案，不发送任何写入指令。
+            position_mode: `fixed` 表示物品位置不变；其他取值允许为了
+                可达而平移，见 `reorientation_geometry`。
+            max_rotation_step_deg: 相邻路径点之间物品转动的上限，单位度。
+        """
         mode = 'preview' if preview else self.mode
         report = {
             'started_at': time.time(),
@@ -515,7 +541,7 @@ class ReorientationMixin:
             'robot_motion_sent': False,
             'active_stage': '姿态调整前检查',
         }
-        directory = self.root / 'work/grasp/reorient_jobs'
+        directory = self.state_dir / 'reorient_jobs'
         robot_lock = None
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -529,7 +555,7 @@ class ReorientationMixin:
                     config,
                     json.loads(
                         (
-                            self.root / 'config/grasp/reorientation.json'
+                            self.root / self.arm.reorientation_file
                         ).read_text()
                     ),
                 )

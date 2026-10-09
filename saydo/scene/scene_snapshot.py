@@ -25,8 +25,26 @@ def arm_still(a, b):
 
 
 class SceneStore:
-    def __init__(self, root):
-        self.root = pathlib.Path(root) / 'work/grasp/scenes'
+    """场景快照库，每台臂一个。
+
+    一份快照记录某一时刻各目标物品在这台臂基座坐标里的位姿，以及
+    采集时所依据的标定。快照只在采集它的那次后端运行期间有效，并且
+    有时限。
+    """
+    def __init__(
+        self, root: pathlib.Path, state_directory: str = 'work/grasp'
+    ) -> None:
+        """创建一台臂的场景快照库；不读写磁盘。
+
+        快照里的物品位姿是按拍摄它的那台臂的基座坐标记录的，两台臂
+        的基座坐标不同，所以每台臂一个库，不能混用。
+
+        Args:
+            root: 项目根目录。
+            state_directory: 该臂的运行记录目录，相对项目根目录；
+                缺省是 1 臂的目录。
+        """
+        self.root = pathlib.Path(root) / state_directory / 'scenes'
         self.session = uuid.uuid4().hex
         self.active = None
         self.records = {}

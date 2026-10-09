@@ -3,12 +3,12 @@
 
 import argparse
 import copy
-import fcntl
 import json
 import pathlib
 import time
 
 from saydo.objects import grasp_library
+from saydo.robot import arms
 
 
 def migrate(library, apply=False):
@@ -75,7 +75,8 @@ def migrate(library, apply=False):
     }
 
 
-def main():
+def main() -> None:
+    """解析参数并执行迁移；夹法库各臂共用，期间占住全部臂的设备锁。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--root',
@@ -86,10 +87,7 @@ def main():
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     library = grasp_library.GraspLibrary(args.root, args.models_root)
-    directory = args.root / 'work/grasp'
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / 'robot.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with arms.all_locked(args.root):
         print(
             json.dumps(
                 migrate(library, args.apply), ensure_ascii=False, indent=2

@@ -1,7 +1,6 @@
 """Visual grasp authoring and selection; editor mutations never connect to hardware."""
 
 import copy
-import fcntl
 import json
 import subprocess
 import time
@@ -15,9 +14,12 @@ from saydo.objects import grasp_library as objects_grasp_library
 from saydo.manipulation import reorientation_geometry
 from saydo.manipulation import reorientation_visual
 from saydo.geometry import pose_symmetry
+from saydo.robot import arms
 
 
 class GraspProfilesMixin:
+    """夹法的查看、编辑和选用；这里的修改只写夹法库文件，不连接硬件。
+    """
     def grasp_library(self):
         return objects_grasp_library.GraspLibrary(
             self.root, getattr(self.tracker, 'models_root', None)
@@ -154,7 +156,24 @@ class GraspProfilesMixin:
             },
         }
 
-    def edit_grasp_profiles(self, request):
+    def edit_grasp_profiles(self, request: dict) -> dict:
+        """保存、复制、删除或选用一套夹法；只写夹法库文件，不连接硬件。
+
+        夹法库是各臂共用的，所以修改期间要求所有臂都没有任务在执行。
+
+        Args:
+            request: 编辑请求，含物品编号 `object_id`、操作 `action`
+                （`save`、`duplicate`、`delete`、`select`）以及该操作需要的
+                夹法内容和版本号。
+
+        Returns:
+            更新后的夹法列表，以及本次保存或选用的夹法编号 `saved_id`。
+
+        Raises:
+            ValueError: 请求无效、这台臂有任务在进行，或夹法、模型设置
+                在页面载入之后已被改动。
+            BlockingIOError: 有一台臂正在执行任务。
+        """
         if not isinstance(request, dict):
             raise ValueError('夹法编辑请求无效')
         object_id = request.get('object_id')
@@ -164,10 +183,8 @@ class GraspProfilesMixin:
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('机械臂任务进行中，不能修改夹法库')
-            directory = self.root / 'work/grasp'
-            directory.mkdir(parents=True, exist_ok=True)
-            with (directory / 'robot.lock').open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # 夹法库各臂共用：改它时任何一台臂都不能正在执行任务。
+            with arms.all_locked(self.root):
                 geometry = reorientation_geometry.model_geometry(
                     self.tracker.models_root, object_id
                 )

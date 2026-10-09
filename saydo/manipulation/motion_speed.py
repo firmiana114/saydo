@@ -33,6 +33,8 @@ def placement_speed_settings(config, settings):
 
 
 class MotionSpeedMixin:
+    """机械臂统一运动速度的读取与保存；每台臂各存一份。
+    """
     def motion_speed_configuration(self):
         try:
             raw = self.config_path.read_bytes()
@@ -50,14 +52,29 @@ class MotionSpeedMixin:
                 'value': None, 'minimum': 1, 'maximum': 25, 'error': str(error)
             }
 
-    def set_arm_speed(self, value, expected_revision):
+    def set_arm_speed(self, value: int, expected_revision: str) -> dict:
+        """把统一运动速度保存到这台臂的抓取配置；不发送运动指令。
+
+        Args:
+            value: 速度百分比，1–25 的整数。
+            expected_revision: 页面载入速度时拿到的配置版本（配置文件
+                内容的 SHA-256）；与当前文件不一致说明配置已被改动。
+
+        Returns:
+            保存后的速度配置；`motion_sent` 恒为 False，新速度对之后的
+            抓取、调姿、放置和复位生效。
+
+        Raises:
+            ValueError: 数值无效、这台臂有任务在进行，或配置已被改动。
+            BlockingIOError: 这台臂的设备锁被其他程序占用。
+        """
         value = checked_speed(value)
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError(
                     '机械臂任务进行中，不能更改速度；请等待任务结束'
                 )
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             report = {
                 'at': time.time(),

@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import uuid
+from typing import Optional
 
 import numpy as np
 from saydo.geometry import grasp_geometry
@@ -49,10 +50,15 @@ def public_object_plan(plan):
 
 
 class ObjectMotionMixin:
-    def object_plan_store(self):
+    """持物移动与显式释放：规划、保存方案、凭方案编号执行。
+    """
+
+    def object_plan_store(self) -> object_motion_store.ObjectPlanStore:
+        """返回这台臂的方案库，首次使用时创建。
+        """
         if not hasattr(self, '_object_plan_store'):
             self._object_plan_store = object_motion_store.ObjectPlanStore(
-                self.root
+                self.root, self.arm.state_directory
             )
         return self._object_plan_store
 
@@ -216,12 +222,20 @@ class ObjectMotionMixin:
             self.thread.start()
         return {'accepted': True, 'plan_id': plan_id}
 
-    def motion_binding(self, config):
+    def motion_binding(self, config: dict) -> dict:
+        """计算这台臂的配置与标定文件的指纹，用来发现规划之后文件被改动。
+
+        Args:
+            config: 这台臂的抓取配置。
+
+        Returns:
+            文件用途到内容 SHA-256 的映射；文件不存在时值为 None。
+        """
         paths = {
             'trial': self.config_path,
             'tool': self.root / config['tool_file'],
             'handeye': self.root / config['handeye_file'],
-            'camera_reuse': self.root / 'config/calibration/camera_reuse.yaml',
+            'camera_reuse': self.camera_reuse_path(config),
         }
         return {
             key: (
@@ -334,8 +348,17 @@ class ObjectMotionMixin:
         context['base_T_reference'] = frame.tolist()
         return frame, context, arm
 
-    def save_object_job(self, report):
-        directory = self.root / 'work/grasp/object_motion_jobs'
+    def save_object_job(self, report: dict) -> dict:
+        """把一次持物移动或固定抓放的诊断记录写入这台臂的记录目录。
+
+        Args:
+            report: 诊断记录；本函数会补上结束时间和最终状态。
+
+        Returns:
+            记录的引用（子目录名和文件名）。接口凭引用读取记录，不向
+            调用方暴露磁盘路径。
+        """
+        directory = self.state_dir / 'object_motion_jobs'
         directory.mkdir(parents=True, exist_ok=True)
         name = f'{time.time_ns()}_{uuid.uuid4().hex[:6]}.json'
         path = directory / name
@@ -347,7 +370,28 @@ class ObjectMotionMixin:
         )
         return {'directory': 'object_motion_jobs', 'file': name}
 
-    def run_object_plan(self, held, goal, release, retreat, request_id):
+    def run_object_plan(
+        self,
+        held: dict,
+        goal: dict,
+        release: bool,
+        retreat: Optional[list],
+        request_id: str,
+    ) -> None:
+        """规划一次持物移动或释放并存入方案库；只读，不发送运动指令。
+
+        在工作线程里运行，规划期间占住这台臂的设备锁，防止机械臂在
+        规划时被其他任务移动。本函数不抛出异常：结果写入 `status` 和
+        诊断记录。
+
+        Args:
+            held: 这台臂当前的夹持记录。
+            goal: 物品的目标位姿及参照方式。
+            release: True 表示到位后松开夹爪（释放方案）。
+            retreat: 释放后夹爪的后撤位移，基座坐标，单位米；非释放
+                方案为 None。
+            request_id: 发起本次任务的请求编号，写入记录。
+        """
         report = {
             'started_at': time.time(),
             'request_id': request_id,
@@ -357,7 +401,7 @@ class ObjectMotionMixin:
             'robot_motion_sent': False,
         }
         try:
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(parents=True, exist_ok=True)
             with (directory / 'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -483,7 +527,20 @@ class ObjectMotionMixin:
             raise ValueError('实际物品参考点/朝向未到达目标：' + str(error))
         return error
 
-    def run_object_execution(self, plan, request_id, nested=False):
+    def run_object_execution(
+        self, plan: dict, request_id: str, nested: bool = False
+    ) -> None:
+        """按已保存的方案移动持物；会发送运动指令，释放方案还会发送夹爪指令。
+
+        在工作线程里运行。本函数不抛出异常：结果写入 `status` 和诊断
+        记录；出错时如果已经发出运动，先发送停止。
+
+        Args:
+            plan: 从方案库领取的方案。
+            request_id: 发起本次任务的请求编号，写入记录。
+            nested: True 表示由固定抓放调用，调用方已经占住这台臂的
+                设备锁，这里不再加锁。
+        """
         held = copy.deepcopy(plan['hold'])
         report = {
             'started_at': time.time(),
@@ -500,7 +557,7 @@ class ObjectMotionMixin:
         lock = None
         try:
             if not nested:
-                lock = (self.root / 'work/grasp/robot.lock').open('a')
+                lock = self.robot_lock_path.open('a')
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             config, arm, tool, geometry, checker = self.motion_context(
                 held, True

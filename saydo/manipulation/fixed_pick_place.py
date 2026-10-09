@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import uuid
+from typing import Optional
 
 import numpy as np
 
@@ -189,6 +190,11 @@ def joint_targets(points, solutions, waypoints):
 
 
 class FixedPickPlaceMixin:
+    """固定抓放：把“抓起、调直、放进孔位”作为一条预先算好的完整路线执行。
+
+    先在不动机械臂的情况下把整条路线规划并检查完，确认全程可行后才
+    开始执行，避免抓起之后才发现放不进去。
+    """
     def start_fixed_pick_place(self, args, request_id, execute=False):
         with self.tracker.lock, self.lock:
             if (
@@ -566,7 +572,22 @@ class FixedPickPlaceMixin:
         if self.status['state'] != 'completed':
             raise ValueError(self.status.get('error') or '固定放置失败')
 
-    def run_fixed_pick_place(self, args, request_id, plan):
+    def run_fixed_pick_place(
+        self, args: dict, request_id: str, plan: Optional[dict]
+    ) -> None:
+        """规划或执行一次固定抓放；执行时会发送运动指令和夹爪指令。
+
+        在工作线程里运行，全程占住这台臂的设备锁。本函数不抛出异常：
+        结果写入 `status` 和诊断记录；出错时如果已经发出运动，先发送
+        停止，并把场景里该物品的状态标为未知。
+
+        Args:
+            args: 规划请求（场景、被抓物品与参照物的实例、空孔位、释放
+                间隙）；执行已有方案时不使用。
+            request_id: 发起本次任务的请求编号，写入记录。
+            plan: None 表示只规划、不发送动作；否则是此前规划并已领取的
+                方案，按它执行。
+        """
         report = {
             'started_at': time.time(),
             'request_id': request_id,
@@ -574,7 +595,7 @@ class FixedPickPlaceMixin:
             'robot_motion_sent': False,
         }
         try:
-            directory = self.root / 'work/grasp'
+            directory = self.state_dir
             directory.mkdir(exist_ok=True)
             with (directory / 'robot.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
