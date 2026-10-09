@@ -394,5 +394,47 @@ class GraspLibraryTests(unittest.TestCase):
         self.assertTrue(report['grasp_candidates'][1]['passed'])
 
 
+
+class BindingAcrossArmsTests(unittest.TestCase):
+    """同一套夹法在装着同样夹爪的两台臂上通用。"""
+
+    FIRST_ARM = {
+        'state': 'current_tool_frame',
+        'tool_name': 'grip_tcp',
+        'pose': [0, 0, 222500, 0, 0, 2611],
+        'payload': 1146.8065185546875,
+        'position': [-15000, 8000, 55000],
+    }
+
+    def error(self, **changes):
+        entry = {'model_sha256': 'model', 'tool_response': self.FIRST_ARM}
+        return grasp_library.binding_error(
+            entry, 'model', {**self.FIRST_ARM, **changes}
+        )
+
+    def test_same_tool_geometry_with_a_different_payload_is_accepted(self):
+        # 2 臂控制器里登记的负载是 1147 克，1 臂是 1146.8 克。
+        self.assertIsNone(self.error(payload=1147))
+        self.assertIsNone(self.error(position=[-15000, 8000, 56000]))
+
+    def test_changed_tool_origin_or_name_still_invalidates_the_grasp(self):
+        for changes in (
+            {'pose': [0, 0, 200500, 0, 0, 2611]},
+            {'pose': [0, 0, 222500, 0, 0, 0]},
+            {'tool_name': 'Arm_Tip'},
+        ):
+            with self.subTest(changes=changes):
+                self.assertEqual(
+                    self.error(**changes), '工具参数已变化，请重新设置夹法'
+                )
+
+    def test_grasp_without_a_recorded_tool_is_not_accepted(self):
+        self.assertIsNotNone(
+            grasp_library.binding_error(
+                {'model_sha256': 'model'}, 'model', self.FIRST_ARM
+            )
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

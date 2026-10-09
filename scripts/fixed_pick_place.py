@@ -205,7 +205,8 @@ def workflow(backend, args):
     return result
 
 
-def main():
+def main() -> None:
+    """解析命令行并运行一次固定抓放；默认只规划，`--execute` 才会运动。"""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--base-url', default='http://192.168.101.65:8089')
     p.add_argument(
@@ -214,6 +215,10 @@ def main():
         default=(
             pathlib.Path.home() / '.local/share/saydo-mcp/robot-backend-token'
         ),
+    )
+    p.add_argument(
+        '--arm',
+        help='用哪台机械臂，例如 arm2；不写时用 1 臂',
     )
     p.add_argument('--tube', default='transparent_test_tube_150mm')
     p.add_argument('--rack', default='test_tube_rack_40_272x112x85')
@@ -259,7 +264,12 @@ def main():
     if not 0 <= args.release_gap_mm <= 5:
         p.error('释放间隙须为0至5毫米')
     try:
-        workflow(client.RobotBackend(args.base_url, args.token_file), args)
+        workflow(
+            client.RobotBackend(
+                args.base_url, args.token_file, arm=args.arm
+            ),
+            args,
+        )
     except client.BackendError as error:
         if error.payload.get('code') != 'INVALID_ARGUMENTS':
             raise

@@ -194,6 +194,19 @@ class WorkflowTests(unittest.TestCase):
                 fixed_pick_place.workflow(self.backend, self.args)
         self.backend.request.assert_called_with('/api/agent/stop', {})
 
+    def test_arm_option_is_passed_to_the_backend_client(self):
+        for arguments, expected in (([], None), (['--arm', 'arm2'], 'arm2')):
+            with self.subTest(arguments=arguments), mock.patch.object(
+                fixed_pick_place.client, 'RobotBackend'
+            ) as backend, mock.patch.object(
+                fixed_pick_place, 'workflow'
+            ) as workflow, mock.patch(
+                'sys.argv', ['fixed_pick_place.py', '--empty-rack', *arguments]
+            ):
+                fixed_pick_place.main()
+            self.assertEqual(backend.call_args.kwargs, {'arm': expected})
+            workflow.assert_called_once()
+
     def test_boxes_use_eye_in_hand_dimensions(self):
         self.assertEqual(fixed_pick_place.box('0,0,640,360'), [0, 0, 640, 360])
         with self.assertRaises(argparse.ArgumentTypeError):

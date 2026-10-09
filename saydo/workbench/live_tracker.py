@@ -18,7 +18,7 @@ import time
 import traceback
 import urllib.request
 import urllib.parse
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
@@ -35,6 +35,7 @@ from saydo.perception import camera_checks
 from saydo.robot import arms
 from saydo.workbench import agent_api as workbench_agent_api
 from saydo.workbench import agent_router
+from saydo.workbench import arm_camera
 from saydo.workbench import no_vision
 from saydo.workbench import task_runner_proxy
 
@@ -149,6 +150,10 @@ class Tracker:
                 'effective_detection_prompt', self.object_info['name']
             ),
         )
+        # 1 臂的取图线程加载 RealSense 库后放在这里，其余相机的线程
+        # 从这里取用（库装在 work/ 下，只在那条线程里加入搜索路径）。
+        self._realsense = None
+        self._realsense_loaded = threading.Event()
         self.arms = self._create_controllers(args)
         # 页面和本类里只针对 1 臂的旧代码仍通过 self.grasp 访问它。
         self.grasp = self.arms[arms.DEFAULT_ARM_ID]
@@ -195,9 +200,10 @@ class Tracker:
     ) -> Dict[str, grasp_control.GraspController]:
         """为本机已配置的每台臂创建一个动作控制器；不连接控制器。
 
-        1 臂使用本跟踪器读取的相机。其余的臂暂时没有相机，使用占位
-        视觉来源：读取状态、复位、夹爪和停止可用，需要画面的操作会
-        明确报错。
+        1 臂使用本跟踪器读取的相机。其余的臂如果在抓取配置里写了
+        `camera_serial`，就各开一条取图线程，支持场景快照；没写的使用
+        占位视觉来源：读取状态、复位、夹爪和停止可用，需要画面的操作
+        会明确报错。
 
         Args:
             args: 启动参数；`grasp_config` 只覆盖 1 臂的抓取配置路径。
@@ -207,6 +213,7 @@ class Tracker:
         """
         mode = getattr(args, 'grasp_mode', 'execute')
         controllers = {}
+        self.arm_cameras = []
         for arm in arms.configured(ROOT):
             if arm.arm_id == arms.DEFAULT_ARM_ID:
                 vision = self
@@ -214,8 +221,15 @@ class Tracker:
                     args, 'grasp_config', arm.config_path(ROOT)
                 )
             else:
-                vision = no_vision.NoVision(self.models_root, arm)
                 config_path = arm.config_path(ROOT)
+                serial = json.loads(config_path.read_text()).get(
+                    'camera_serial'
+                )
+                if serial:
+                    vision = arm_camera.ArmCamera(self, arm, serial)
+                    self.arm_cameras.append(vision)
+                else:
+                    vision = no_vision.NoVision(self.models_root, arm)
             controller = grasp_control.GraspController(
                 ROOT, vision, config_path, mode, arm
             )
@@ -223,6 +237,18 @@ class Tracker:
                 vision.grasp = controller
             controllers[arm.arm_id] = controller
         return controllers
+
+    def realsense_module(self, timeout_s: float = 30.) -> Optional[Any]:
+        """返回 1 臂取图线程已加载的 RealSense 库。
+
+        Args:
+            timeout_s: 最多等待多久，单位秒。
+
+        Returns:
+            `pyrealsense2` 模块；在限时内没有加载成功时为 None。
+        """
+        self._realsense_loaded.wait(timeout_s)
+        return self._realsense
 
     def event(self, event, **values):
         return self.events.write(
@@ -234,9 +260,15 @@ class Tracker:
             },
         )
 
-    def capture(self):
+    def capture(self) -> None:
+        """1 臂相机的取图线程：持续把最新的彩色与深度帧放进 `latest`。
+
+        相机出错时记录原因并让整个服务停止，由操作者处理后重启。
+        """
         sys.path.insert(0, str(ROOT / 'work/foundationpose_realsense_py311'))
         import pyrealsense2 as rs
+        self._realsense = rs
+        self._realsense_loaded.set()
         pipe = rs.pipeline()
         started = False
         try:
@@ -2272,6 +2304,11 @@ def main() -> None:
     threads = [
         threading.Thread(target=tracker.capture),
         threading.Thread(target=tracker.inference),
+    ]
+    # 其余各臂手上相机的取图线程；没有配置时这个列表是空的。
+    threads += [
+        threading.Thread(target=camera.run)
+        for camera in getattr(tracker, 'arm_cameras', [])
     ]
     for thread in threads:
         thread.start()

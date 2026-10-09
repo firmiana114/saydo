@@ -71,6 +71,46 @@ class TestCamera(unittest.TestCase):
         self.assertIn('8089', camera.error)
         tracker.request.assert_called_once_with('/api/agent/frame')
 
+    def test_second_arm_camera_shares_the_frame_8089_has_for_that_arm(self):
+        tracker = mock.Mock()
+        tracker.request.return_value = tracker_frame('344422070678')
+        camera = monitor.Camera(
+            1280, 720, 15, monitor.ARM2_CAMERA_KEY, '344422070678',
+            tracker, arm='arm2',
+        )
+        stop = threading.Event()
+
+        def publish(*args):
+            monitor.Camera.publish(camera, *args)
+            stop.set()
+
+        with mock.patch.object(camera, 'publish', side_effect=publish):
+            camera.capture(1, stop)
+        tracker.request.assert_called_once_with('/api/agent/frame?arm=arm2')
+        self.assertEqual(camera.source, 'tracker')
+
+    def test_second_arm_camera_is_opened_directly_when_8089_lacks_it(self):
+        from saydo.agent import client
+        for code in ('UNKNOWN_ARM', 'CAMERA_UNAVAILABLE'):
+            tracker = mock.Mock()
+            tracker.request.side_effect = client.BackendError(
+                {'code': code, 'message': 'not served by 8089'}
+            )
+            camera = monitor.Camera(
+                1280, 720, 15, monitor.ARM2_CAMERA_KEY, '344422070678',
+                tracker, arm='arm2',
+            )
+            rs = mock.Mock()
+            rs.context.return_value.query_devices.return_value = []
+            with self.subTest(code=code), mock.patch.dict(
+                'sys.modules',
+                {'pyrealsense2': rs, 'cv2': mock.Mock(), 'numpy': mock.Mock()},
+            ):
+                camera.capture(1, threading.Event())
+                # 走到了枚举设备这一步，而不是停在“8089 画面不可用”。
+                rs.context.return_value.query_devices.assert_called_once()
+                self.assertNotIn('8089', camera.error)
+
     def test_subscribers_share_worker_and_limit_is_per_camera(self):
         camera = monitor.Camera(1280, 720, 15)
         with mock.patch.object(
@@ -492,8 +532,10 @@ class TestCameraSelectionAtStartup(unittest.TestCase):
         )
         second = cameras[monitor.ARM2_CAMERA_KEY]
         self.assertEqual((second.serial, second.arm), ('344422070678', 'arm2'))
-        # 2 臂相机不共享 8089 的画面：8089 只读 1 臂的相机。
+        # 没有给 --tracker-url：两路手上相机都由本服务直接采集。
         self.assertIsNone(second.tracker)
+        self.assertEqual(second.frame_path, '/api/agent/frame?arm=arm2')
+        self.assertEqual(cameras['d435i'].frame_path, '/api/agent/frame')
         self.assertEqual(cameras['d435i'].arm, 'arm1')
 
     def test_without_a_second_serial_the_page_keeps_two_cameras(self):

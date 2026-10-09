@@ -116,6 +116,10 @@ class Camera:
         self.role = 'movable_global' if is_global else 'eye_in_hand'
         self.arm = arm
         self.hold_until = 0.
+        # 向 8089 要画面时的路径：1 臂是缺省的臂，不用写编号。
+        self.frame_path = '/api/agent/frame' + (
+            f'?arm={arm}' if arm not in (None, 'arm1') else ''
+        )
         self.source = None
         self.frame_metadata = {}
         self.usb = None
@@ -168,6 +172,20 @@ class Camera:
         seconds = min(max(0., float(seconds)), MAX_HOLD_S)
         with self.cv:
             self.hold_until = time.monotonic() + seconds if seconds else 0.
+
+    def direct_codes(self) -> tuple:
+        """8089 以哪些错误码拒绝时，改为由本服务直接打开相机。
+
+        8089 没有运行时总是可以直接打开。2 臂的相机还多两种情况：8089
+        没有启用 2 臂，或启用了但没有接管它的相机，这时相机是空闲的。
+        其余的拒绝（认证失败、相机身份不符等）不能靠抢相机来解决。
+
+        Returns:
+            允许改为直接采集的错误码。
+        """
+        if self.arm in (None, 'arm1'):
+            return ('BACKEND_UNAVAILABLE',)
+        return ('BACKEND_UNAVAILABLE', 'UNKNOWN_ARM', 'CAMERA_UNAVAILABLE')
 
     def subscribe(self) -> int:
         """登记一个预览连接，必要时启动采集线程。
@@ -277,7 +295,16 @@ class Camera:
             thread.join(timeout=6)
         return self.status()
 
-    def capture(self, epoch, stop):
+    def capture(self, epoch: int, stop: threading.Event) -> None:
+        """采集线程的入口：优先共享 8089 的画面，否则直接打开相机。
+
+        本函数不抛出异常：出错时把原因写进 `error`、状态置为 `error`，
+        并释放已经打开的设备。
+
+        Args:
+            epoch: 本次采集的代次。
+            stop: 置位后结束采集。
+        """
         pipeline = None
         device_lock = None
         started = False
@@ -287,9 +314,9 @@ class Camera:
                 # 8089.
                 from saydo.agent import client
                 try:
-                    first = self.tracker.request('/api/agent/frame')
+                    first = self.tracker.request(self.frame_path)
                 except client.BackendError as exc:
-                    if exc.payload.get('code') != 'BACKEND_UNAVAILABLE':
+                    if exc.payload.get('code') not in self.direct_codes():
                         raise RuntimeError(
                             '8089 原始画面不可用：' + str(exc)
                         ) from exc
@@ -420,7 +447,16 @@ class Camera:
                 self.jpeg, self.frame_at, self.fps = None, None, 0.0
                 self.cv.notify_all()
 
-    def capture_tracker(self, first, stop):
+    def capture_tracker(self, first: dict, stop: threading.Event) -> None:
+        """反复向 8089 取它的最新原始画面并发布；不打开设备。
+
+        Args:
+            first: 已经取到的第一帧。
+            stop: 置位后结束。
+
+        Raises:
+            RuntimeError: 8089 给出的相机身份不符、图像无效或已过期。
+        """
         last, count, data = time.monotonic(), 0, first
         while not stop.is_set():
             identity = data.get('camera') or {}
@@ -457,7 +493,7 @@ class Camera:
                 count, last = 0, now
             if stop.wait(1 / self.target_fps):
                 break
-            data = self.tracker.request('/api/agent/frame')
+            data = self.tracker.request(self.frame_path)
 
 
 def monitor_status(cameras):
@@ -740,9 +776,9 @@ def main() -> None:
         'd405': Camera(*size, 'd405', fixed_serial),
     }
     if arm2_serial:
-        # 2 臂的相机不经 8089：8089 目前只读 1 臂的相机。
+        # 8089 接管了 2 臂相机时共享它的画面，否则由本服务直接采集。
         server.cameras[ARM2_CAMERA_KEY] = Camera(
-            *size, ARM2_CAMERA_KEY, arm2_serial, arm='arm2'
+            *size, ARM2_CAMERA_KEY, arm2_serial, tracker, arm='arm2'
         )
 
     def shutdown(*_):

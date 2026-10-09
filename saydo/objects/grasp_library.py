@@ -8,6 +8,7 @@ import pathlib
 import tempfile
 import time
 import uuid
+from typing import Optional
 
 import numpy as np
 
@@ -112,10 +113,52 @@ def point_limits(vertices):
     return points.min(axis=0) - padding, points.max(axis=0) + padding
 
 
-def binding_error(entry, model_hash, tool_response, handeye=None):
+def tool_geometry(tool_response: Optional[dict]) -> Optional[tuple]:
+    """取出工具应答里决定夹爪参考点位置的部分：工具名和六维位姿。
+
+    Args:
+        tool_response: 控制器对“当前工具”查询的应答；缺失时为 None。
+
+    Returns:
+        `(工具名, 位姿)`，位姿是控制器原始单位的六个数；应答缺失时
+        为 None。
+    """
+    if not isinstance(tool_response, dict):
+        return None
+    return tool_response.get('tool_name'), tool_response.get('pose')
+
+
+def binding_error(
+    entry: dict,
+    model_hash: Optional[str],
+    tool_response: dict,
+    handeye: Optional[list] = None,
+) -> Optional[str]:
+    """判断一套夹法在当前的模型、工具和手眼标定下是否还能用。
+
+    夹法记录的是夹爪参考点相对物品的位姿。物品模型、工具的参考点
+    位置或手眼标定变了，这个相对关系就不再对应实物。
+
+    工具只比较名字和位姿，不比较负载和质心：负载不改变参考点在哪里，
+    而两台臂装着同样的夹爪时，控制器里登记的负载会有零点几克的出入
+    （1 臂 1146.8 克，2 臂 1147 克）。若连负载一起比，同一套夹法就
+    无法在两台臂上通用。执行前另有一步核对控制器当前工具与该臂工具
+    记录完全一致，负载的变化在那里把关。
+
+    Args:
+        entry: 夹法库里的一条夹法。
+        model_hash: 当前物品模型文件的 SHA-256。
+        tool_response: 这台臂工具记录里的控制器应答。
+        handeye: 这台臂的手眼矩阵；None 表示不检查手眼。
+
+    Returns:
+        不能用时返回给操作者看的原因，能用时返回 None。
+    """
     if entry.get('model_sha256') != model_hash:
         return '物品模型已变化，请重新设置夹法'
-    if entry.get('tool_response') != tool_response:
+    if tool_geometry(entry.get('tool_response')) != tool_geometry(
+        tool_response
+    ):
         return '工具参数已变化，请重新设置夹法'
     if (
         entry.get('flange_T_camera') is not None

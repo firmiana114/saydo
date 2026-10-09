@@ -56,6 +56,65 @@ class ClientTests(unittest.TestCase):
         )
         self.assertNotIn('a' * 40, request.full_url)
 
+    def sent(self, backend, path, value=None):
+        response = mock.Mock()
+        response.read.return_value = b'{}'
+        context = mock.Mock()
+        context.__enter__ = mock.Mock(return_value=response)
+        context.__exit__ = mock.Mock(return_value=False)
+        backend.opener.open = mock.Mock(return_value=context)
+        backend.request(path, value)
+        request = backend.opener.open.call_args.args[0]
+        body = None if request.data is None else json.loads(request.data)
+        return request.full_url.split('8089', 1)[1], body
+
+    def test_client_for_one_arm_names_it_in_every_request(self):
+        second = client.RobotBackend(
+            'http://127.0.0.1:8089', self.token, arm='arm2'
+        )
+        self.assertEqual(
+            self.sent(second, '/api/agent/status'),
+            ('/api/agent/status?arm=arm2', None),
+        )
+        self.assertEqual(
+            self.sent(second, '/api/agent/object-geometry?object_id=tube')[0],
+            '/api/agent/object-geometry?object_id=tube&arm=arm2',
+        )
+        task = {
+            'operation': 'reset', 'request_id': 'r-0000001', 'arguments': {}
+        }
+        self.assertEqual(
+            self.sent(second, '/api/agent/tasks', task),
+            ('/api/agent/tasks', {**task, 'arm': 'arm2'}),
+        )
+        # 传入的字典不被改动，重发时内容不变。
+        self.assertNotIn('arm', task)
+
+    def test_stop_is_never_narrowed_to_one_arm(self):
+        second = client.RobotBackend(
+            'http://127.0.0.1:8089', self.token, arm='arm2'
+        )
+        self.assertEqual(
+            self.sent(second, '/api/agent/stop', {}), ('/api/agent/stop', {})
+        )
+
+    def test_client_without_an_arm_sends_requests_unchanged(self):
+        self.assertEqual(
+            self.sent(self.client, '/api/agent/status'),
+            ('/api/agent/status', None),
+        )
+        self.assertEqual(
+            self.sent(self.client, '/api/agent/vision', {'operation': 'x'})[1],
+            {'operation': 'x'},
+        )
+
+    def test_invalid_arm_name_is_refused(self):
+        for arm in ('arm2&x=1', 'Arm 2', ''):
+            with self.subTest(arm=arm), self.assertRaises(ValueError):
+                client.RobotBackend(
+                    'http://127.0.0.1:8089', self.token, arm=arm
+                )
+
     def test_private_token_and_restricted_routes(self):
         with self.assertRaises(ValueError):
             self.client.request('/api/grasp')
