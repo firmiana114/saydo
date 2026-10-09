@@ -78,7 +78,7 @@
 
 两台臂的相机支架型号和安装方式相同。2 臂自己采过一次标定（会话 `work/handeye/arm2_handeye_20261009/`），验证误差约为 1 臂的两倍，而把 1 臂的矩阵套到这批数据上吻合程度几乎一样（均方根 9.0 对 8.7 毫米）。用户决定直接沿用 1 臂的标定，精度由后续实验确认。
 
-做法：`arm2.json` 的 `handeye_file` 仍指向 `config/calibration/handeye.yaml`，`camera_reuse_file` 指向 `config/calibration/arm2_camera_reuse.yaml`。后者是 2 臂专用的复用策略，写明依据，并把 `replacement_accuracy_verified` 留为 `false`，实验确认后再改。
+做法：`arm2.json` 的 `handeye_file` 仍指向 `config/calibration/handeye.yaml`，`camera_reuse_file` 指向 `config/calibration/arm2_camera_reuse.yaml`。后者是 2 臂专用的复用策略，写明依据。`replacement_accuracy_verified` 起初为 `false`；2026-10-09 加上 2 臂的相机校正后实机抓取试管成功，用户确认精度不错，已改为 `true`。
 
 ### 工具记录：用脚本读回
 
@@ -106,7 +106,7 @@ work/foundationpose_env/bin/python -m scripts.record_arm_tool --arm arm2 --robot
 | 桌面高度 | 用户确认与 1 臂一致（−26.09 毫米）。只读核对：把 2 臂相机的整幅深度图换算到基座坐标，最大的一层平面在 −25.6 毫米，与配置相差不到 1 毫米 |
 | 工作范围 | 沿用 1 臂的数值 |
 | 复位姿态 | 用户摆好观测姿态后只读记录：关节 (39.0, 43.7, 1.7, −71.7, −1.3, −116.0, −52.5) 度，相机在基座上方约 0.54 米、斜向下 36 度 |
-| 运动速度 | 2 臂暂设 10%（1 臂为 25%），实机确认无误后再调 |
+| 运动速度 | 25%，与 1 臂相同（起初暂设 10%，2026-10-09 实机抓取后由用户调回） |
 | 放置范围 | 未设置（桌面放置范围按各臂基座坐标写，不能照搬 1 臂的）；固定抓放不需要它 |
 
 ## 页面操作哪台臂：切换“当前机械臂”
