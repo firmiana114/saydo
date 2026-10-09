@@ -32,6 +32,7 @@ from saydo.geometry import pose_symmetry
 from saydo.manipulation import grasp_control
 from saydo.workbench import live_events
 from saydo.perception import camera_checks
+from saydo.perception import vision_refinement
 from saydo.robot import arms
 from saydo.workbench import agent_api as workbench_agent_api
 from saydo.workbench import agent_router
@@ -217,16 +218,26 @@ class Tracker:
         for arm in arms.configured(ROOT):
             if arm.arm_id == arms.DEFAULT_ARM_ID:
                 vision = self
-                config_path = getattr(
-                    args, 'grasp_config', arm.config_path(ROOT)
+                config_path = pathlib.Path(
+                    getattr(args, 'grasp_config', arm.config_path(ROOT))
                 )
+                if self._depth_quadratic_per_m(arm, config_path):
+                    raise ValueError(
+                        f'{arm.label}的相机校正里带有深度校正，'
+                        '但本跟踪器读取的相机尚不支持深度校正'
+                    )
             else:
                 config_path = arm.config_path(ROOT)
                 serial = json.loads(config_path.read_text()).get(
                     'camera_serial'
                 )
                 if serial:
-                    vision = arm_camera.ArmCamera(self, arm, serial)
+                    vision = arm_camera.ArmCamera(
+                        self,
+                        arm,
+                        serial,
+                        self._depth_quadratic_per_m(arm, config_path),
+                    )
                     self.arm_cameras.append(vision)
                 else:
                     vision = no_vision.NoVision(self.models_root, arm)
@@ -237,6 +248,21 @@ class Tracker:
                 vision.grasp = controller
             controllers[arm.arm_id] = controller
         return controllers
+
+    @staticmethod
+    def _depth_quadratic_per_m(
+        arm: arms.Arm, config_path: pathlib.Path
+    ) -> float:
+        """读取一台臂相机的深度校正系数；没有配置相机校正时为 0。"""
+        if not config_path.is_file():
+            return 0.
+        name = json.loads(config_path.read_text()).get(
+            'vision_refinement_file'
+        )
+        if not name:
+            return 0.
+        refinement = vision_refinement.load(ROOT / name, arm.arm_id)
+        return float(refinement['depth_quadratic_per_m'])
 
     def realsense_module(self, timeout_s: float = 30.) -> Optional[Any]:
         """返回 1 臂取图线程已加载的 RealSense 库。

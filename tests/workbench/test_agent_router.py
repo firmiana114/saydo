@@ -1,5 +1,6 @@
 """按臂分发 Agent 请求：真实的接口、分发和动作控制器，只有控制器通信是替身。"""
 
+import json
 import pathlib
 import tempfile
 import threading
@@ -7,11 +8,14 @@ import types
 import unittest
 from unittest import mock
 
+import yaml
+
 from saydo.manipulation import grasp_control
 from saydo.robot import arms
 from saydo.robot import grasp_robot
 from saydo.workbench import agent_api
 from saydo.workbench import agent_router
+from saydo.workbench import arm_camera
 from saydo.workbench import live_tracker
 from saydo.workbench import no_vision
 from tests.robot import fake_controller
@@ -295,6 +299,53 @@ class ControllerCreationTests(unittest.TestCase):
         self.assertIs(second.tracker.grasp, second)
         with self.assertRaisesRegex(ValueError, '2臂.*尚未接入视觉'):
             second.tracker.grasp_observation()
+
+
+    def write_refinement(self, arm_id, quadratic):
+        arm = arms.by_id(arm_id)
+        path = arm.config_path(self.root)
+        if not path.is_file():
+            fake_controller.write_arm_config(
+                self.root, arm, '10.0.0.9', [0] * 7
+            )
+        config = json.loads(path.read_text())
+        name = f'config/calibration/{arm_id}_vision_refinement.yaml'
+        config.update(
+            vision_refinement_file=name, camera_serial='344422070678'
+        )
+        path.write_text(json.dumps(config))
+        (self.root / name).write_text(
+            yaml.safe_dump(
+                {
+                    'schema_version': 1,
+                    'arm': arm_id,
+                    'acceptance_status': 'user_accepted_usable',
+                    'correction': {
+                        'rotation_vector_rad': [0., 0., 0.],
+                        'translation_m': [0., 0., .01],
+                    },
+                    'depth_quadratic_per_m': quadratic,
+                }
+            )
+        )
+
+    def test_second_arm_camera_gets_its_depth_correction(self):
+        self.write_refinement('arm2', -.035)
+        second = self.create()['arm2'].tracker
+        self.assertIsInstance(second, arm_camera.ArmCamera)
+        self.assertEqual(second.depth_quadratic_per_m, -.035)
+        self.assertEqual(self.tracker.arm_cameras, [second])
+
+    def test_depth_correction_on_the_first_arm_is_refused_at_startup(self):
+        self.write_refinement('arm1', -.01)
+        with self.assertRaisesRegex(ValueError, '1臂.*不支持深度校正'):
+            self.create()
+
+    def test_first_arm_refinement_without_depth_correction_is_accepted(
+        self,
+    ):
+        self.write_refinement('arm1', 0.)
+        self.assertEqual(list(self.create()), ['arm1'])
 
 
 class AbortAllTests(unittest.TestCase):

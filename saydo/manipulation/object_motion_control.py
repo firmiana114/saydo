@@ -237,6 +237,10 @@ class ObjectMotionMixin:
             'handeye': self.root / config['handeye_file'],
             'camera_reuse': self.camera_reuse_path(config),
         }
+        if config.get('vision_refinement_file'):
+            paths['vision_refinement'] = (
+                self.root / config['vision_refinement_file']
+            )
         return {
             key: (
                 hashlib.sha256(p.read_bytes()).hexdigest()

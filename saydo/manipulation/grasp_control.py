@@ -21,6 +21,7 @@ from saydo.robot import arms
 from saydo.robot import grasp_robot
 from saydo.robot import motion_validation
 from saydo.perception import camera_checks
+from saydo.perception import vision_refinement
 from saydo.manipulation import reorientation_control
 from saydo.manipulation import placement_control
 from saydo.manipulation import grasp_profiles_control
@@ -33,6 +34,12 @@ from saydo.manipulation import fixed_pick_place
 from saydo.manipulation import motion_recovery
 from saydo.objects import object_catalog
 from saydo.objects import grasp_library
+
+
+# 关节与观测姿态相差不超过这个角度，就认为在观测姿态。取 2 度：复位
+# 到位的误差在 0.05 度以内，而 2 度的关节偏差对应相机移动约 1～2 厘米，
+# 此时相机校正的误差仍可忽略。
+OBSERVATION_POSE_TOLERANCE_DEG = 2.
 
 
 class GraspController(
@@ -679,7 +686,23 @@ class GraspController(
         except Exception as error:
             raise ValueError('读取夹爪失败：' + str(error)) from error
 
-    def profile_for(self, config, observation, tool, handeye):
+    def profile_for(
+        self, config: dict, observation: dict, tool: dict, handeye: dict
+    ) -> dict:
+        """取出抓取要用的夹法：配置里的固定夹法，或物品当前选用的那一套。
+
+        Args:
+            config: 这台臂的抓取配置。
+            observation: 视觉观测，含物品编号和模型文件的 SHA-256。
+            tool: 这台臂的工具记录。
+            handeye: `calibration` 返回的手眼记录。
+
+        Returns:
+            夹法（夹持点、朝向、接近方向）。
+
+        Raises:
+            ValueError: 夹法记录时的模型、工具或手眼标定与现在不一致。
+        """
         profile = copy.deepcopy(config['grasp_profile'])
         if profile['orientation'] != 'follow_object':
             return profile
@@ -694,7 +717,7 @@ class GraspController(
                 record,
                 observation.get('model_sha256'),
                 tool['controller_readback']['tool_response_raw'],
-                handeye['flange_T_color_optical_camera'],
+                grasp_library.binding_handeye(handeye),
             )
             if error:
                 raise ValueError(error)
@@ -826,7 +849,9 @@ class GraspController(
                     'tool_response': tool[
                         'controller_readback'
                     ]['tool_response_raw'],
-                    'flange_T_camera': handeye['flange_T_color_optical_camera'],
+                    'flange_T_camera': grasp_library.binding_handeye(
+                        handeye
+                    ),
                     'recorded_at': time.time(),
                 }
                 if observation.get('pose_mode') == '5d':
@@ -963,7 +988,8 @@ class GraspController(
 
         确认三件事：标定和工具原点已被用户接受；原始记录文件没有被改动
         （比对 SHA-256）；当前相机就是标定时的那台，或配置允许同型号
-        相机复用。
+        相机复用。配置了相机校正时，把校正合进手眼矩阵：之后所有
+        “相机坐标换算到基座坐标”的计算用的都是校正后的矩阵。
 
         Args:
             config: 这台臂的抓取配置。
@@ -1006,7 +1032,81 @@ class GraspController(
             handeye, camera, policy or {}
         )
         handeye['runtime_camera'] = camera
+        refinement = self.vision_refinement(config)
+        # 夹法绑定比对的是标定原值；几何换算用校正后的矩阵。
+        handeye['calibrated_flange_T_color_optical_camera'] = handeye[
+            'flange_T_color_optical_camera'
+        ]
+        handeye['flange_T_color_optical_camera'] = (
+            vision_refinement.refined_flange_T_camera(
+                handeye['flange_T_color_optical_camera'], refinement
+            ).tolist()
+        )
+        handeye['vision_refinement'] = (
+            None
+            if refinement is None
+            else {
+                'file': config['vision_refinement_file'],
+                'measured_at': refinement.get('measured_at'),
+                'correction': refinement['correction'],
+            }
+        )
         return handeye, tool
+
+    def vision_refinement(self, config: dict) -> Optional[dict]:
+        """读取这台臂的相机校正。
+
+        Args:
+            config: 这台臂的抓取配置；`vision_refinement_file` 是校正
+                文件相对项目根目录的路径。
+
+        Returns:
+            校正记录；配置里没有写校正文件时为 None。
+
+        Raises:
+            ValueError: 校正文件是别的臂的、未被接受或数值无效。
+        """
+        name = config.get('vision_refinement_file')
+        if not name:
+            return None
+        return vision_refinement.load(self.root / name, self.arm.arm_id)
+
+    def observation_pose_note(self, config: dict, arm: dict) -> dict:
+        """判断机械臂当前是否在观测姿态，供场景快照标注精度。
+
+        相机校正是在观测姿态下测的，只在那里准到 1～2 毫米；在别的
+        姿态采集的快照，物品位置约有 3～6 毫米的误差。
+
+        Args:
+            config: 这台臂的抓取配置，观测姿态取自其中的复位目标。
+            arm: 控制器报告的机械臂状态，关节为原始单位（0.001 度）。
+
+        Returns:
+            含 `at_observation_pose`（是否在观测姿态；没有配置观测
+            姿态时为 None）和 `max_joint_difference_deg`。
+        """
+        try:
+            target = grasp_geometry.return_joint_target(config)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            target = None
+        if target is None:
+            return {
+                'at_observation_pose': None,
+                'max_joint_difference_deg': None,
+            }
+        difference_deg = float(
+            np.abs(
+                np.asarray(arm['joint'], dtype=float) - np.asarray(target)
+            ).max()
+            / 1000
+        )
+        return {
+            'at_observation_pose': (
+                difference_deg <= OBSERVATION_POSE_TOLERANCE_DEG
+            ),
+            'max_joint_difference_deg': difference_deg,
+            'tolerance_deg': OBSERVATION_POSE_TOLERANCE_DEG,
+        }
 
     def arm_state(self):
         state = self.robot.query('get_current_arm_state')['arm_state']

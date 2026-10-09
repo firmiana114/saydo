@@ -420,8 +420,35 @@ class GraspProfilesMixin:
             }
 
     def select_grasp_candidate(
-        self, config, observation, tool, handeye, base_object, arm, report
-    ):
+        self,
+        config: dict,
+        observation: dict,
+        tool: dict,
+        handeye: dict,
+        base_object: np.ndarray,
+        arm: dict,
+        report: dict,
+    ) -> tuple:
+        """在物品的各套夹法里选出第一套通过全部检查的；只计算，不动作。
+
+        依次检查每套已启用的夹法：绑定是否仍然有效、几何是否可达、
+        是否越出工作范围或低于桌面、路径逆解是否连续。
+
+        Args:
+            config: 这台臂的抓取配置。
+            observation: 视觉观测。
+            tool: 这台臂的工具记录。
+            handeye: `calibration` 返回的手眼记录。
+            base_object: 物品在这台臂基座坐标里的位姿，4×4。
+            arm: 控制器报告的机械臂当前状态。
+            report: 本次任务的诊断记录，各候选的检查结果写入其中。
+
+        Returns:
+            `(方案, 夹法, 生效的配置)`。
+
+        Raises:
+            ValueError: 没有任何一套夹法通过检查，原因写在报错里。
+        """
         mode = observation.get('pose_mode', '6d')
         library = self.grasp_library()
         value = library.object(observation['object_id'])
@@ -472,7 +499,7 @@ class GraspProfilesMixin:
                     entry,
                     observation.get('model_sha256'),
                     tool['controller_readback']['tool_response_raw'],
-                    handeye['flange_T_color_optical_camera'],
+                    objects_grasp_library.binding_handeye(handeye),
                 )
                 if error:
                     raise ValueError(error)

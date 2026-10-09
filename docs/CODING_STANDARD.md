@@ -83,8 +83,9 @@
 - 点和向量把所在坐标系写在量纲之前：`grasp_point_object_m`、`retreat_vector_base_m`。
 - 仓库里已有的坐标系名：`base`（基座）、`flange`（法兰，机械臂末端安装面）、
   `tcp` / `grip_tcp`（夹爪中心）、`camera` / `color_optical_camera`（相机）、
-  `object`（物品）、`feature`（物品上的特征点）、`board`（标定板）。新增坐标系须
-  先在这里登记。
+  `object`（物品）、`feature`（物品上的特征点）、`board`（标定板）、
+  `arm1_base` / `arm2_base`（两台臂各自的基座，跨臂换算时用）、`measured`
+  （相机实际量到的点，尚未做相机校正）。新增坐标系须先在这里登记。
 
 ### 5.3 会让机械臂或夹爪动作的代码
 

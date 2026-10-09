@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 import cv2
 import numpy as np
 
+from saydo.perception import vision_refinement
 from saydo.robot import arms
 
 # 与跟踪器对 1 臂相机的取流设置一致：彩色 1280×720、深度 640×360、15 帧/秒，
@@ -61,7 +62,13 @@ class ArmCamera:
         grasp: 使用本对象的动作控制器，由创建方在控制器建好后填入。
     """
 
-    def __init__(self, tracker: Any, arm: arms.Arm, serial: str) -> None:
+    def __init__(
+        self,
+        tracker: Any,
+        arm: arms.Arm,
+        serial: str,
+        depth_quadratic_per_m: float = 0.,
+    ) -> None:
         """创建取图对象；不打开设备，调用 `run` 后才开始取图。
 
         Args:
@@ -69,7 +76,10 @@ class ArmCamera:
                 并从它那里取得已加载的 RealSense 库。
             arm: 相机装在哪台臂手上。
             serial: 相机序列号。
+            depth_quadratic_per_m: 这台相机深度读数的二次项校正系数，
+                取自该臂的相机校正文件；0 表示不校正。
         """
+        self.depth_quadratic_per_m = float(depth_quadratic_per_m)
         self.tracker = tracker
         self.arm = arm
         self.serial = serial
@@ -280,12 +290,17 @@ class ArmCamera:
                 IMAGE_SIZE_PX,
                 interpolation=cv2.INTER_AREA,
             ),
-            'depth': cv2.resize(
-                np.asanyarray(depth.get_data()).astype(np.float32)
-                * depth_scale_m,
-                IMAGE_SIZE_PX,
-                interpolation=cv2.INTER_NEAREST,
+            # 先修正深度再交给定位模型：物品位姿是从深度图算出来的。
+            'depth': vision_refinement.corrected_depth(
+                cv2.resize(
+                    np.asanyarray(depth.get_data()).astype(np.float32)
+                    * depth_scale_m,
+                    IMAGE_SIZE_PX,
+                    interpolation=cv2.INTER_NEAREST,
+                ),
+                self.depth_quadratic_per_m,
             ),
+            'depth_quadratic_per_m': self.depth_quadratic_per_m,
             'K': intrinsic_matrix,
             'camera': {
                 **identity,

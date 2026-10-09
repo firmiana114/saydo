@@ -15,7 +15,9 @@ import yaml
 
 from saydo.geometry import grasp_geometry
 from saydo.manipulation import grasp_control
+from saydo.objects import grasp_library
 from saydo.objects import object_catalog
+from saydo.perception import vision_refinement
 from saydo.robot import arms
 from saydo.robot import grasp_robot
 from saydo.scene import scene_features
@@ -141,6 +143,19 @@ class FrameTests(ArmCameraTestCase):
         self.assertGreaterEqual(self.rs.stopped, 1)
         self.rs.fail_after = None
         self.wait_for(lambda: self.camera.latest is not None, '没有恢复')
+
+    def test_depth_is_corrected_before_it_reaches_the_pose_models(self):
+        self.camera = arm_camera.ArmCamera(
+            self.tracker, self.arm, SERIAL, depth_quadratic_per_m=-.035
+        )
+        self.start()
+        self.wait_for(lambda: self.camera.latest is not None, '没有画面')
+        frame = self.camera.latest
+        # 相机读到 0.4 米，按 Z·(1 + k·Z) 修正为 0.3944 米。
+        self.assertAlmostEqual(
+            float(frame['depth'][0, 0]), .4 * (1 - .035 * .4), places=5
+        )
+        self.assertEqual(frame['depth_quadratic_per_m'], -.035)
 
     def test_live_tracking_operations_are_refused_with_the_reason(self):
         for name in (
@@ -337,6 +352,96 @@ class SceneCaptureTests(ArmCameraTestCase):
         # 采集只读：没有向控制器发过任何写入类的连接。
         self.assertEqual(
             set(self.fleet.controller('10.0.0.2').write_flags), {False}
+        )
+
+    def use_refinement(self, arm_id='arm2'):
+        refinement = {
+            'schema_version': 1,
+            'arm': arm_id,
+            'acceptance_status': 'user_accepted_usable',
+            'measured_at': '2026-10-09',
+            'correction': {
+                'rotation_vector_rad': [0., 0., .02],
+                'translation_m': [.008, .003, .012],
+            },
+            'depth_quadratic_per_m': -.035,
+        }
+        self.write(
+            'config/calibration/arm2_vision_refinement.yaml',
+            yaml.safe_dump(refinement),
+        )
+        self.write(
+            'config/calibration/arm2_camera_reuse.yaml',
+            yaml.safe_dump(self.policy),
+        )
+        config = json.loads(self.service.config_path.read_text())
+        config['vision_refinement_file'] = (
+            'config/calibration/arm2_vision_refinement.yaml'
+        )
+        self.service.config_path.write_text(json.dumps(config))
+        return refinement
+
+    def test_camera_refinement_is_applied_to_object_positions(self):
+        refinement = self.use_refinement()
+        scene_id = self.capture_scene()
+        self.assertEqual(
+            self.service.status['state'],
+            'scene_ready',
+            self.service.status.get('error'),
+        )
+        scene = self.service.scenes().require(scene_id)
+        arm = self.fleet.controller('10.0.0.2').query(
+            'get_current_arm_state'
+        )['arm_state']
+        # 与不带校正时相比，只在手眼矩阵后面多乘了一个校正变换。
+        expected = (
+            grasp_geometry.controller_pose(arm['pose'])
+            @ np.linalg.inv(self.flange_T_tcp)
+            @ self.flange_T_camera
+            @ vision_refinement.camera_T_measured(refinement)
+            @ self.camera_T_object
+        )
+        np.testing.assert_allclose(
+            scene['instances'][0]['base_T_object'], expected, atol=1e-9
+        )
+        self.assertEqual(
+            scene['vision_refinement']['correction'],
+            refinement['correction'],
+        )
+        # 复位目标是七个关节全零，替身控制器也在零位：算作观测姿态。
+        self.assertTrue(scene['capture_pose']['at_observation_pose'])
+        self.assertNotIn('不在观测姿态', self.service.status['message'])
+
+    def test_snapshot_away_from_the_observation_pose_is_flagged(self):
+        self.use_refinement()
+        self.fleet.controller('10.0.0.2').joint = [5000] * 7
+        scene_id = self.capture_scene()
+        self.assertEqual(self.service.status['state'], 'scene_ready')
+        note = self.service.scenes().require(scene_id)['capture_pose']
+        self.assertFalse(note['at_observation_pose'])
+        self.assertAlmostEqual(note['max_joint_difference_deg'], 5.)
+        self.assertIn('不在观测姿态', self.service.status['message'])
+
+    def test_refinement_measured_for_another_arm_is_refused(self):
+        self.use_refinement(arm_id='arm1')
+        self.capture_scene()
+        self.assertEqual(self.service.status['state'], 'failed')
+        self.assertIn('不能用于 arm2', self.service.status['error'])
+        self.assertEqual(self.frames, [])
+
+    def test_grasps_stay_bound_to_the_calibration_not_the_refinement(self):
+        self.use_refinement()
+        self.start()
+        self.wait_for(lambda: self.camera.latest is not None, '没有画面')
+        config = json.loads(self.service.config_path.read_text())
+        handeye, _ = self.service.calibration(config)
+        self.assertEqual(
+            grasp_library.binding_handeye(handeye),
+            self.flange_T_camera.tolist(),
+        )
+        self.assertNotEqual(
+            handeye['flange_T_color_optical_camera'],
+            self.flange_T_camera.tolist(),
         )
 
     def test_without_the_reuse_policy_another_arms_calibration_is_refused(

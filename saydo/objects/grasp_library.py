@@ -128,6 +128,25 @@ def tool_geometry(tool_response: Optional[dict]) -> Optional[tuple]:
     return tool_response.get('tool_name'), tool_response.get('pose')
 
 
+def binding_handeye(handeye: dict) -> list:
+    """返回夹法绑定时比对的手眼矩阵：标定原值，不含相机校正。
+
+    相机校正是每台臂各自的，而夹法是各臂共用的。绑定只需要确认夹法
+    记录时用的是同一份手眼标定，所以比对标定原值；若比对校正后的
+    矩阵，同一套夹法就无法在两台臂上通用。
+
+    Args:
+        handeye: 动作控制器 `calibration` 返回的手眼记录。
+
+    Returns:
+        4×4 手眼矩阵（嵌套列表）。
+    """
+    return handeye.get(
+        'calibrated_flange_T_color_optical_camera',
+        handeye['flange_T_color_optical_camera'],
+    )
+
+
 def binding_error(
     entry: dict,
     model_hash: Optional[str],

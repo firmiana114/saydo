@@ -48,6 +48,11 @@ class SceneMixin:
             'handeye': self.root / config['handeye_file'],
             'camera_reuse': self.camera_reuse_path(config),
         }
+        if config.get('vision_refinement_file'):
+            # 相机校正改了，按旧校正算出的快照就不再可信。
+            paths['vision_refinement'] = (
+                self.root / config['vision_refinement_file']
+            )
         return {
             'files': {
                 k: (
@@ -201,6 +206,12 @@ class SceneMixin:
                 }
                 arm, _ = self.paired_observation(observation)
                 camera_checks.check_camera_observation(handeye, observation)
+                scene['capture_pose'] = self.observation_pose_note(
+                    config, arm
+                )
+                scene['vision_refinement'] = handeye.get(
+                    'vision_refinement'
+                )
                 base_camera = (
                     grasp_geometry.controller_pose(arm['pose'])
                     @ np.linalg.inv(
@@ -294,6 +305,13 @@ class SceneMixin:
                     scene_snapshot=self.scene_snapshot(scene['scene_id']),
                     message=(
                         '全部目标已定位并固定为基座坐标；后续动作无需重跟踪'
+                        + (
+                            '。提示：本次不在观测姿态采集，相机校正在此'
+                            '姿态下的位置误差约 3～6 毫米'
+                            if scene['capture_pose']['at_observation_pose']
+                            is False
+                            else ''
+                        )
                     ),
                 )
         except Exception as e:
