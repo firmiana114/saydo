@@ -69,9 +69,7 @@ vm.runInContext(
 vm.runInContext(
     fs.readFileSync(WEB_DIR + '/arm_speed_panel.js', 'utf8'), sandbox
 );
-vm.runInContext(
-    fs.readFileSync(WEB_DIR + '/arm_switch_panel.js', 'utf8'), sandbox
-);
+// 故意不加载 arm_switch_panel.js：页面在这个脚本缺失时也要照常工作。
 vm.runInContext(source, sandbox);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 

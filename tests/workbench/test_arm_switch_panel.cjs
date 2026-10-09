@@ -119,6 +119,8 @@ const state = (live, busy = false, secondCamera = true) => ({
   assert(html.includes('<script src="/arm_switch_panel.js"></script>'));
   assert(html.includes('id="arm-switch"'));
   assert(html.includes('armSwitchPanel.update(s, actionPending)'));
+  // 脚本缺失时页面要能照常工作：旧进程会读到新页面却不提供新脚本。
+  assert(html.includes('globalThis.ArmSwitchPanel ?'));
   console.log('arm switch panel: ok');
 })().catch(error => {
   console.error(error);

@@ -2320,9 +2320,13 @@
     const armSpeedPanel = new ArmSpeedPanel((path, data) => post(path, data));
     // 切换当前机械臂后整页重新载入：夹法、放置、调姿等面板都按臂保存，
     // 重新载入比逐个面板清空更不容易漏。
-    const armSwitchPanel = new ArmSwitchPanel(
-        (path, data) => post(path, data), () => location.reload()
-    );
+    // 脚本没有加载到时（例如后端还是不认识这个地址的旧进程）页面照常
+    // 工作，只是不显示切换按钮。
+    const armSwitchPanel = globalThis.ArmSwitchPanel ?
+        new ArmSwitchPanel(
+            (path, data) => post(path, data), () => location.reload()
+        ) :
+        {pending: false, update() {}};
     const teachPanel = new TeachGraspPanel((path, data) => post(path, data));
     const resetButton = document.querySelector('#arm-reset');
     const zeroResetButton = document.querySelector('#arm-reset-zero');
