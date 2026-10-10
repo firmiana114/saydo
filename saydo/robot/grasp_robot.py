@@ -1,6 +1,7 @@
 """Narrow RealMan JSON transport. Motion requires an explicitly enabled client."""
 
 import json
+import select
 import socket
 import time
 from typing import Callable, Optional, Sequence
@@ -647,11 +648,15 @@ class RobotClient:
     def _drain_replies(
         connection: object, record: dict, elapsed_s: float
     ) -> None:
-        """把控制器已经发来的应答读走并记下来，不等待。"""
-        try:
-            chunk = connection.recv(4096, socket.MSG_DONTWAIT)
-        except (BlockingIOError, socket.timeout):
+        """把控制器已经发来的应答读走并记下来，不等待。
+
+        先问一下有没有数据再读：带超时的连接上直接读会一直等到超时
+        （2026-10-10 首次实测时，每帧因此多等 0.2 秒，触发了卡顿保护）。
+        """
+        readable, _, _ = select.select([connection], [], [], 0)
+        if not readable:
             return
+        chunk = connection.recv(4096)
         if not chunk:
             raise RuntimeError('运动期间控制器断开连接')
         if len(record['responses']) >= 32:

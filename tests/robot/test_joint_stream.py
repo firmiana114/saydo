@@ -1,7 +1,9 @@
 """角度透传的发送循环：替身只在控制器连接和时钟两处。"""
 
 import json
+import socket
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -28,25 +30,39 @@ class FakeClock:
 
 
 class Connection:
-    """控制器替身：记下收到的每一帧，从不应答。"""
+    """控制器替身：一对真实的本机套接字的一端。
+
+    用真实套接字是为了让“有没有数据可读”“带超时的读取”这些行为与
+    实际一致；另一端 `controller` 留给测试扮演控制器发应答。
+    """
 
     def __init__(self, clock, on_frame=None):
         self.clock = clock
         self.on_frame = on_frame
         self.frames = []
         self.times = []
+        self.local, self.controller = socket.socketpair()
+
+    def close(self):
+        self.local.close()
+        self.controller.close()
+
+    def fileno(self):
+        return self.local.fileno()
 
     def settimeout(self, seconds):
-        pass
+        self.local.settimeout(seconds)
 
     def sendall(self, data):
+        self.local.sendall(data)
+        self.controller.recv(65536)
         self.frames.append(json.loads(data))
         self.times.append(self.clock.now)
         if self.on_frame is not None:
             self.on_frame(len(self.frames))
 
     def recv(self, size, flags=0):
-        raise BlockingIOError
+        return self.local.recv(size, flags)
 
 
 class JointStreamTests(unittest.TestCase):
@@ -57,6 +73,7 @@ class JointStreamTests(unittest.TestCase):
 
     def run_stream(self, on_frame=None, robot=None, **options):
         connection = Connection(self.time, on_frame)
+        self.addCleanup(connection.close)
         robot = robot or grasp_robot.RobotClient('test', writes=True)
         robot._request = mock.Mock(
             return_value={
@@ -120,6 +137,51 @@ class JointStreamTests(unittest.TestCase):
         self.assertEqual(record['frames_sent'], len(sent))
         self.assertEqual(len(record['frames']), len(sent))
         self.assertAlmostEqual(record['max_gap_s'], .01, places=6)
+
+    def test_sending_never_waits_for_replies(self):
+        # 控制器对透传指令不应答。带超时的连接上直接读会等到超时，
+        # 每帧白等 0.2 秒；这里用真实时间确认没有这种等待。
+        began = time.monotonic()
+        connection, record, error = self.run_stream(hold_s=0.)
+        self.assertIsNone(error)
+        self.assertGreater(len(connection.frames), 100)
+        self.assertLess(time.monotonic() - began, 2.)
+        self.assertEqual(record['responses'], [])
+
+    def test_controller_replies_are_recorded(self):
+        def on_frame(count):
+            if count == 5:
+                connection_box[0].controller.sendall(b'{"state":"x"}\r\n')
+
+        connection_box = []
+        original = Connection.__init__
+
+        def remember(instance, *args, **kwargs):
+            original(instance, *args, **kwargs)
+            connection_box.append(instance)
+
+        with mock.patch.object(Connection, '__init__', remember):
+            connection, record, error = self.run_stream(on_frame, hold_s=0.)
+        self.assertIsNone(error)
+        self.assertEqual(len(record['responses']), 1)
+        self.assertIn('"state":"x"', record['responses'][0]['raw'])
+
+    def test_controller_disconnect_stops_the_stream(self):
+        def on_frame(count):
+            if count == 5:
+                connection_box[0].controller.close()
+
+        connection_box = []
+        original = Connection.__init__
+
+        def remember(instance, *args, **kwargs):
+            original(instance, *args, **kwargs)
+            connection_box.append(instance)
+
+        with mock.patch.object(Connection, '__init__', remember):
+            connection, record, error = self.run_stream(on_frame)
+        self.assertIsNotNone(error)
+        self.assertLess(len(connection.frames), 10)
 
     def test_high_follow_and_period_are_passed_through(self):
         connection, record, error = self.run_stream(

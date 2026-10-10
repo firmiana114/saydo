@@ -495,7 +495,7 @@ def _stream_tracking(record: dict) -> dict:
     frames = next(
         (e['frames'] for e in record['motion_events'] if 'frames' in e), None
     )
-    if not frames:
+    if not frames or len(frames) < 2:
         return {}
     result = trajectory_recorder.tracking(record['samples'], frames)
     gaps = np.diff([frame[0] for frame in frames])
