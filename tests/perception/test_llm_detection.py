@@ -8,9 +8,12 @@ import unittest
 from unittest import mock
 
 import numpy as np
-from saydo.workbench import live_tracker
-from saydo.perception import llm_detection
+
 from saydo.objects import object_catalog
+from saydo.perception import llm_detection
+from saydo.robot import arms
+from saydo.workbench import live_tracker
+from tests.robot import fake_controller
 
 
 def response(box=None, status='found'):
@@ -188,6 +191,11 @@ class PromptTests(unittest.TestCase):
             object_catalog.select_object(self.models, 'cup')
 
     def tracker(self):
+        # 跟踪器按项目根目录找抓取配置和配置里引用的标定文件，所以
+        # 在临时根目录下自备一份，不读运行所在目录里本机的 config/。
+        fake_controller.write_arm_config(
+            self.root, arms.default(), '10.0.0.1', [0] * 7
+        )
         args = types.SimpleNamespace(
             mesh=self.folder / 'model.obj',
             models_root=self.models,
@@ -195,7 +203,6 @@ class PromptTests(unittest.TestCase):
             auto_recover=True,
             recovery_interval=0,
             detector='llm',
-            grasp_config=live_tracker.ROOT / 'config/grasp/trial.json',
         )
         with mock.patch.object(live_tracker, 'ROOT', self.root):
             tracker = live_tracker.Tracker(args)

@@ -11,8 +11,10 @@ import types
 import unittest
 from unittest import mock
 
-from saydo.workbench import live_tracker
 from saydo.manipulation import grasp_control
+from saydo.robot import arms
+from saydo.workbench import live_tracker
+from tests.robot import fake_controller
 
 # 测试会把 http.server.ThreadingHTTPServer 换成替身；这里先留住真正的类，
 # 供替身内部创建真实服务使用。
@@ -66,14 +68,14 @@ class GripperHTTPTests(unittest.TestCase):
         ) as robot:
             root = pathlib.Path(directory)
             (root / 'work').mkdir()
-            config = json.loads(
-                (live_tracker.ROOT / 'config/grasp/trial.json').read_text()
+            # 抓取配置由测试自备，不读运行所在目录里本机的 config/；
+            # 控制器地址指向上面这个本机的模拟控制器。
+            cfg = fake_controller.write_arm_config(
+                root, arms.default(), '127.0.0.1', [0] * 7
             )
-            config.update(
-                robot_ip='127.0.0.1', robot_port=robot.server_address[1]
-            )
-            cfg = root / 'trial.json'
-            cfg.write_text(json.dumps(config))
+            config = json.loads(cfg.read_text())
+            config['robot_port'] = robot.server_address[1]
+            cfg.write_text(json.dumps(config, indent=2))
             robot_thread = threading.Thread(
                 target=robot.serve_forever, daemon=True
             )

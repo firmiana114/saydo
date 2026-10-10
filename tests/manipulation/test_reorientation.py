@@ -14,7 +14,17 @@ from saydo.geometry import grasp_geometry
 from saydo.manipulation import reorientation_geometry
 from saydo.robot import motion_validation
 from tests.manipulation import test_grasp
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+# 调姿设置的测试取值，与部署时 config/grasp/reorientation.json 的常用值
+# 相同。写在这里而不读本机的 config/：那个目录不入 Git，各机器的取值
+# 可以不同，测试结果不应随运行所在的目录变化。
+REORIENTATION_SETTINGS = {
+    'arm_speed_percent': 25,
+    'planning_timeout_s': 20,
+    'rotation_step_deg': 5,
+    'position_tolerance_m': .002,
+    'orientation_tolerance_deg': 2,
+}
 
 
 def fixture():
@@ -26,9 +36,7 @@ def fixture():
         table_z_m=0,
         min_table_clearance_m=.005,
     )
-    settings = json.loads(
-        (ROOT / 'config/grasp/reorientation.json').read_text()
-    )
+    settings = copy.deepcopy(REORIENTATION_SETTINGS)
     original = np.eye(4)
     original[:3, 3] = [.3, .2, .03]
     attachment = np.eye(4)
