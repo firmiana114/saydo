@@ -1,7 +1,12 @@
 """General held-object goals. Object references, not TCP origins, define targets."""
 
+import concurrent.futures
 import subprocess
+from typing import Callable, Optional, Tuple
+
 import numpy as np
+import scipy.spatial
+
 from saydo.geometry import rotation_steps
 from saydo.geometry import grasp_geometry
 from saydo.objects import grasp_library
@@ -15,6 +20,25 @@ MAX_WAYPOINTS = 64
 MAX_VALIDATION_POINTS = 480
 POSITION_TOLERANCE = .002
 ANGLE_TOLERANCE_DEG = 2.
+# 同时检查的候选方案数。每个候选主要耗在一个独立的逆解子进程里；电脑有
+# 10 个物理核心，取 8 个：再多会让各子进程互相抢处理器，反而触发它们
+# 内部的时间上限。
+SEARCH_WORKERS = 8
+# 转移路线：(比起止点再抬高多少米, 向侧面绕开多少米)。先试直接过去。
+ROUTE_OFFSETS = (
+    (0., 0.),
+    (0., .08),
+    (0., -.08),
+    (0., .16),
+    (0., -.16),
+    (.05, 0.),
+    (.10, 0.),
+    (.05, .08),
+    (.05, -.08),
+    (.10, .08),
+    (.10, -.08),
+    (.15, 0.),
+)
 
 
 def object_at_reference(reference, rotation, point):
@@ -359,19 +383,141 @@ def build_candidate(
     }
 
 
+def hull_vertices(vertices: np.ndarray) -> np.ndarray:
+    """只保留模型凸包上的顶点。
+
+    规划时对每个取样姿态都要算物品的包围范围（会不会低于桌面、是否
+    超出工作范围）。包围范围只由最外面的点决定，凸包以内的点不起作用；
+    绕轴自由旋转（5D）的包围范围同样只由凸包顶点决定。试管模型有 1.2 万
+    个顶点，凸包上只有几百个，检查快几十倍而结果不变。
+
+    Args:
+        vertices: 模型顶点，N×3。
+
+    Returns:
+        凸包顶点，M×3。点太少或共面、求不出凸包时原样返回。
+    """
+    points = np.asarray(vertices, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 16:
+        return points
+    try:
+        return points[scipy.spatial.ConvexHull(points).vertices]
+    except scipy.spatial.QhullError:
+        return points
+
+
+class OrientationUnreachable(ValueError):
+    """所有夹持方向都卡在调姿段：换一个目标位置也救不回来。
+
+    调姿在原地进行，排在转移之前，与要去哪里无关。固定抓放据此判断
+    不必再换孔位重试。
+    """
+
+
+def outward_scores(
+    held: dict, arm: dict, goal: dict, frame: np.ndarray, count: int
+) -> list:
+    """给各个夹持方向打分：终点处夹爪越是从机械臂这一侧伸出去，分越高。
+
+    夹爪轴线朝外（背向底座）时手臂是自然伸展的姿态，最容易求出连续的
+    关节解；朝向底座或横着伸时往往要把手肘甩到别扭的一侧。2026-10-10
+    统计 21 次成功的固定抓放规划，成功的都是朝外的那几个夹持方向。
+
+    只用目标朝向和夹持关系做几何计算，不生成路径。
+
+    Args:
+        held: 夹持记录，取 `object_T_tcp` 和 `pose_mode`。
+        arm: 机械臂状态，取当前夹爪位姿。
+        goal: 已校验的目标。
+        frame: 目标所在坐标系在基座坐标系里的位姿，4×4。
+        count: 夹持方向的个数。
+
+    Returns:
+        长度为 `count` 的得分列表：夹爪轴线的水平分量与“底座指向目标
+        位置”方向的点积，范围 −1 到 1。夹爪竖直时各方向得分相近。没有
+        指定朝向时全为 0。
+    """
+    rows = list(goal['waypoints']) + [
+        {'position_m': goal['target_position_m'],
+         'rpy_deg': goal['target_rpy_deg']}
+    ]
+    orientations = [r['rpy_deg'] for r in rows if r['rpy_deg'] is not None]
+    if not orientations:
+        return [0.] * count
+    current = grasp_geometry.controller_pose(arm['pose'])
+    attachment = grasp_geometry.transform(held['object_T_tcp'])
+    variants = pose_symmetry.orientation_variants(
+        frame[:3, :3]
+        @ reorientation_geometry.rotation_from_rpy_deg(orientations[-1]),
+        held,
+        current,
+    )
+    positions = [r['position_m'] for r in rows if r['position_m'] is not None]
+    target_xy = (
+        (frame @ np.r_[positions[-1], 1])[:2] if positions else current[:2, 3]
+    )
+    radius_m = float(np.linalg.norm(target_xy))
+    if radius_m < 1e-6:
+        return [0.] * count
+    scores = []
+    for spin in range(count):
+        tool_axis = (variants[spin % len(variants)] @ attachment[:3, :3])[:, 2]
+        scores.append(float(tool_axis[:2] @ target_xy / radius_m))
+    return scores
+
+
 def plan_object_motion(
-    held,
-    vertices,
-    arm,
-    config,
-    goal,
-    frame,
-    reachable,
-    cancelled,
-    release=False,
-    retreat=None,
-    diagnostics=None,
-):
+    held: dict,
+    vertices: np.ndarray,
+    arm: dict,
+    config: dict,
+    goal: dict,
+    frame: np.ndarray,
+    reachable: Callable[[list, float], Tuple[bool, dict]],
+    cancelled: Callable[[], None],
+    release: bool = False,
+    retreat: Optional[list] = None,
+    diagnostics: Optional[list] = None,
+    selected_points: Optional[list] = None,
+) -> dict:
+    """为夹着的物品找一条全程可行的调姿与搬运路径；只做计算。
+
+    候选方案由三样东西组合而成：目标位置的偏移（仅自适应模式）、夹爪绕
+    物品轴线转到哪个方向（仅 5D 物品且指定了朝向时，24 个，每 15 度一个）、
+    转移时走哪条路（直接过去，或抬高、向侧面绕行，共 12 条）。逐个交给
+    `reachable` 做逆解、连续性和碰撞检查，取优先顺序里第一个通过的。
+
+    优先顺序：先试不绕行的路线；同一条路线里先试夹爪转动最少的方向，
+    再按夹爪朝外伸的程度依次试其余方向（见 `outward_scores`）。
+
+    候选之间互不依赖，所以每批同时检查 `SEARCH_WORKERS` 个（第一个单独
+    检查），再按优先顺序取结果：与按同样顺序逐个检查选出的方案相同，
+    只是更快。某个方向卡在调姿段时，换路线也没用，不再试它。
+
+    Args:
+        held: 夹持记录，取 `object_T_tcp` 和 `pose_mode`。
+        vertices: 物品模型的顶点，N×3，物品坐标系，单位米。
+        arm: 机械臂状态，路径从这里开始。
+        config: 这台臂生效的抓取配置。
+        goal: 目标：参考点、目标位置与朝向、途经点、路径与位置模式。
+        frame: 目标位置所在坐标系在基座坐标系里的位姿，4×4。
+        reachable: 路径检查函数，参数为取样点和时间上限（秒），返回
+            `(通过与否, 记录)`。会被多个线程同时调用。
+        cancelled: 取消检查，需要中止时由它抛出异常。
+        release: 终点是否松爪（会加上预放置和下降两段）。
+        retreat: 松爪后的退出位移，基座坐标系，单位米。
+        diagnostics: 给出时，每个候选的结果按优先顺序追加到这个列表，
+            最多保留 64 条。
+        selected_points: 给出时，填入被选中方案的全部检查取样点。
+
+    Returns:
+        方案：路点、目标位姿、`reachability_check`（含各取样点的关节解）
+        和搜索记录 `search_attempts`。
+
+    Raises:
+        OrientationUnreachable: 所有夹持方向都卡在调姿段。
+        ValueError: 目标无效，或没有候选通过检查。
+    """
     goal = motion_contract.checked_goal(goal, release)
     frame = grasp_geometry.transform(frame)
     retreat = np.asarray(
@@ -383,6 +529,7 @@ def plan_object_motion(
         raise ValueError('退出位移长度不得超过300毫米')
     attempts = diagnostics if diagnostics is not None else []
     current = grasp_geometry.controller_pose(arm['pose'])
+    vertices = hull_vertices(vertices)
     spins = (
         range(24)
         if (
@@ -394,93 +541,119 @@ def plan_object_motion(
         )
         else range(1)
     )
+    adaptive = goal['position_mode'] == 'adaptive'
     shifts = (
         reorientation_geometry.position_offsets(
             current[:3, 3], config['table_z_m'] + .103, .025
         )
-        if goal['position_mode'] == 'adaptive'
+        if adaptive
         else [np.zeros(3)]
     )
-    routes = [
-        (0., 0.),
-        (0., .08),
-        (0., -.08),
-        (0., .16),
-        (0., -.16),
-        (.05, 0.),
-        (.10, 0.),
-        (.05, .08),
-        (.05, -.08),
-        (.10, .08),
-        (.10, -.08),
-        (.15, 0.),
-    ]
-    for shift in shifts:
-        for spin in spins:
-            for route in routes:
+
+    def build(spin: int, shift: np.ndarray, route: tuple) -> dict:
+        return build_candidate(
+            held, vertices, arm, config, goal, frame, spin, shift, release,
+            retreat, route,
+        )
+
+    def evaluate(candidate: tuple) -> tuple:
+        """检查一个候选；在工作线程里运行。
+
+        返回 (记录, 方案或 None, 取样点)。
+        """
+        shift, spin, route = candidate
+        attempt = {
+            'spin_candidate': spin,
+            'shift_m': shift.tolist(),
+            'route_offset_m': list(route),
+        }
+        try:
+            plan = build(spin, shift, route)
+            points = plan.pop('validation_points')
+            valid, detail = reachable(points, 3.)
+            if not valid:
+                attempt['failure'] = detail.get('failure')
+                attempt['beam_max_width'] = max(
+                    (
+                        row['candidates']
+                        for row in detail.get('beam_widths', [])
+                    ),
+                    default=0,
+                )
+                for key in (
+                    'search_ik_calls',
+                    'initial_fk_error',
+                    'continuity_failure',
+                ):
+                    attempt[key] = detail.get(key)
+                raise ValueError(
+                    detail.get('reason', '逆解/正解或自身碰撞检查失败')
+                )
+            plan['reachability_check'] = detail
+            return attempt, plan, points
+        except (
+            ValueError, TimeoutError, subprocess.TimeoutExpired
+        ) as error:
+            attempt['reason'] = str(error)[:1200]
+            return attempt, None, None
+
+    scores = outward_scores(held, arm, goal, frame, len(spins))
+    # 第 0 个方向是夹爪转动最少的，仍然最先试：它可行时动作最短，与原来
+    # 选出的方案相同。其余按“朝外”的程度排；得分相差不到 0.02 的视为
+    # 一样，保持转动少的在前。
+    order = [0] + sorted(
+        spins[1:], key=lambda spin: (-round(scores[spin] / .02), spin)
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(SEARCH_WORKERS) as pool:
+        for shift in shifts:
+            pending = [
+                (shift, spin, route)
+                for route in ROUTE_OFFSETS
+                for spin in order
+            ]
+            # 卡在调姿段的夹持方向：转移路线帮不上忙，不再试它的其他路线。
+            dead = set()
+            while pending:
                 cancelled()
-                attempt = {
-                    'spin_candidate': spin,
-                    'shift_m': shift.tolist(),
-                    'route_offset_m': list(route),
-                }
-                attempts.append(attempt)
-                if len(attempts) > 64:
-                    del attempts[32]
-                try:
-                    plan = build_candidate(
-                        held,
-                        vertices,
-                        arm,
-                        config,
-                        goal,
-                        frame,
-                        spin,
-                        shift,
-                        release,
-                        retreat,
-                        route,
-                    )
-                    valid, detail = reachable(plan['validation_points'], 3.)
-                    if not valid:
-                        attempt['failure'] = detail.get('failure')
-                        attempt['beam_max_width'] = max(
-                            (
-                                row['candidates']
-                                for row in detail.get('beam_widths', [])
-                            ),
-                            default=0,
-                        )
-                        attempt['search_ik_calls'] = detail.get(
-                            'search_ik_calls'
-                        )
-                        attempt['initial_fk_error'] = detail.get(
-                            'initial_fk_error'
-                        )
-                        attempt['continuity_failure'] = detail.get(
-                            'continuity_failure'
-                        )
-                        raise ValueError(
-                            detail.get('reason', '逆解/正解或自身碰撞检查失败')
-                        )
-                    cancelled()
-                    plan.update(
-                        reachability_check=detail, search_attempts=attempts
-                    )
-                    plan.pop('validation_points')
-                    return plan
-                except (
-                    ValueError, TimeoutError, subprocess.TimeoutExpired
-                ) as error:
-                    attempt['reason'] = str(error)[:1200]
-                    # A transfer detour cannot repair orientation-stage IK.
+                batch = []
+                # 第一个候选单独检查：它通过的话（常见情形）不必为其余
+                # 候选白费处理器，耗时与只检查一个相同。
+                size = SEARCH_WORKERS if attempts else 1
+                while pending and len(batch) < size:
+                    spin = pending[0][1]
+                    if spin in dead:
+                        pending.pop(0)
+                    elif any(spin == other[1] for other in batch):
+                        # 同一个方向的下一条路线要等这一批的结果：它若卡在
+                        # 调姿段，后面的路线就不必试了。
+                        break
+                    else:
+                        batch.append(pending.pop(0))
+                if not batch:
+                    break
+                for attempt, plan, points in pool.map(evaluate, batch):
+                    attempts.append(attempt)
+                    if len(attempts) > 64:
+                        del attempts[32]
+                    if plan is not None:
+                        cancelled()
+                        plan['search_attempts'] = attempts
+                        if selected_points is not None:
+                            selected_points[:] = points
+                        return plan
                     failure = attempt.get('failure') or {}
                     if failure.get('waypoint', '').startswith(
                         ('orient_', 'release_orientation')
                     ):
-                        break
-        if goal['position_mode'] != 'adaptive':
-            break
+                        dead.add(attempt['spin_candidate'])
+            if not adaptive:
+                if len(dead) == len(spins):
+                    raise OrientationUnreachable(
+                        '全部 %d 个夹持方向都无法完成调姿：%s'
+                        % (len(spins), attempts[-1].get('reason', ''))
+                    )
+                break
     raise ValueError(
         '没有通过检查的持物运动方案：'
         + (attempts[-1].get('reason', '无候选') if attempts else '无候选')

@@ -2,6 +2,7 @@ import copy
 import json
 import pathlib
 import tempfile
+import threading
 import unittest
 from unittest import mock
 import numpy as np
@@ -54,12 +55,11 @@ class ObjectGeometryTests(unittest.TestCase):
         calls = []
 
         def reachable(points, timeout):
+            # 候选成批并行检查，不能按调用次序决定结果：只让绕行路线通过。
             clock[0] += 15.
             calls.append(timeout)
-            return (
-                len(calls) == 2,
-                {'verified': len(calls) == 2, 'reason': 'try another route'},
-            )
+            detour = any('detour' in point['name'] for point in points)
+            return detour, {'verified': detour, 'reason': 'try another route'}
 
         with mock.patch('time.monotonic', side_effect=lambda: clock[0]):
             plan = object_motion_geometry.plan_object_motion(
@@ -72,9 +72,11 @@ class ObjectGeometryTests(unittest.TestCase):
                 reachable,
                 lambda: None,
             )
-        self.assertEqual(clock[0], 30.)
+        # 每次检查“耗时”15 秒，找到可行候选时早已超过 20 秒，仍然采用。
+        self.assertGreaterEqual(clock[0], 30.)
         self.assertTrue(plan['reachability_check']['verified'])
-        self.assertEqual(calls, [3., 3.])
+        self.assertEqual(plan['route_offset_m'], [0., .08])
+        self.assertEqual(set(calls), {3.})
 
     def test_candidate_search_remains_cancellable(self):
         h, v, a, c = fixture()
@@ -99,7 +101,8 @@ class ObjectGeometryTests(unittest.TestCase):
                 reachable,
                 cancelled,
             )
-        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(len(calls), 1)
+        self.assertLessEqual(len(calls), object_motion_geometry.SEARCH_WORKERS)
 
     def plan(self, goal, **kw):
         held, vertices, arm, config = fixture()
@@ -224,9 +227,17 @@ class ObjectGeometryTests(unittest.TestCase):
     def test_5d_free_spin_and_zero_offset_are_not_reapplied(self):
         h, v, a, c = fixture()
         h['pose_mode'] = '5d'
-        reachable = mock.Mock(
-            side_effect=[(False, {'reason': 'first blocked'}), (True, {})]
-        )
+        blocked = []
+        guard = threading.Lock()
+
+        def reachable(points, timeout):
+            # 第一个被检查的候选不通过，其余都通过；并行时是哪一个并不
+            # 确定，下面的断言对任何转角都应成立。
+            with guard:
+                first = not blocked
+                blocked.append(1)
+            return (not first), {'reason': 'first blocked'}
+
         p = object_motion_geometry.plan_object_motion(
             h,
             v,
@@ -237,7 +248,7 @@ class ObjectGeometryTests(unittest.TestCase):
             reachable,
             lambda: None,
         )
-        self.assertEqual(reachable.call_count, 2)
+        self.assertGreaterEqual(len(blocked), 2)
         np.testing.assert_allclose(
             np.asarray(p['base_T_object_target'])[:3, 2], [1, 0, 0], atol=1e-12
         )
@@ -380,21 +391,20 @@ class ObjectGeometryTests(unittest.TestCase):
     def test_detour_search_preserves_goal_orientation_and_final_descent(self):
         h, v, a, c = fixture()
         proof = {'verified': True}
-        reachable = mock.Mock(
-            side_effect=[
-                (
-                    False,
-                    {
-                        'reason': 'blocked direct',
-                        'failure': {
-                            'kind': 'ik_failed',
-                            'waypoint': 'release_preplacement_1_sample_2',
-                        },
+        def reachable(points, timeout):
+            if any('detour' in point['name'] for point in points):
+                return True, dict(proof)
+            return (
+                False,
+                {
+                    'reason': 'blocked direct',
+                    'failure': {
+                        'kind': 'ik_failed',
+                        'waypoint': 'release_preplacement_1_sample_2',
                     },
-                ),
-                (True, proof),
-            ]
-        )
+                },
+            )
+
         p = object_motion_geometry.plan_object_motion(
             h,
             v,
@@ -464,6 +474,149 @@ class PlanStoreTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValueError, '校验'):
                 store.get(fresh['plan_id'])
+
+
+
+class SearchOrderTests(unittest.TestCase):
+    """候选方案的优先顺序、并行检查和提前结束。"""
+
+    # 物品竖直放置；夹爪轴线垂直于物品轴线（与夹试管时一样），所以夹爪
+    # 绕物品转到不同方向时，轴线在水平面里指向不同的方位。
+    GOAL_5D = {'target_position_m': [.4, 0, .3], 'target_rpy_deg': [0, 0, 0]}
+
+    def held_sideways(self):
+        held, vertices, arm, config = fixture()
+        held['pose_mode'] = '5d'
+        attachment = np.eye(4)
+        attachment[:3, :3] = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
+        held['object_T_tcp'] = attachment.tolist()
+        return held, vertices, arm, config
+
+    def search(self, reachable, goal=None, release=False):
+        held, vertices, arm, config = self.held_sideways()
+        attempts = []
+        try:
+            plan = object_motion_geometry.plan_object_motion(
+                held,
+                vertices,
+                arm,
+                config,
+                goal or self.GOAL_5D,
+                np.eye(4),
+                reachable,
+                lambda: None,
+                release=release,
+                diagnostics=attempts,
+            )
+        except ValueError as error:
+            return error, attempts
+        return plan, attempts
+
+    def test_first_direction_is_checked_alone_and_kept_when_feasible(self):
+        calls = []
+
+        def reachable(points, timeout):
+            calls.append(1)
+            return True, {'verified': True}
+
+        plan, attempts = self.search(reachable)
+        # 转动最少的方向可行时只检查它一个，不为其余候选白费处理器。
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(attempts[0]['spin_candidate'], 0)
+        self.assertEqual(plan['route_offset_m'], [0., 0.])
+
+    def test_other_directions_follow_outward_first_before_any_detour(self):
+        def reachable(points, timeout):
+            return False, {'reason': 'blocked'}
+
+        error, attempts = self.search(reachable)
+        self.assertIsInstance(error, ValueError)
+        held, _, arm, _ = self.held_sideways()
+        scores = object_motion_geometry.outward_scores(
+            held,
+            arm,
+            motion_contract.checked_goal(dict(self.GOAL_5D), False),
+            np.eye(4),
+            24,
+        )
+        # 记录超过 64 条后会丢掉中间的，前 24 条保持不变。
+        first = attempts[:24]
+        # 先把 24 个方向各试一遍直接路线，然后才试绕行。
+        self.assertTrue(all(a['route_offset_m'] == [0., 0.] for a in first))
+        order = [a['spin_candidate'] for a in first]
+        self.assertEqual(sorted(order), list(range(24)))
+        self.assertEqual(order[0], 0)
+        rest = [scores[spin] for spin in order[1:]]
+        # 其余方向按“夹爪朝外”的程度从高到低（相差 0.02 以内视为相同）。
+        self.assertTrue(
+            all(a >= b - .02 for a, b in zip(rest, rest[1:])), rest
+        )
+        self.assertGreater(rest[0] - rest[-1], 1.)
+
+    def test_orientation_failure_in_every_direction_ends_the_search(self):
+        calls = []
+
+        def reachable(points, timeout):
+            calls.append(1)
+            return (
+                False,
+                {
+                    'reason': 'cannot turn',
+                    'failure': {'waypoint': 'release_orientation_1_sample_1'},
+                },
+            )
+
+        error, attempts = self.search(reachable, release=True)
+        self.assertIsInstance(
+            error, object_motion_geometry.OrientationUnreachable
+        )
+        self.assertIn('全部 24 个夹持方向都无法完成调姿', str(error))
+        # 每个方向只试一次：调姿不通时换转移路线没有用。
+        self.assertEqual(len(calls), 24)
+        self.assertEqual(
+            sorted(a['spin_candidate'] for a in attempts), list(range(24))
+        )
+
+    def test_scores_are_zero_without_an_orientation_goal(self):
+        held, _, arm, _ = fixture()
+        goal = motion_contract.checked_goal(
+            {'target_position_m': [.4, -.1, .3]}, False
+        )
+        self.assertEqual(
+            object_motion_geometry.outward_scores(
+                held, arm, goal, np.eye(4), 1
+            ),
+            [0.],
+        )
+
+
+class HullVerticesTests(unittest.TestCase):
+    def test_hull_keeps_the_bounds_in_every_direction(self):
+        random = np.random.default_rng(3)
+        points = random.normal(size=(2000, 3)) * [.01, .01, .07]
+        hull = object_motion_geometry.hull_vertices(points)
+        self.assertLess(len(hull), len(points) // 5)
+        for direction in random.normal(size=(50, 3)):
+            self.assertAlmostEqual(
+                float((points @ direction).max()),
+                float((hull @ direction).max()),
+                places=12,
+            )
+        # 绕 Z 轴自由旋转时的包围范围由（轴向位置，离轴距离）决定。
+        for a, b in random.normal(size=(50, 2)):
+            def support(p):
+                return float(
+                    (a * p[:, 2] + abs(b) * np.hypot(p[:, 0], p[:, 1])).max()
+                )
+            self.assertAlmostEqual(support(points), support(hull), places=12)
+
+    def test_too_few_or_flat_points_are_returned_unchanged(self):
+        few = np.zeros((8, 3))
+        self.assertIs(object_motion_geometry.hull_vertices(few), few)
+        flat = np.random.default_rng(1).normal(size=(40, 3)) * [1., 1., 0.]
+        np.testing.assert_array_equal(
+            object_motion_geometry.hull_vertices(flat), flat
+        )
 
 
 if __name__ == '__main__':

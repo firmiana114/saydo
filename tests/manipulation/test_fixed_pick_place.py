@@ -251,6 +251,56 @@ class PlanningTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [])
 
+    def plan_with(self, check_waypoints):
+        with mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
+            return_value=self.geom,
+        ), mock.patch('saydo.robot.grasp_robot.RobotClient'), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
+            side_effect=check_waypoints,
+        ):
+            report = {}
+            try:
+                return self.service.plan_fixed_pick_place(
+                    self.request, report
+                ), report
+            except ValueError as error:
+                return error, report
+
+    def test_orientation_failure_does_not_try_the_other_slots(self):
+        def cannot_turn(
+            checker, tool, arm, points, timeout=3, environment=None
+        ):
+            if any(p['name'].startswith('release_') for p in points):
+                return (
+                    False,
+                    {
+                        'reason': 'cannot turn',
+                        'failure': {
+                            'waypoint': 'release_orientation_1_sample_1'
+                        },
+                    },
+                )
+            return self.check(checker, tool, arm, points, timeout)
+
+        self.request['free_slots'] = ['A01', 'A02']
+        error, report = self.plan_with(cannot_turn)
+        self.assertRegex(str(error), '无法翻转到竖直，与孔位无关.*未发送运动')
+        # 调姿与去哪个孔位无关：第一个孔位失败后不再试其余的。
+        self.assertEqual(
+            [row['slot'] for row in report['slot_attempts']], ['A01']
+        )
+        self.assertEqual(self.calls, [])
+
+    def test_planning_stops_at_its_time_budget(self):
+        self.request['free_slots'] = ['A01', 'A02']
+        with mock.patch.object(
+            manipulation_fixed_pick_place, 'PLANNING_BUDGET_S', -1.
+        ):
+            error, report = self.plan_with(self.check)
+        self.assertRegex(str(error), '规划超过 -1 秒.*已试 0 个.*未发送运动')
+        self.assertEqual(report['slot_attempts'], [])
+
     def test_failure_in_descent_never_saves_or_executes_a_prefix(self):
         def reject(
             checker, tool, arm, points, timeout=3, environment=None

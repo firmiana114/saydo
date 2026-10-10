@@ -18,6 +18,9 @@ from saydo.manipulation import object_motion_geometry
 from saydo.manipulation import reorientation_geometry
 from saydo.contracts import motion_contract
 
+# 一次固定抓放规划最多用多久，单位秒。超过即放弃，不发送运动。
+PLANNING_BUDGET_S = 60.
+
 
 # Straight segments run as one joint move per sample (about 10 mm apart), so a
 # fixed release
@@ -353,23 +356,28 @@ class FixedPickPlaceMixin:
             ).astype(int).tolist(),
         )
         attempts = report['slot_attempts'] = []
-        full_points = []
 
         def reachable(points, timeout):
-            nonlocal full_points
+            # 会被多个线程同时调用，不能在这里记“最后一次检查的点”。
             self.check_cancel()
-            full_points = prefix + points
-            if len(full_points) > 480:
+            if len(prefix) + len(points) > 480:
                 raise ValueError('全程超过480个采样点')
             return motion_validation.check_waypoints(
-                checker, tool, arm, full_points, timeout,
+                checker, tool, arm, prefix + points, timeout,
                 environment=environment,
             )
 
+        deadline = time.monotonic() + PLANNING_BUDGET_S
         for slot, goal, frame, distance in goals:
             self.check_cancel()
+            if time.monotonic() > deadline:
+                raise ValueError(
+                    f'规划超过 {PLANNING_BUDGET_S:.0f} 秒仍未找到全程通过的'
+                    f'孔位（已试 {len(attempts)} 个）；未发送运动'
+                )
             row = {'slot': slot, 'distance_from_source_m': distance}
             attempts.append(row)
+            release_points = []
             try:
                 release = object_motion_geometry.plan_object_motion(
                     held,
@@ -383,7 +391,9 @@ class FixedPickPlaceMixin:
                     True,
                     [0, 0, .05],
                     row.setdefault('search', []),
+                    release_points,
                 )
+                full_points = prefix + release_points
                 if (
                     (
                         len(grasp['waypoints'])
@@ -457,6 +467,13 @@ class FixedPickPlaceMixin:
                 ):
                     raise ValueError('规划期间机械臂移动')
                 return self.object_plan_store().save(plan)
+            except object_motion_geometry.OrientationUnreachable as error:
+                # 调姿在原地进行，与去哪个孔位无关，不必再换孔位重试。
+                row['error'] = str(error)
+                raise ValueError(
+                    '试管在当前位置和朝向下无法翻转到竖直，与孔位无关：'
+                    f'{error}；请换一个摆放位置或朝向。未发送运动'
+                ) from error
             except (ValueError, TimeoutError) as error:
                 row['error'] = str(error)
         raise ValueError('有限候选搜索结束，未找到全程通过的孔位；未发送运动')
