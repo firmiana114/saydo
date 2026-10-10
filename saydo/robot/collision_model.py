@@ -210,6 +210,51 @@ def capsules_in_base(
     )
 
 
+def native_model_values(
+    flange_T_tool: np.ndarray, environment: Optional[Environment]
+) -> List[float]:
+    """把外形和障碍物排成一串数字，交给离线逆解检查器。
+
+    检查器（`saydo/robot/ik/arm_collision.h`）在挑选手肘摆法时用同一套
+    算法就地排除会碰撞的姿态。尺寸只在本模块里保存一份，每次调用时
+    传过去，两边不会各有一份数据。
+
+    Args:
+        flange_T_tool: 夹爪参考点在法兰坐标系里的位姿。
+        environment: 这台臂的障碍物设置；None 表示不检查障碍物。
+
+    Returns:
+        按 `arm_collision.h` 里 `ReadArmModel` 的格式排列的数字：
+        运动学参数、`flange_T_tool` 的前三行、桌面与立杆、全部胶囊体。
+        夹爪的胶囊体挂在第 8 号坐标系（夹爪参考点）上。
+    """
+    environment = environment or Environment()
+    pole_xy_m = environment.pole_xy_m or (0., 0.)
+    values = [len(DH_PARAMETERS)]
+    for row in DH_PARAMETERS:
+        values.extend(row)
+    values.extend(np.asarray(flange_T_tool, dtype=float)[:3].ravel().tolist())
+    values.extend(
+        [
+            int(environment.table_z_m is not None),
+            environment.table_z_m or 0.,
+            int(environment.pole_xy_m is not None),
+            pole_xy_m[0],
+            pole_xy_m[1],
+            environment.pole_radius_m,
+            environment.pole_margin_m,
+            len(ARM_CAPSULES) + len(GRIPPER_CAPSULES),
+        ]
+    )
+    for link, start, end, radius in ARM_CAPSULES:
+        values.extend(
+            [link, *start, *end, radius, int(link not in TABLE_EXEMPT_LINKS)]
+        )
+    for _, start, end, radius in GRIPPER_CAPSULES:
+        values.extend([len(DH_PARAMETERS) + 1, *start, *end, radius, 1])
+    return values
+
+
 def horizontal_distance_to_point(
     starts: np.ndarray, ends: np.ndarray, point_xy: Sequence[float]
 ) -> np.ndarray:

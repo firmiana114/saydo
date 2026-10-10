@@ -8,7 +8,7 @@
 #include <array>
 #include <limits>
 #include <chrono>
-#include "saydo/robot/ik/ik_beam_search.h"
+#include "saydo/robot/ik/arm_angle_path.h"
 
 static bool read_pose(rm_pose_t& pose) {
   if (!(std::cin >> pose.position.x >> pose.position.y >> pose.position.z
@@ -91,157 +91,6 @@ static int joint_path(float* start) {
   return 0;
 }
 
-static int beam_path(float* joints) {
-  int count = 0, budget_ms = 0;
-  if (!(std::cin >> count >> budget_ms) || count < 1 || count > 500 ||
-      budget_ms < 1 || budget_ms > 3000) {
-    return 2;
-  }
-  std::vector<rm_pose_t> poses(count);
-  std::vector<float> limits(count);
-  for (int i = 0; i < count; ++i) {
-    if (!read_pose(poses[i]) || !(std::cin >> limits[i]) ||
-        !std::isfinite(limits[i]) || limits[i] <= 0 || limits[i] > 360) {
-      return 2;
-    }
-  }
-  float low[ARM_DOF]{}, high[ARM_DOF]{};
-  rm_algo_get_joint_min_limit(low);
-  rm_algo_get_joint_max_limit(high);
-  auto deadline = std::chrono::steady_clock::now() +
-                  std::chrono::milliseconds(budget_ms);
-  int calls = 0, active = 0;
-  std::vector<int> attempts(count), valid(count);
-  std::vector<std::array<int, 5>> rejected(count);
-  auto check = [&]() {
-    if (calls >= 60000 || std::chrono::steady_clock::now() >= deadline) {
-      throw std::runtime_error("budget");
-    }
-  };
-  auto candidates = [&](int index, const saydo_ik::Joints& parent) {
-    active = index;
-    std::vector<saydo_ik::Joints> answers;
-    std::vector<saydo_ik::Joints> offsets(1);
-    for (float delta : {10.f, -10.f, 25.f, -25.f, 45.f, -45.f}) {
-      for (int j : {1, 2, 3, 5}) {
-        saydo_ik::Joints offset{};
-        offset[j] = delta;
-        offsets.push_back(offset);
-      }
-      saydo_ik::Joints offset{};
-      offset[1] = delta;
-      offset[3] = -delta;
-      offsets.push_back(offset);
-    }
-    for (const auto& offset : offsets) {
-      check();
-      rm_inverse_kinematics_params_t input{};
-      input.flag = 1;
-      input.q_pose = poses[index];
-      for (int j = 0; j < 7; ++j) {
-        input.q_in[j] = std::clamp(parent[j] + offset[j], low[j], high[j]);
-      }
-      float q[ARM_DOF]{};
-      ++calls;
-      ++attempts[index];
-      if (rm_algo_inverse_kinematics(nullptr, input, q) != 0) {
-        ++rejected[index][0];
-        continue;
-      }
-      bool good = true, continuous = true;
-      for (int j = 0; j < 7; ++j) {
-        good = good && std::isfinite(q[j]) && q[j] >= low[j] &&
-               q[j] <= high[j];
-        continuous =
-            continuous && std::abs(q[j] - parent[j]) <= limits[index];
-      }
-      if (!good) {
-        ++rejected[index][1];
-        continue;
-      }
-      if (!continuous) {
-        ++rejected[index][4];
-        continue;
-      }
-      if (rm_algo_safety_robot_self_collision_detection(q) != 0) {
-        ++rejected[index][2];
-        continue;
-      }
-      auto fk = rm_algo_forward_kinematics(nullptr, q);
-      double dx = fk.position.x - poses[index].position.x,
-             dy = fk.position.y - poses[index].position.y,
-             dz = fk.position.z - poses[index].position.z;
-      double position = std::sqrt(dx * dx + dy * dy + dz * dz),
-             angle = orientation_error(fk, poses[index]);
-      if (!std::isfinite(position) || !std::isfinite(angle) ||
-          position > .002 || angle > 2 * std::acos(-1.0) / 180) {
-        ++rejected[index][3];
-        continue;
-      }
-      saydo_ik::Joints solution{};
-      std::copy(q, q + 7, solution.begin());
-      ++valid[index];
-      if (std::none_of(
-              answers.begin(), answers.end(), [&](const auto& other) {
-                return saydo_ik::distance(solution, other) < .05;
-              })) {
-        answers.push_back(solution);
-      }
-    }
-    return answers;
-  };
-  saydo_ik::Joints start{};
-  std::copy(joints, joints + 7, start.begin());
-  saydo_ik::Result result;
-  try {
-    result = saydo_ik::search(start, limits, candidates, check);
-  } catch (const std::runtime_error&) {
-    std::cout << "SEARCH_FAIL " << active << " budget_exhausted " << calls
-              << '\n';
-    return 4;
-  }
-  for (int i = 0; i < count; ++i) {
-    if (attempts[i]) {
-      std::cout << "SEEDS " << i << ' ' << attempts[i] << ' ' << valid[i]
-                << '\n';
-    }
-  }
-  for (int i = 0; i < count; ++i) {
-    if (attempts[i]) {
-      std::cout << "REJECT " << i;
-      for (int value : rejected[i]) {
-        std::cout << ' ' << value;
-      }
-      std::cout << '\n';
-    }
-  }
-  for (size_t i = 0; i < result.widths.size(); ++i) {
-    std::cout << "BEAM " << i << ' ' << result.widths[i] << '\n';
-  }
-  if (!result.complete) {
-    std::cout << "SEARCH_FAIL " << result.failed_index
-              << " no_continuous_solution " << calls << '\n';
-    return 1;
-  }
-  const auto& winner = *std::min_element(
-      result.frontier.begin(), result.frontier.end(),
-      [](const auto& a, const auto& b) { return a.cost < b.cost; });
-  for (int i = 0; i < count; ++i) {
-    float q[ARM_DOF]{};
-    std::copy(winner.path[i].begin(), winner.path[i].end(), q);
-    auto fk = rm_algo_forward_kinematics(nullptr, q);
-    std::cout << "IK 0 0";
-    for (int j = 0; j < 7; ++j) {
-      std::cout << ' ' << q[j];
-    }
-    std::cout << '\n';
-    std::cout << "VERIFY " << i << ' ' << fk.position.x << ' '
-              << fk.position.y << ' ' << fk.position.z << ' ' << fk.euler.rx
-              << ' ' << fk.euler.ry << ' ' << fk.euler.rz << '\n';
-  }
-  return 0;
-}
-
 int main(int argc, char** argv) {
   rm_algo_init_sys_data(RM_MODEL_RM_75_E, RM_MODEL_RM_B_E);
   rm_frame_t tool{};
@@ -258,7 +107,9 @@ int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--joint-path-v2") {
     return joint_path(joints);
   }
-  const bool beam = argc == 2 && std::string(argv[1]) == "--beam-ik-v1";
+  // 按臂角枚举逆解并搜索连续、不碰撞的关节角路径。
+  const bool arm_angle =
+      argc == 2 && std::string(argv[1]) == "--arm-angle-v1";
   const bool multi = argc == 2 && std::string(argv[1]) == "--multi-seed-v1";
   auto fk = rm_algo_forward_kinematics(nullptr, joints);
   std::cout.precision(12);
@@ -266,14 +117,14 @@ int main(int argc, char** argv) {
   if (multi) {
     std::cout << "CAPABILITY MULTI_SEED_V1\n";
   }
-  if (beam) {
-    std::cout << "CAPABILITY BEAM_IK_V1\n";
+  if (arm_angle) {
+    std::cout << "CAPABILITY ARM_ANGLE_V1\n";
   }
   std::cout << "FK " << fk.position.x << ' ' << fk.position.y << ' '
             << fk.position.z << ' ' << fk.euler.rx << ' ' << fk.euler.ry
             << ' ' << fk.euler.rz << '\n';
-  if (beam) {
-    return beam_path(joints);
+  if (arm_angle) {
+    return saydo_ik::RunArmAnglePath(joints);
   }
   int count = 0;
   if (!(std::cin >> count) || count < 0 || count > 500) {

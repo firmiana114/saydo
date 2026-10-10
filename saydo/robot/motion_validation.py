@@ -11,6 +11,17 @@ from saydo.robot import collision_model
 
 POSITION_TOLERANCE_M = .002
 ORIENTATION_TOLERANCE_RAD = np.deg2rad(2)
+# 检查器报告的搜索失败类型对应的说明。检查器在卡住的路点上把手臂的
+# 所有摆法都列出来之后才下结论，所以前两种是确定的“没有解”。
+SEARCH_FAILURE_TEXT = {
+    'out_of_reach': '这个位姿在手臂的任何摆法下都够不到或超出关节限位',
+    'blocked_by_obstacle': '这个位姿下手臂的所有摆法都会碰到桌面或立杆',
+    'no_continuous_solution': (
+        '这个位姿有可行的摆法，但从前面的路径走不过去'
+        '（关节角变化过大、途中会碰到障碍物或自碰撞）'
+    ),
+    'budget_exhausted': '搜索超出时间预算',
+}
 
 
 def si_pose(values):
@@ -23,7 +34,28 @@ def si_pose(values):
     )
 
 
-def parse_kinematics(result, arm, waypoints):
+def parse_kinematics(
+    result: Any, arm: dict, waypoints: list
+) -> Tuple[bool, dict]:
+    """解析离线检查器的输出，并独立回验每个路点的关节解。
+
+    检查器给出的每组关节角都附带它换算回的夹爪位姿；这里把该位姿与
+    路点的目标逐个比较，不直接采信检查器的“成功”。
+
+    Args:
+        result: 检查器子进程的运行结果，取 `stdout`、`stderr`、
+            `returncode`。
+        arm: 机械臂当前状态，关节为原始单位（0.001 度），位姿为控制器
+            原始单位。
+        waypoints: 被检查的路点，每个含 `controller_pose`，可带 `name`
+            和 `method`。
+
+    Returns:
+        `(通过与否, 记录)`。通过时记录含各路点的关节解
+        `joint_solutions_deg`（度）和臂角 `arm_angles_deg`（度）；
+        不通过时 `reason` 是给操作者看的原因，`failure` 写明卡在哪个
+        路点、属于哪一类（见 `SEARCH_FAILURE_TEXT`）。
+    """
     detail = {
         'returncode': result.returncode,
         'stdout': result.stdout[-4096:],
@@ -91,12 +123,13 @@ def parse_kinematics(result, arm, waypoints):
                         'self_collision',
                         'fk',
                         'continuity',
+                        'obstacle',
                     ),
                     map(int, row[1:]),
                 )
             )
             for row in lines
-            if len(row) == 7 and row[0] == 'REJECT'
+            if len(row) in (7, 8) and row[0] == 'REJECT'
         ]
         detail['beam_widths'] = [
             {'sample_index': int(row[1]), 'candidates': int(row[2])}
@@ -112,7 +145,10 @@ def parse_kinematics(result, arm, waypoints):
             detail['search_ik_calls'] = int(failures[-1][3])
             return fail(
                 f"{detail.get('failure',{}).get('waypoint','未知阶段')}："
-                f"{failures[-1][2]}，多分支搜索未获得完整连续路径"
+                f"{failures[-1][2]}，"
+                + SEARCH_FAILURE_TEXT.get(
+                    failures[-1][2], '未获得完整连续路径'
+                )
             )
         seen = set()
         for row in verified:
@@ -188,6 +224,13 @@ def parse_kinematics(result, arm, waypoints):
             max_joint_step_deg=float(differences.max()),
             joint_travel_deg=float(differences.sum()),
         )
+        arm_angles = [
+            float(row[2])
+            for row in lines
+            if len(row) == 3 and row[0] == 'ARM_ANGLE'
+        ]
+        if len(arm_angles) == len(waypoints):
+            detail['arm_angles_deg'] = arm_angles
         # Cartesian samples are at most 10 mm / 5 degrees apart. A large
         # branch change is not a valid continuous movel path, even if FK passes.
         for index, waypoint in enumerate(waypoints):
@@ -299,20 +342,23 @@ def check_waypoints(
     timeout: float = 3.,
     environment: Optional[collision_model.Environment] = None,
 ) -> Tuple[bool, dict]:
-    """对一串路点做逆解、正解回验和连续性检查，再检查会不会碰到障碍物。
+    """给一串路点找一条连续且不碰障碍物的关节角路径，并回验。
 
-    只做计算，不发送任何指令。
+    检查器在每个路点上按臂角（夹爪不动时手肘绕“肩到腕”连线转过的
+    角度）把手臂的各种摆法列出来，从中挑出与前后衔接、不超限位、不
+    自碰撞、不碰桌面和立杆的一条路径。只做计算，不发送任何指令。
 
     Args:
-        executable: 离线检查器（由 `grasp_ik.cc` 构建）的路径。
+        executable: 离线检查器（由 `scripts/build_ik_checker.sh` 构建）
+            的路径。
         tool: 工具记录，取其中的 `flange_T_grip_tcp`。
         arm: 机械臂当前状态，关节为原始单位（0.001 度）。
         waypoints: 路点序列，每个含 `controller_pose`，可带 `name` 和
             `method`（`linear` 表示直线段，相邻关节解变化不得超过 10 度）。
         timeout: 逆解搜索的时间上限，单位秒。
-        environment: `collision_model.Environment`；给出时，在逆解通过
-            之后沿关节角直线逐点检查机械臂和夹爪离桌面、立杆的距离。
-            None 表示不做这项检查。
+        environment: `collision_model.Environment`；给出时，检查器在
+            每个路点上只挑选不碰桌面和立杆的手肘摆法，找到路径之后本
+            函数再沿关节角直线逐点核对一遍。None 表示不考虑障碍物。
 
     Returns:
         `(通过与否, 记录)`。不通过时记录的 `reason` 是给操作者看的原因。
@@ -338,21 +384,28 @@ def check_waypoints(
             )
         )
         values.append(10 if waypoint.get('method') == 'linear' else 360)
+    # 外形和障碍物一并交给检查器：它在挑选手肘摆法时就避开桌面和立杆，
+    # 而不是只给出一种摆法、等下面的碰撞检查来否决。
+    values.extend(
+        collision_model.native_model_values(
+            tool['flange_T_grip_tcp'], environment
+        )
+    )
     result = subprocess.run(
-        [str(executable), '--beam-ik-v1'],
+        [str(executable), '--arm-angle-v1'],
         input=' '.join(str(x) for x in values) + '\n',
         text=True,
         capture_output=True,
         timeout=timeout,
     )
-    if 'CAPABILITY BEAM_IK_V1' not in result.stdout.splitlines():
+    if 'CAPABILITY ARM_ANGLE_V1' not in result.stdout.splitlines():
         return (
             False,
             {
                 'verified': False,
                 'reason': (
-                    '离线检查器尚未支持多分支路径搜索协议，请重新构建，'
-                    '不发送运动'
+                    '离线检查器尚未支持按臂角搜索路径的协议，请运行 '
+                    'bash scripts/build_ik_checker.sh 重新构建，不发送运动'
                 ),
             },
         )
