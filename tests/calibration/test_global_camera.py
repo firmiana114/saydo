@@ -71,8 +71,11 @@ class GlobalCameraTestCase(unittest.TestCase):
         self.write_arm('arm1', HAND_POSE)
         self.session = global_camera.Session(self.root, ['arm1'], None)
 
-    def write_arm(self, arm_id, base_T_camera):
-        """写出一台臂的配置，使它在观测姿态下的手上相机正好在给定位置。"""
+    def write_arm(self, arm_id, base_T_camera, shift_m=(0., 0., 0.)):
+        """写出一台臂的配置，使它在观测姿态下的手上相机正好在给定位置。
+
+        `shift_m` 是相机校正里的平移，用来补偿深度读数的偏差。
+        """
         arm = arms.by_id(arm_id)
         base_T_flange = collision_model.link_frames(OBSERVATION_DEG)[7]
         calibration = self.root / 'config/calibration'
@@ -94,7 +97,7 @@ class GlobalCameraTestCase(unittest.TestCase):
                     'acceptance_status': 'user_accepted_usable',
                     'correction': {
                         'rotation_vector_rad': [0., 0., 0.],
-                        'translation_m': [0., 0., 0.],
+                        'translation_m': list(shift_m),
                     },
                     'depth_quadratic_per_m': 0.,
                 }
@@ -124,11 +127,15 @@ class GlobalCameraTestCase(unittest.TestCase):
         )
         return {'bgr': image, 'K': GLOBAL_K, 'distortion': np.zeros(5)}
 
-    def hand_frame(self, base_T_board, pose=HAND_POSE, joint_deg=None):
+    def hand_frame(
+        self, base_T_board, pose=HAND_POSE, joint_deg=None, depth_bias_m=0.
+    ):
+        """手上相机的一帧；`depth_bias_m` 模拟深度读数整体偏近或偏远。"""
+        camera_T_board = np.linalg.inv(pose) @ base_T_board
+        depth = board_render.plane_depth(HAND_K, 640, 360, camera_T_board)
         return {
-            'bgr': board_render.render(
-                HAND_K, 640, 360, np.linalg.inv(pose) @ base_T_board
-            ),
+            'bgr': board_render.render(HAND_K, 640, 360, camera_T_board),
+            'depth_m': depth + np.float32(depth_bias_m),
             'K': HAND_K.tolist(),
             'joint_deg': joint_deg or OBSERVATION_DEG,
         }
@@ -360,8 +367,45 @@ class TwoArmTests(GlobalCameraTestCase):
             {'arm1_base_T_arm2_base': wrong.tolist()}
         )
         self.assertFalse(result[0])
-        self.assertRegex(result[1], r'两台臂算出的标定板位置相差 2\d\.\d 毫米')
+        self.assertRegex(result[1], r'两台臂量出的标定板位置相差 2\d\.\d 毫米')
+        self.assertIn('--arms arm1', result[1])
         self.assertEqual(session.samples, [])
+
+    def test_cameras_are_used_the_way_their_correction_was_fitted(self):
+        # 真实情况（2026-10-10）：两台手上相机的深度读数都偏近，相机校正
+        # 里各有十来毫米的平移专门补偿它。角点必须按深度读数来量，套上
+        # 校正后才是对的；若按标定板尺寸从彩色图反推（本身不偏）再套
+        # 校正，两台臂会各自沿视线多推出十几毫米，从相对的两侧看过去
+        # 就对不上。
+        bias = {'arm1': -.010, 'arm2': -.014}
+        self.write_arm('arm1', HAND_POSE, shift_m=(0., 0., .010))
+        self.write_arm(
+            'arm2', np.linalg.inv(ARM1_T_ARM2) @ HAND2_POSE,
+            shift_m=(0., 0., .014),
+        )
+        session = global_camera.Session(
+            self.root, ['arm1', 'arm2'], self.relation
+        )
+        board = board_on_table(.34, .08, 10)
+        for _ in range(2):
+            result = session.step(
+                self.global_frame(board),
+                {
+                    'arm1': self.hand_frame(
+                        board, depth_bias_m=bias['arm1']
+                    ),
+                    'arm2': self.hand_frame(
+                        board, pose=HAND2_POSE, depth_bias_m=bias['arm2']
+                    ),
+                },
+            )
+        self.assertTrue(result[0], result[1])
+        expected = global_camera.transformed(
+            board, global_camera.board_points()
+        )
+        np.testing.assert_allclose(
+            session.samples[0]['points_base_m'], expected[::-1], atol=.003
+        )
 
     def test_second_arm_needs_the_base_relation(self):
         session = global_camera.Session(self.root, ['arm2'], None)
@@ -372,6 +416,66 @@ class TwoArmTests(GlobalCameraTestCase):
                     self.global_frame(board),
                     {'arm2': self.hand_frame(board, pose=HAND2_POSE)},
                 )
+
+
+class DepthCornerTests(GlobalCameraTestCase):
+    def frame(self, placement=(.34, .08, 10)):
+        frame = self.hand_frame(board_on_table(*placement))
+        corners = global_camera.detect_corners(frame['bgr'])
+        return frame, corners
+
+    def test_corners_from_depth_match_the_true_positions(self):
+        frame, corners = self.frame()
+        points, reason = global_camera.corners_from_depth(
+            corners, frame['depth_m'], HAND_K
+        )
+        self.assertEqual(reason, '')
+        expected = global_camera.transformed(
+            np.linalg.inv(HAND_POSE) @ board_on_table(.34, .08, 10),
+            global_camera.board_points(),
+        )
+        np.testing.assert_allclose(points, expected[::-1], atol=.002)
+
+    def test_noisy_readings_are_averaged_out_by_the_plane(self):
+        frame, corners = self.frame()
+        rng = np.random.default_rng(5)
+        noisy = frame['depth_m'] + rng.normal(
+            0., .002, frame['depth_m'].shape
+        ).astype(np.float32)
+        points, _ = global_camera.corners_from_depth(corners, noisy, HAND_K)
+        exact, _ = global_camera.corners_from_depth(
+            corners, frame['depth_m'], HAND_K
+        )
+        self.assertLess(np.abs(points - exact).max(), .0006)
+
+    def test_missing_depth_is_refused(self):
+        frame, corners = self.frame()
+        holes = frame['depth_m'].copy()
+        holes[:, :400] = 0.
+        points, reason = global_camera.corners_from_depth(
+            corners, holes, HAND_K
+        )
+        self.assertIsNone(points)
+        self.assertIn('深度读数缺得太多', reason)
+        # 画面合格但深度图不可用时，这一轮不记录，并说明是哪台臂。
+        frame['depth_m'] = holes
+        board = board_on_table(.34, .08, 10)
+        self.session.step(self.global_frame(board), {'arm1': frame})
+        recorded, message = self.session.step(
+            self.global_frame(board), {'arm1': frame}
+        )
+        self.assertFalse(recorded)
+        self.assertIn('1臂（左臂）的相机：标定板上的深度读数缺得太多', message)
+
+    def test_depth_that_is_not_a_plane_is_refused(self):
+        frame, corners = self.frame()
+        bent = frame['depth_m'].copy()
+        bent[:, 320:] += .03
+        points, reason = global_camera.corners_from_depth(
+            corners, bent, HAND_K
+        )
+        self.assertIsNone(points)
+        self.assertRegex(reason, r'不成一个平面（起伏 \d+\.\d 毫米）')
 
 
 class LoopTests(GlobalCameraTestCase):

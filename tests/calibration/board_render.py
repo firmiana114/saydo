@@ -106,3 +106,37 @@ def looking_at(
     pose[:3, :3] = np.column_stack([right, down, forward])
     pose[:3, 3] = position_m
     return pose
+
+
+def plane_depth(
+    camera_matrix: np.ndarray,
+    width_px: int,
+    height_px: int,
+    camera_T_board: np.ndarray,
+) -> np.ndarray:
+    """合成深度图：每个像素看到的是标定板所在的那个平面。
+
+    真实画面里标定板以外是桌面；这里把整幅图都当作标定板所在的平面，
+    对只读角点处深度的程序没有区别。
+
+    Args:
+        camera_matrix: 相机内参矩阵。
+        width_px: 画面宽度。
+        height_px: 画面高度。
+        camera_T_board: 标定板在相机坐标系里的位姿，板面是它的 XY 平面。
+
+    Returns:
+        深度图（沿光轴的距离，米），`float32`；平面在相机背后的像素为 0。
+    """
+    normal, origin = camera_T_board[:3, 2], camera_T_board[:3, 3]
+    v, u = np.mgrid[0:height_px, 0:width_px]
+    rays = np.stack(
+        [
+            (u - camera_matrix[0, 2]) / camera_matrix[0, 0],
+            (v - camera_matrix[1, 2]) / camera_matrix[1, 1],
+            np.ones_like(u, dtype=float),
+        ],
+        axis=-1,
+    )
+    depth = (normal @ origin) / (rays @ normal)
+    return np.where(depth > 0, depth, 0.).astype(np.float32)

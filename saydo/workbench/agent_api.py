@@ -30,6 +30,9 @@ from saydo.contracts import scene_contract
 from saydo.geometry import rotation_steps
 from saydo.manipulation import fixed_pick_place
 
+# 取图接口给出深度图时，16 位图里一个单位是多少米（0.1 毫米）。
+DEPTH_UNIT_M = .0001
+
 
 class AgentError(ValueError):
     def __init__(self, code, message, **details):
@@ -297,7 +300,24 @@ class AgentAPI:
             )
         return result
 
-    def frame(self, selection=False):
+    def frame(self, selection: bool = False, with_depth: bool = False) -> dict:
+        """返回这台臂手上相机的一帧画面；只读。
+
+        Args:
+            selection: 为真时返回冻结的候选画面，否则返回最新的画面。
+            with_depth: 为真时一并返回与彩色图逐像素对应的深度图。
+                标定这类要按“彩色像素加深度读数”量位置的程序用它，
+                量法与定位物品时相同。
+
+        Returns:
+            含 JPEG 彩色图、拍摄时刻、相机身份与内参的字典。带深度图时
+            多出 `depth_png_base64`（16 位 PNG）、`depth_unit_m`（一个
+            单位是多少米）和 `depth_quadratic_per_m`（这帧深度已经按
+            多大的二次项系数修正过，0 表示没有修正）。
+
+        Raises:
+            AgentError: 没有足够新的画面，或候选画面已失效。
+        """
         with self.tracker.lock:
             frame = self.tracker.frozen if selection else self.tracker.latest
             if selection and self.tracker.state['state'] != 'choose_candidate':
@@ -317,6 +337,8 @@ class AgentAPI:
                     ),
                 )
             image = frame['bgr'].copy()
+            depth_m = frame['depth'].copy() if with_depth else None
+            quadratic_per_m = float(frame.get('depth_quadratic_per_m', 0.))
             stamp, sequence = frame['time'], frame['sequence']
             camera = copy.deepcopy(frame.get('camera'))
             selection_id = self.tracker.generation if selection else None
@@ -325,7 +347,25 @@ class AgentAPI:
         )
         if not ok:
             raise AgentError('IMAGE_ENCODING_FAILED', '相机画面编码失败。')
+        depth = {}
+        if depth_m is not None:
+            # 16 位无损图，一个单位 0.1 毫米，最远 6.5 米；手上相机的
+            # 有效距离在 1.5 米以内。
+            ok, packed = cv2.imencode(
+                '.png',
+                np.clip(
+                    np.rint(depth_m / DEPTH_UNIT_M), 0, 65535
+                ).astype(np.uint16),
+            )
+            if not ok:
+                raise AgentError('IMAGE_ENCODING_FAILED', '深度图编码失败。')
+            depth = {
+                'depth_png_base64': base64.b64encode(packed).decode(),
+                'depth_unit_m': DEPTH_UNIT_M,
+                'depth_quadratic_per_m': quadratic_per_m,
+            }
         return {
+            **depth,
             'captured_at': stamp,
             'frame_age_s': time.time() - stamp,
             'sequence': sequence,
@@ -921,7 +961,9 @@ class AgentAPI:
         if path == '/api/agent/status':
             return self.status()
         if path == '/api/agent/frame':
-            return self.frame()
+            return self.frame(
+                with_depth=params.get('depth', ['0'])[0] == '1'
+            )
         if path == '/api/agent/selection-frame':
             return self.frame(selection=True)
         if path == '/api/agent/pose':

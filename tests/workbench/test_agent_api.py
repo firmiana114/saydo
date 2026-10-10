@@ -296,6 +296,31 @@ class AgentAPITests(unittest.TestCase):
         with self.assertRaises(agent_api.AgentError):
             self.api.frame()
 
+    def test_frame_can_carry_the_depth_image_for_calibration(self):
+        depth = np.linspace(.3, 1.2, 24 * 32, dtype=np.float32).reshape(
+            24, 32
+        )
+        depth[0, 0] = 0.
+        self.tracker.latest.update(depth=depth, depth_quadratic_per_m=-.03)
+        self.assertNotIn('depth_png_base64', self.api.frame())
+        plain = self.api.get('/api/agent/frame', {})
+        self.assertNotIn('depth_png_base64', plain)
+        result = self.api.get('/api/agent/frame', {'depth': ['1']})
+        decoded = cv2.imdecode(
+            np.frombuffer(
+                base64.b64decode(result['depth_png_base64']), np.uint8
+            ),
+            cv2.IMREAD_UNCHANGED,
+        )
+        self.assertEqual(decoded.dtype, np.uint16)
+        # 无损：还原后与原深度相差不到半个单位（0.05 毫米）。
+        np.testing.assert_allclose(
+            decoded * result['depth_unit_m'], depth, atol=.00006
+        )
+        self.assertEqual(decoded[0, 0], 0)
+        self.assertEqual(result['depth_quadratic_per_m'], -.03)
+        self.assertEqual(result['sequence'], 12)
+
     def test_pose_keeps_camera_frame_and_rejects_stale_observation(self):
         pose = self.api.pose()
         self.assertEqual(pose['coordinate_frame'], 'color_optical_frame')

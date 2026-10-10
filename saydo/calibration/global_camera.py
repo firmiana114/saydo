@@ -4,8 +4,14 @@
 再装回，每次位置都可能略有不同，所以需要一个一两分钟就能做完的标定。
 
 原理：把棋盘格标定板平放在桌上，让全局相机和手上相机同时看到它。手上
-相机已经标好（手眼标定加相机校正），由它可以算出标定板每个角点在基座
+相机已经标好（手眼标定加相机校正），由它可以量出标定板每个角点在基座
 坐标系里的位置；全局相机看到的是同一批角点在自己画面里的像素位置。
+
+手上相机量角点的办法必须与它定位物品时相同：彩色图里的像素位置加上
+深度图的读数。相机校正就是按这种量法拟合出来的，里面有十来毫米是在
+补偿深度读数偏近。如果改为按标定板的已知尺寸从彩色图反推距离（这种
+办法本身不偏），再套上同一份校正，角点就会被沿视线方向多推出十几
+毫米（2026-10-10 实测两台臂因此相差 12.8 毫米）。
 “空间位置 ↔ 像素位置”的对应关系足够多时，就能反推出全局相机相对基座
 的位置和朝向。整个过程机械臂不动，只需要人把标定板在桌上挪几个位置。
 
@@ -93,6 +99,13 @@ STILL_PX = .7
 # 与已记录的各组相比，标定板至少挪开这么远或转过这么大角度才算新的一组。
 NEW_PLACEMENT_SHIFT_M = .04
 NEW_PLACEMENT_TURN_DEG = 12.
+# 量角点处的深度：取角点周围这么大的窗口（像素）里有效读数的中位数。
+DEPTH_WINDOW_PX = 7
+# 深度读数小于这个值（米）视为无效。
+MIN_DEPTH_M = .1
+# 各角点的深度读数拟合成一个平面后，偏离平面的均方根不得超过这个值
+# （米）；超过说明标定板不平，或深度图在这一片不可靠。
+MAX_DEPTH_PLANE_RMS_M = .004
 # 两台臂同时看到标定板时，两者算出的角点位置相差的上限（均方根，米）。
 ARM_AGREEMENT_M = .006
 # 机械臂各关节与观测姿态相差的上限（度），与场景快照的判定一致。
@@ -218,6 +231,55 @@ def screen_view(
     if tilt_deg > MAX_TILT_DEG:
         return None, f'标定板相对视线太斜（{tilt_deg:.0f} 度）'
     return pose, ''
+
+
+def corners_from_depth(
+    corners_px: np.ndarray, depth_m: np.ndarray, camera_matrix: np.ndarray
+) -> Tuple[Optional[np.ndarray], str]:
+    """由彩色图里的角点像素和深度图读数，量出各角点在相机坐标系的位置。
+
+    标定板是平的：先读出每个角点处的深度，把这些读数拟合成一个平面，
+    再求每个角点的视线与这个平面的交点。单个读数有一两毫米的随机
+    起伏，88 个角点合在一起拟合后就很小了。
+
+    Args:
+        corners_px: 角点的像素坐标，N×2。
+        depth_m: 与彩色图逐像素对应的深度图，单位米；已经做过这台
+            相机的深度读数修正。
+        camera_matrix: 内参矩阵。
+
+    Returns:
+        `(角点位置 N×3 或 None, 不合格的原因)`。
+    """
+    half = DEPTH_WINDOW_PX // 2
+    rays = np.c_[
+        (corners_px[:, 0] - camera_matrix[0, 2]) / camera_matrix[0, 0],
+        (corners_px[:, 1] - camera_matrix[1, 2]) / camera_matrix[1, 1],
+        np.ones(len(corners_px)),
+    ]
+    readings = np.full(len(corners_px), np.nan)
+    for index, (u, v) in enumerate(np.rint(corners_px).astype(int)):
+        window = depth_m[
+            max(0, v - half):v + half + 1, max(0, u - half):u + half + 1
+        ]
+        valid = window[window > MIN_DEPTH_M]
+        if valid.size * 2 >= window.size:
+            readings[index] = np.median(valid)
+    known = np.isfinite(readings)
+    if known.sum() < len(corners_px) * .8:
+        return None, '标定板上的深度读数缺得太多（反光或离相机太近）'
+    measured = rays[known] * readings[known, None]
+    # 平面写成 z = a·x + b·y + c。
+    design = np.c_[measured[:, 0], measured[:, 1], np.ones(known.sum())]
+    plane = np.linalg.lstsq(design, measured[:, 2], rcond=None)[0]
+    rms_m = float(np.sqrt(np.mean((design @ plane - measured[:, 2]) ** 2)))
+    if rms_m > MAX_DEPTH_PLANE_RMS_M:
+        return None, (
+            f'标定板上的深度读数不成一个平面（起伏 {rms_m * 1000:.1f} '
+            '毫米），标定板可能不平'
+        )
+    distance = plane[2] / (1 - plane[0] * rays[:, 0] - plane[1] * rays[:, 1])
+    return rays * distance[:, None], ''
 
 
 def transformed(transform: np.ndarray, points: np.ndarray) -> np.ndarray:
@@ -546,8 +608,9 @@ class Session:
         """从各台手上相机的画面里算出标定板角点在基座坐标系里的位置。
 
         Args:
-            hand_frames: 臂编号到一帧画面的映射，每帧含 `bgr`、`K` 和
-                此刻的关节角 `joint_deg`。
+            hand_frames: 臂编号到一帧画面的映射，每帧含 `bgr`、
+                `depth_m`（已修正的深度图）、`K` 和此刻的关节角
+                `joint_deg`。
 
         Returns:
             `(各臂算出的角点位置, 没看到或不合格的原因)`。
@@ -574,12 +637,19 @@ class Session:
             if pose is None:
                 notes.append(f'{arm.label}的相机：{reason}')
                 continue
+            # 上面按已知尺寸反推的位姿只用来检查画面是否合格；角点的
+            # 位置按深度读数来量，与定位物品时的量法一致。
+            in_camera, reason = corners_from_depth(
+                corners, frame['depth_m'], np.asarray(frame['K'])
+            )
+            if in_camera is None:
+                notes.append(f'{arm.label}的相机：{reason}')
+                continue
             points[arm.arm_id] = transformed(
                 hand_camera_pose(
                     self.root, arm, frame['joint_deg'], self.relation
-                )
-                @ pose,
-                board_points(),
+                ),
+                in_camera,
             )
         return points, notes
 
@@ -627,8 +697,10 @@ class Session:
             )
             if gap > ARM_AGREEMENT_M:
                 return None, (
-                    f'两台臂算出的标定板位置相差 {gap * 1000:.1f} 毫米，'
-                    '超过上限；请确认两台臂都停稳在观测姿态'
+                    f'两台臂量出的标定板位置相差 {gap * 1000:.1f} 毫米，'
+                    f'超过上限 {ARM_AGREEMENT_M * 1000:.0f} 毫米。两台臂'
+                    '都停稳在观测姿态时仍这样，说明手上相机的校正或两底座'
+                    '的相对位置需要复核；可先加 --arms arm1 只用一台臂'
                 )
         points_base = np.mean([points[arm_id] for arm_id in seen_by], axis=0)
         base_T_board = np.eye(4)
@@ -738,13 +810,17 @@ def rigid_fit(
 class Backend:
     """8089 后端的只读访问：取手上相机的画面和机械臂的关节角。"""
 
-    def __init__(self, base_url: str, token_file: pathlib.Path) -> None:
+    def __init__(
+        self, base_url: str, token_file: pathlib.Path, root: pathlib.Path
+    ) -> None:
         """记下后端地址和访问令牌文件；不发起连接。
 
         Args:
             base_url: 后端地址。
             token_file: 访问令牌文件。
+            root: 项目根目录，用来读各臂的相机校正。
         """
+        self.root = pathlib.Path(root)
         self.base_url = base_url.rstrip('/')
         self.token_file = pathlib.Path(token_file).expanduser()
         self.opener = urllib.request.build_opener(
@@ -774,17 +850,18 @@ class Backend:
             return json.load(response)
 
     def hand_frame(self, arm_id: str) -> Optional[dict]:
-        """取一台臂的手上相机画面和此刻的关节角。
+        """取一台臂的手上相机画面、深度图和此刻的关节角。
 
         Args:
             arm_id: 臂编号。
 
         Returns:
-            含 `bgr`、`K`、`joint_deg`；这台臂暂时取不到画面或状态时
-            为 None（原因记入日志）。
+            含 `bgr`、`depth_m`（已做过这台相机的深度读数修正）、`K`、
+            `joint_deg`；这台臂暂时取不到画面或状态时为 None（原因
+            记入日志）。
         """
         try:
-            frame = self.get(f'/api/agent/frame?arm={arm_id}')
+            frame = self.get(f'/api/agent/frame?arm={arm_id}&depth=1')
             robot = self.get(f'/api/agent/robot?arm={arm_id}')
         except (OSError, ValueError) as error:
             LOG.warning('取不到 %s 的画面或状态：%r', arm_id, error)
@@ -793,11 +870,39 @@ class Backend:
             np.frombuffer(base64.b64decode(frame['image_base64']), np.uint8),
             cv2.IMREAD_COLOR,
         )
+        if 'depth_png_base64' not in frame:
+            LOG.warning(
+                '8089 没有给出 %s 的深度图；它可能还是旧版本，需要重启',
+                arm_id,
+            )
+            return None
+        depth_m = cv2.imdecode(
+            np.frombuffer(
+                base64.b64decode(frame['depth_png_base64']), np.uint8
+            ),
+            cv2.IMREAD_UNCHANGED,
+        ).astype(np.float32) * frame['depth_unit_m']
+        if not frame['depth_quadratic_per_m']:
+            # 8089 没有修正过这帧深度（1 臂的取图线程不修正），在这里补上。
+            depth_m = vision_refinement.corrected_depth(
+                depth_m, self.depth_quadratic_per_m(arm_id)
+            )
         return {
             'bgr': image,
+            'depth_m': depth_m,
             'K': frame['camera']['K'],
             'joint_deg': robot['joint_deg'],
         }
+
+    def depth_quadratic_per_m(self, arm_id: str) -> float:
+        """读出一台臂的相机校正里深度读数的二次项系数；没有校正时为 0。"""
+        arm = arms.by_id(arm_id)
+        config = json.loads(arm.config_path(self.root).read_text())
+        name = config.get('vision_refinement_file')
+        if not name:
+            return 0.
+        refinement = vision_refinement.load(self.root / name, arm_id)
+        return float(refinement['depth_quadratic_per_m'])
 
 
 class FrameUnavailable(RuntimeError):
@@ -1184,7 +1289,7 @@ def main() -> int:
             'global_camera_'
             + datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
         )
-    backend = Backend(args.backend_url, args.token_file)
+    backend = Backend(args.backend_url, args.token_file, root)
     session = Session(root, arm_ids, relation, directory)
     try:
         camera = ServedCamera(args.camera_url, serial)
