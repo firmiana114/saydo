@@ -524,6 +524,22 @@ class SearchOrderTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(attempts[0]['spin_candidate'], 0)
         self.assertEqual(plan['route_offset_m'], [0., 0.])
+        # 检查器没有做障碍物检查时，方案如实写明没有检查过。
+        scope = plan['validation_scope']
+        self.assertFalse(scope['table_and_pole_collision_checked'])
+        self.assertFalse(scope['gripper_collision_checked'])
+
+    def test_plan_records_that_table_and_pole_were_checked(self):
+        def reachable(points, timeout):
+            return True, {'verified': True, 'collision_check': {}}
+
+        plan, _ = self.search(reachable)
+        scope = plan['validation_scope']
+        self.assertTrue(scope['table_and_pole_collision_checked'])
+        self.assertTrue(scope['gripper_collision_checked'])
+        self.assertTrue(scope['joint_intermediate_path_checked'])
+        # 桌上的其他物品和另一台臂仍不在检查之内。
+        self.assertFalse(scope['environment_collision_checked'])
 
     def test_other_directions_follow_outward_first_before_any_detour(self):
         def reachable(points, timeout):

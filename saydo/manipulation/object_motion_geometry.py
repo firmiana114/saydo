@@ -410,6 +410,7 @@ def build_candidate(
             'linear_path_sampled': True,
             'joint_intermediate_path_checked': False,
             'gripper_collision_checked': False,
+            'table_and_pole_collision_checked': False,
             'environment_collision_checked': False,
             'object_support_checked': False,
         },
@@ -642,6 +643,15 @@ def plan_object_motion(
                     detail.get('reason', '逆解/正解或自身碰撞检查失败')
                 )
             plan['reachability_check'] = detail
+            if detail.get('collision_check') is not None:
+                # 做过桌面和立杆的碰撞检查：机械臂和夹爪的外形、关节运动
+                # 途中的取样点都在检查之内。桌上的其他物品和另一台臂不在
+                # 其内，所以 environment_collision_checked 仍为否。
+                plan['validation_scope'].update(
+                    joint_intermediate_path_checked=True,
+                    gripper_collision_checked=True,
+                    table_and_pole_collision_checked=True,
+                )
             return attempt, plan, points
         except (
             ValueError, TimeoutError, subprocess.TimeoutExpired
