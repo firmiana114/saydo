@@ -71,15 +71,26 @@ class JointStreamTests(unittest.TestCase):
         self.time = FakeClock()
         self.arm_joint_raw = [int(v * 1000) for v in START]
 
-    def run_stream(self, on_frame=None, robot=None, **options):
+    def run_stream(self, on_frame=None, robot=None, real_time=False, **options):
         connection = Connection(self.time, on_frame)
         self.addCleanup(connection.close)
         robot = robot or grasp_robot.RobotClient('test', writes=True)
-        robot._request = mock.Mock(
-            return_value={
-                'arm_state': {'joint': self.arm_joint_raw, 'err': [0]}
-            }
-        )
+
+        def request(payload):
+            # 机械臂替身：完全跟得上，实际关节角就是最近收到的那一帧。
+            joint = (
+                connection.frames[-1]['joint']
+                if connection.frames
+                else self.arm_joint_raw
+            )
+            return {'arm_state': {'joint': list(joint), 'err': [0]}}
+
+        robot._request = mock.Mock(side_effect=request)
+        if real_time:
+            # 监视在另一个线程里按真实时间进行，这类测试用真实时钟。
+            options.update(clock=time.monotonic, sleep=time.sleep)
+        else:
+            options.update(clock=self.time.clock, sleep=self.time.sleep)
         with mock.patch(
             'saydo.robot.grasp_robot.socket.create_connection'
         ) as connect:
@@ -90,8 +101,6 @@ class JointStreamTests(unittest.TestCase):
                     options.pop('duration_s', self.trajectory.duration_s),
                     options.pop('cancelled', threading.Event()),
                     options.pop('watchdog', lambda: None),
-                    clock=self.time.clock,
-                    sleep=self.time.sleep,
                     **options,
                 )
                 error = None
@@ -232,29 +241,56 @@ class JointStreamTests(unittest.TestCase):
 
     def test_watchdog_error_also_brakes_and_is_passed_on(self):
         calls = []
+        threads = set()
 
         def watchdog():
-            calls.append(self.time.now)
+            calls.append(time.monotonic())
+            threads.add(threading.get_ident())
             if len(calls) == 4:
                 raise ValueError('离开监视范围')
 
-        connection, _, error = self.run_stream(watchdog=watchdog)
+        connection, record, error = self.run_stream(
+            watchdog=watchdog, real_time=True
+        )
         self.assertIsInstance(error, ValueError)
         self.assertIn('离开监视范围', str(error))
-        # 每 0.1 秒检查一次。
-        np.testing.assert_allclose(np.diff(calls), .1, atol=.011)
+        # 约每 0.1 秒检查一次，而且不在发送循环所在的线程里。
+        np.testing.assert_allclose(np.diff(calls), .1, atol=.05)
+        self.assertNotIn(threading.get_ident(), threads)
         self.assertLess(self.joints(connection)[-1][0], END[0] - 1)
+        # 监视不占用发送循环：节拍没有被打乱。
+        self.assertLess(record['max_gap_s'], .03)
+
+    def test_slow_watchdog_does_not_disturb_the_send_period(self):
+        def watchdog():
+            time.sleep(.04)
+
+        connection, record, error = self.run_stream(
+            watchdog=watchdog, real_time=True, hold_s=0.
+        )
+        self.assertIsNone(error)
+        self.assertLess(record['max_gap_s'], .03)
 
     def test_arm_that_does_not_follow_stops_the_stream(self):
         connection, _, error = self.run_stream(
-            actual_joint_deg=lambda: START, max_lag_deg=3.
+            actual_joint_deg=lambda: START, max_lag_deg=3., real_time=True
         )
         self.assertIn('没有跟上指令', str(error))
         # 指令走出 3 度多一点就开始减速，没有走到终点。
         self.assertLess(self.joints(connection)[-1][3], END[3] - 5)
         # 还没有读数时不判。
-        _, _, error = self.run_stream(actual_joint_deg=lambda: None)
+        _, _, error = self.run_stream(
+            actual_joint_deg=lambda: None, real_time=True
+        )
         self.assertIsNone(error)
+
+    def test_actual_joints_are_read_from_the_controller_by_default(self):
+        # 不另给读数来源时向控制器只读查询；替身跟得上，所以走完全程。
+        connection, _, error = self.run_stream(real_time=True, hold_s=0.)
+        self.assertIsNone(error)
+        np.testing.assert_allclose(
+            self.joints(connection)[-1], END, atol=1e-3
+        )
 
     def test_jump_between_frames_is_refused(self):
         def jumping(time_s):
@@ -302,6 +338,113 @@ class JointStreamTests(unittest.TestCase):
             connection, _, error = self.run_stream(**options)
             self.assertIn('未启用或参数无效', str(error))
             self.assertEqual(connection.frames, [])
+
+
+class MoveThroughTests(unittest.TestCase):
+    """连贯地经过一串关节目标：规划、限速和退回逐个运动。"""
+
+    def setUp(self):
+        self.robot = grasp_robot.RobotClient('test', writes=True)
+        self.robot._request = mock.Mock(
+            return_value={
+                'arm_state': {
+                    'joint': [int(v * 1000) for v in START], 'err': [0]
+                }
+            }
+        )
+        self.cancelled = threading.Event()
+        # 沿一条缓变的路径密集取的 10 个目标。
+        self.targets = [
+            np.rint(
+                (np.array(START) + (np.array(END) - START) * k / 10) * 1000
+            ).astype(int).tolist()
+            for k in range(1, 11)
+        ]
+
+    def move(self, targets, speed=25):
+        with mock.patch.object(
+            self.robot, 'stream_joints'
+        ) as stream, mock.patch.object(self.robot, 'move_joints') as step:
+
+            def streamed(*args, **kwargs):
+                self.robot.motion_log.append({})
+
+            stream.side_effect = streamed
+            self.robot.move_joints_through(
+                targets, speed, self.cancelled, self.watchdog
+            )
+        return stream, step
+
+    def watchdog(self):
+        pass
+
+    def test_dense_targets_become_one_smooth_high_follow_stream(self):
+        stream, step = self.move(self.targets)
+        step.assert_not_called()
+        position, duration_s, cancelled, watchdog = stream.call_args.args
+        self.assertTrue(stream.call_args.kwargs['follow'])
+        self.assertIs(cancelled, self.cancelled)
+        self.assertEqual(watchdog, self.watchdog)
+        # 从当前关节角出发，到最后一个目标结束，途中经过每个目标。
+        np.testing.assert_allclose(position(0.), START, atol=1e-9)
+        np.testing.assert_allclose(position(duration_s), END, atol=1e-3)
+        dense = np.array(
+            [position(t) for t in np.arange(0., duration_s, .002)]
+        )
+        for target in self.targets:
+            self.assertLess(
+                np.abs(dense - np.array(target) / 1000).max(axis=1).min(),
+                .05,
+            )
+        # 25% 对应每秒 40 度、每二次方秒 120 度的上限。
+        velocity = np.diff(dense, axis=0) / .002
+        self.assertLessEqual(np.abs(velocity).max(), 40.01)
+        self.assertLessEqual(
+            np.abs(np.diff(velocity, axis=0) / .002).max(), 121.
+        )
+        record = self.robot.motion_log[-1]
+        self.assertEqual(record['through_targets'], 10)
+        self.assertLess(record['path_deviation_deg'], .05)
+
+    def test_speed_setting_scales_the_limits_up_to_the_tested_cap(self):
+        durations = {}
+        for speed in (5, 25, 100):
+            stream, _ = self.move(self.targets, speed)
+            durations[speed] = stream.call_args.args[1]
+        self.assertGreater(durations[5], durations[25] * 1.5)
+        # 超过 25% 不再加快：更高的速度没有实测过。
+        self.assertEqual(durations[100], durations[25])
+
+    def test_sparse_zigzag_falls_back_to_separate_joint_moves(self):
+        # 先只转第 3 关节 20 度，再转回来改转第 5 关节：路径拐了个急弯。
+        zigzag = []
+        for joint in (2, 4):
+            target = np.array(START)
+            target[joint] += 20
+            zigzag.append(np.rint(target * 1000).astype(int).tolist())
+        with self.assertLogs('saydo.robot.grasp_robot', 'WARNING') as logs:
+            stream, step = self.move(zigzag)
+        stream.assert_not_called()
+        self.assertEqual([c.args[0] for c in step.call_args_list], zigzag)
+        self.assertIn('改为逐个关节运动', logs.output[0])
+
+    def test_already_there_sends_nothing(self):
+        stream, step = self.move([[int(v * 1000) for v in START]])
+        stream.assert_not_called()
+        step.assert_not_called()
+
+    def test_requires_writes_and_valid_targets(self):
+        for targets, speed in (
+            ([], 25), ([[0] * 6], 25), ([[0.] * 7], 25), (self.targets, 0)
+        ):
+            with self.assertRaisesRegex(ValueError, '未启用或参数无效'):
+                self.robot.move_joints_through(
+                    targets, speed, self.cancelled, self.watchdog
+                )
+        with self.assertRaisesRegex(ValueError, '未启用或参数无效'):
+            grasp_robot.RobotClient('test').move_joints_through(
+                self.targets, 25, self.cancelled, self.watchdog
+            )
 
 
 if __name__ == '__main__':

@@ -574,10 +574,31 @@ class SampledJointSegmentTests(unittest.TestCase):
         self.assertEqual(last, [2000, 0, 0, 0, 0, 0, 0])
         self.assertEqual(
             report['sampled_joint_segments'],
-            [{'stage': 'lift', 'joint_moves': 2, 'final_joint_raw': last}],
+            [
+                {
+                    'stage': 'lift',
+                    'joint_moves': 2,
+                    'continuous': True,
+                    'final_joint_raw': last,
+                }
+            ],
         )
         self.assertEqual(watchdog.call_count, 2)
         self.robot.move_linear.assert_not_called()
+        # 多个关节解走的是连贯运动，一次把全部目标交给控制器。
+        self.robot.move_joints_through.assert_called_once_with(
+            [[1000, 0, 0, 0, 0, 0, 0], [2000, 0, 0, 0, 0, 0, 0]],
+            25,
+            self.service.cancelled,
+            watchdog,
+        )
+        # 只有一个关节解时是普通的关节运动。
+        self.service.follow_joint_samples(
+            [[3, 0, 0, 0, 0, 0, 0]], 25, watchdog, report, 'raise'
+        )
+        self.robot.move_joints_through.assert_called_once()
+        self.assertEqual(sent[-1], ([3000, 0, 0, 0, 0, 0, 0], 25))
+        self.assertFalse(report['sampled_joint_segments'][-1]['continuous'])
 
     def test_unreached_sample_or_invalid_solution_stops_the_segment(self):
         self.service.robot = self.robot
@@ -586,19 +607,31 @@ class SampledJointSegmentTests(unittest.TestCase):
             list(values)
         )
         self.service.arm_state = mock.Mock(return_value={'joint': [0] * 7})
+        report = {}
+        # 连贯运动走完整段后核对终点：没到位就报错，这一段不记为完成。
         with self.assertRaisesRegex(ValueError, '未到达所选关节解'):
             self.service.follow_joint_samples(
-                [[1] * 7, [2] * 7], 25, mock.Mock(), {}, 'lift'
+                [[1] * 7, [2] * 7], 25, mock.Mock(), report, 'lift'
             )
-        self.assertEqual(len(sent), 1)
-        for bad in ([[1] * 6], [[float('nan')] * 7], []):
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(report, {})
+        # 单个关节解同样核对。
+        with self.assertRaisesRegex(ValueError, '未到达所选关节解'):
+            self.service.follow_joint_samples(
+                [[3] * 7], 25, mock.Mock(), report, 'lift'
+            )
+        self.assertEqual(len(sent), 3)
+        # 有一个关节解无效时，整段一条指令都不发。
+        for bad in (
+            [[1] * 6], [[float('nan')] * 7], [], [[1] * 7, [2] * 6]
+        ):
             with self.subTest(bad=bad), self.assertRaisesRegex(
                 ValueError, '缺少已验证的关节解'
             ):
                 self.service.follow_joint_samples(
                     bad, 25, mock.Mock(), {}, 'lift'
                 )
-        self.assertEqual(len(sent), 1)
+        self.assertEqual(len(sent), 3)
 
     def test_fixed_release_uses_sampled_joint_moves_and_completes_with_different_planned_joints(
         self

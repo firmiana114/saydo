@@ -131,6 +131,56 @@ class JointTrajectoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'knots'):
                 self.plan(knots=knots)
 
+    def test_spline_interpolates_and_is_smooth_at_the_knots(self):
+        knots = np.array([0., .2, .5, .6, 1.])
+        values = np.array(WAYPOINTS)
+        spline = joint_trajectory.NaturalCubicSpline(knots, values)
+        # 过每一个给定点。
+        np.testing.assert_allclose(spline(knots), values, atol=1e-12)
+        np.testing.assert_allclose(spline(.5), values[2], atol=1e-12)
+        # 节点两侧的一阶、二阶变化率相等（分段之间平滑相接）。
+        for knot in knots[1:-1]:
+            for order in (1, 2):
+                np.testing.assert_allclose(
+                    spline(np.array([knot - 1e-7]), order),
+                    spline(np.array([knot + 1e-7]), order),
+                    atol=1e-3,
+                )
+        # 两端的二阶变化率为零。
+        np.testing.assert_allclose(spline(0., 2), 0., atol=1e-9)
+        np.testing.assert_allclose(spline(1., 2), 0., atol=1e-9)
+        # 变化率与数值差分一致。
+        x = np.linspace(.01, .99, 50)
+        np.testing.assert_allclose(
+            spline(x, 1), (spline(x + 1e-6) - spline(x - 1e-6)) / 2e-6,
+            atol=1e-4,
+        )
+        # 两点之间就是直线。
+        line = joint_trajectory.NaturalCubicSpline(
+            np.array([0., 1.]), values[[0, 4]]
+        )
+        np.testing.assert_allclose(
+            line(.25), values[0] + .25 * (values[4] - values[0]), atol=1e-12
+        )
+
+    def test_deviation_from_polyline_is_zero_on_the_polyline(self):
+        dense = np.vstack(
+            [
+                np.array(a) + (np.array(b) - a) * f
+                for a, b in zip(WAYPOINTS[:-1], WAYPOINTS[1:])
+                for f in np.linspace(0, 1, 5)
+            ]
+        )
+        np.testing.assert_allclose(
+            joint_trajectory.deviation_from_polyline(dense, WAYPOINTS), 0.,
+            atol=1e-9,
+        )
+        # 平滑轨迹不完全贴着折线，但对这种缓变的路径相差很小。
+        smooth = self.plan().sample(.01)
+        deviation = joint_trajectory.deviation_from_polyline(smooth, WAYPOINTS)
+        self.assertGreater(deviation.max(), 0.)
+        self.assertLess(deviation.max(), .3)
+
     def test_progress_is_smooth_and_monotonic(self):
         tau = np.linspace(-.2, 1.2, 141)
         value = joint_trajectory.progress(tau)
