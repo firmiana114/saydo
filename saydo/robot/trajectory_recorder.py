@@ -213,7 +213,7 @@ def thin_joint_path(
 
     Returns:
         保留下来的点在 `path_deg` 里的序号，升序，不含起点（序号 0），
-        一定含终点。
+        一定含终点。点数取满足容差的最少个数，间隔尽量均匀。
     """
     path = np.asarray(path_deg, dtype=float)
     tool = np.asarray(flange_T_tool, dtype=float)
@@ -240,6 +240,16 @@ def thin_joint_path(
                 break
         kept.append(reach)
         current = reach
+    # 上面“能跳多远跳多远”可能留下一个很短的尾巴（例如 9 步加 1 步）。
+    # 同样的点数下间隔均匀也满足要求时，用均匀的：走起来更顺。
+    last = len(path) - 1
+    even = sorted(
+        {round(last * (k + 1) / len(kept)) for k in range(len(kept))}
+    )
+    if len(even) == len(kept) and all(
+        within(first, second) for first, second in zip([0] + even, even)
+    ):
+        return even
     return kept
 
 

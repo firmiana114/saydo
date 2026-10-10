@@ -128,33 +128,83 @@ class AnalysisTests(unittest.TestCase):
             deviation[1], radius * (1 - np.cos(np.radians(10.))), places=6
         )
 
-    def test_thinning_keeps_only_the_points_the_line_needs(self):
-        # 第 1 关节从 0 转到 40 度，每 2 度一个点：夹爪走圆弧。把这段
-        # 圆弧两端连成的弦当作“直线”，容差越小要保留的点越多。
-        path = [[angle, 30., 0., 60., 0., 0., 0.] for angle in range(0, 41, 2)]
-        radius = float(
-            np.hypot(*(collision_model.link_frames(path[0])[7] @ TOOL)[:2, 3])
+    def line_path(self, count):
+        """让夹爪参考点沿一条竖直线走的关节角路径（只动第 2、4 关节）。
+
+        第 1、3、5、6、7 关节为 0 时手臂在一个竖直平面里活动，夹爪
+        参考点的位置由第 2、4 关节决定；这里用数值方法逐点求解。
+        """
+
+        def tip(pair):
+            joint = [0., pair[0], 0., pair[1], 0., 0., 0.]
+            return (collision_model.link_frames(joint)[7] @ TOOL)[[0, 2], 3]
+
+        pair = np.array([40., 70.])
+        start = tip(pair)
+        path = []
+        for step in range(count + 1):
+            target = start + [0., -.2 * step / count]
+            for _ in range(30):
+                error = target - tip(pair)
+                jacobian = np.column_stack(
+                    [
+                        (tip(pair + delta) - tip(pair)) / 1e-4
+                        for delta in np.eye(2) * 1e-4
+                    ]
+                )
+                pair = pair + np.linalg.solve(jacobian, error)
+            np.testing.assert_allclose(tip(pair), target, atol=1e-9)
+            path.append([0., pair[0], 0., pair[1], 0., 0., 0.])
+        return path
+
+    def chord_deviation_m(self, path, first, last):
+        """从第 first 个点按关节角直线走到第 last 个点，离整条线多远。"""
+        tips = [
+            (collision_model.link_frames(q)[7] @ TOOL)[:3, 3] for q in path
+        ]
+        between = [
+            np.array(path[first])
+            + (np.array(path[last]) - path[first]) * fraction
+            for fraction in np.linspace(0., 1., 41)
+        ]
+        return float(
+            trajectory_recorder.tcp_line_deviation_m(
+                between, TOOL, tips[0], tips[-1]
+            ).max()
         )
-        sagitta = radius * (1 - np.cos(np.radians(20.)))
-        # 容差比整段弧高还大：一步走完。
+
+    def test_thinning_keeps_only_the_points_the_line_needs(self):
+        # 竖直向下 200 毫米，每 10 毫米一个点。
+        path = self.line_path(20)
+        whole = self.chord_deviation_m(path, 0, 20)
+        self.assertGreater(whole, .005)
+        # 容差比“一步走完”的偏差还大：只留终点。
         self.assertEqual(
-            trajectory_recorder.thin_joint_path(path, TOOL, sagitta * 1.05),
+            trajectory_recorder.thin_joint_path(path, TOOL, whole * 1.05),
             [20],
         )
-        # 容差为零：每个点都得留（相邻两点之间的小弧也偏离弦）。
-        everything = trajectory_recorder.thin_joint_path(path, TOOL, 0.)
-        self.assertEqual(everything, list(range(1, 21)))
-        # 一般情形：序号升序、不含起点、以终点结束。
-        kept = trajectory_recorder.thin_joint_path(path, TOOL, sagitta)
-        self.assertEqual(kept[-1], 20)
-        self.assertEqual(kept, sorted(set(kept)))
-        self.assertNotIn(0, kept)
-
-    def test_thinning_a_straight_joint_line_through_a_true_line(self):
-        # 只有第 2、4 关节等量反向转动时并不走直线；这里直接用两个点。
-        path = [[0., 30., 0., 60., 0., 0., 0.], [5., 30., 0., 60., 0., 0., 0.]]
+        # 容差收紧：点数变多，而且每一段都确实在容差之内。
+        previous = 1
+        for tolerance in (whole * .5, .003, .001, .0002):
+            kept = trajectory_recorder.thin_joint_path(path, TOOL, tolerance)
+            self.assertEqual(kept[-1], 20)
+            self.assertEqual(kept, sorted(set(kept)))
+            self.assertNotIn(0, kept)
+            self.assertGreaterEqual(len(kept), previous)
+            previous = len(kept)
+            for first, last in zip([0] + kept, kept):
+                self.assertLessEqual(
+                    self.chord_deviation_m(path, first, last),
+                    tolerance * 1.02,
+                )
+            # 间隔均匀：最长的一段不超过最短的一段的两倍加一。
+            gaps = np.diff([0] + kept)
+            self.assertLessEqual(gaps.max(), 2 * gaps.min() + 1)
+        self.assertGreater(previous, 3)
+        # 容差为零：每个取样点都保留。
         self.assertEqual(
-            trajectory_recorder.thin_joint_path(path, TOOL, .001), [1]
+            trajectory_recorder.thin_joint_path(path, TOOL, 0.),
+            list(range(1, 21)),
         )
 
     def test_stops_only_count_between_first_and_last_motion(self):
