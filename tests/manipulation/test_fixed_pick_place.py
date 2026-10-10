@@ -267,7 +267,7 @@ class PlanningTests(unittest.TestCase):
             except ValueError as error:
                 return error, report
 
-    def test_orientation_failure_does_not_try_the_other_slots(self):
+    def test_orientation_failure_tries_a_few_more_slots_then_stops(self):
         def cannot_turn(
             checker, tool, arm, points, timeout=3, environment=None
         ):
@@ -283,14 +283,30 @@ class PlanningTests(unittest.TestCase):
                 )
             return self.check(checker, tool, arm, points, timeout)
 
+        # 有几种翻法的位置与孔位有关，所以换孔位还值得试；连续若干个
+        # 孔位都翻不了就不再往下试。夹具里只有两个孔位，把上限调到 2。
         self.request['free_slots'] = ['A01', 'A02']
-        error, report = self.plan_with(cannot_turn)
-        self.assertRegex(str(error), '无法翻转到竖直，与孔位无关.*未发送运动')
-        # 调姿与去哪个孔位无关：第一个孔位失败后不再试其余的。
+        with mock.patch.object(
+            manipulation_fixed_pick_place, 'UNTURNABLE_SLOT_LIMIT', 2
+        ):
+            error, report = self.plan_with(cannot_turn)
+        self.assertRegex(
+            str(error), '连续试了 2 个孔位，试管都无法翻转到竖直.*未发送运动'
+        )
         self.assertEqual(
-            [row['slot'] for row in report['slot_attempts']], ['A01']
+            [row['slot'] for row in report['slot_attempts']], ['A01', 'A02']
+        )
+        self.assertTrue(
+            all(
+                '无法完成调姿' in row['error']
+                for row in report['slot_attempts']
+            )
         )
         self.assertEqual(self.calls, [])
+        # 没到上限就把孔位试完了：按普通的失败报告。
+        error, report = self.plan_with(cannot_turn)
+        self.assertRegex(str(error), '未找到全程通过的孔位.*未发送运动')
+        self.assertEqual(len(report['slot_attempts']), 2)
 
     def test_planning_stops_at_its_time_budget(self):
         self.request['free_slots'] = ['A01', 'A02']

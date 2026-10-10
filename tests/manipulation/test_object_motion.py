@@ -587,15 +587,26 @@ class SearchOrderTests(unittest.TestCase):
             error, object_motion_geometry.OrientationUnreachable
         )
         self.assertIn('全部 24 个夹持方向都无法完成调姿', str(error))
-        # 每个方向按“原地转、边走边转”各试一次：调姿不通时换转移路线
-        # 没有用，所以不会再试绕行。
+        # 每个方向按“原地转、边走边转、先挪到别处再转”各试一次：调姿
+        # 不通时换转移路线没有用，所以不会再试绕行。有的暂存位置对某个
+        # 场景可能不适用（生成不出路径），不会走到路径检查这一步。
         turns = object_motion_geometry.TURN_FRACTIONS
-        self.assertEqual(len(calls), 24 * len(turns))
+        stagings = object_motion_geometry.STAGING_COUNT
+        self.assertGreater(len(calls), 24 * len(turns))
+        self.assertLessEqual(len(calls), 24 * (len(turns) + stagings))
         # 搜索记录最多保留 64 条，所以只核对留下来的都在预期范围内。
         self.assertEqual(len(attempts), 64)
         self.assertLessEqual(
-            {(a['spin_candidate'], a['turn_at']) for a in attempts},
-            {(spin, turn) for spin in range(24) for turn in turns},
+            {
+                (a['spin_candidate'], a['turn_at'], a['staging'])
+                for a in attempts
+            },
+            {(spin, turn, None) for spin in range(24) for turn in turns}
+            | {
+                (spin, 0., staging)
+                for spin in range(24)
+                for staging in range(stagings)
+            },
         )
         self.assertTrue(all(a['route_offset_m'] == [0., 0.] for a in attempts))
 
@@ -680,7 +691,9 @@ class SearchOrderTests(unittest.TestCase):
 
         def tagged(*args):
             plan = real(*args)
-            plan['validation_points'][0]['turn_at'] = args[-1]
+            plan['validation_points'][0].update(
+                turn_at=args[11], staging=args[12]
+            )
             return plan
 
         def reachable(points, timeout):
@@ -709,6 +722,154 @@ class SearchOrderTests(unittest.TestCase):
             [a['turn_at'] for a in attempts[:24]], [0.] * 24
         )
         self.assertTrue(all(a['turn_at'] == 1. for a in attempts[24:]))
+        self.assertIsNone(plan['staging'])
+
+    def staging_candidate(self, staging, **options):
+        held, vertices, arm, config = self.held_sideways()
+        goal = motion_contract.checked_goal(self.release_goal(), True)
+        return object_motion_geometry.build_candidate(
+            held, vertices, arm, config, goal, np.eye(4), 3, np.zeros(3),
+            options.get('release', True), np.array([0, 0, .05]),
+            options.get('route', (0., 0.)), options.get('turn_at', 0.),
+            staging,
+        )
+
+    def test_staging_positions_are_level_and_in_easy_reach(self):
+        start = np.array([.2, -.3, .25])
+        preplacement = np.array([.45, -.1, .2])
+        above, middle, toward_goal, toward_start = (
+            object_motion_geometry.staging_positions(start, preplacement)
+        )
+        # 都在当前高度与预放置高度中较高的那一层。
+        for position in (above, middle, toward_goal, toward_start):
+            self.assertAlmostEqual(position[2], .25)
+        np.testing.assert_allclose(above[:2], preplacement[:2])
+        np.testing.assert_allclose(middle[:2], [.325, -.2])
+        # 另外两个在底座前方 28 厘米处，分别朝着目标和当前位置。
+        radius = object_motion_geometry.STAGING_RADIUS_M
+        for position, direction in (
+            (toward_goal, preplacement), (toward_start, start)
+        ):
+            self.assertAlmostEqual(np.linalg.norm(position[:2]), radius)
+            self.assertAlmostEqual(
+                float(np.cross(position[:2], direction[:2])), 0.
+            )
+            self.assertGreater(position[:2] @ direction[:2], 0)
+        self.assertEqual(
+            len(object_motion_geometry.staging_positions(start, preplacement)),
+            object_motion_geometry.STAGING_COUNT,
+        )
+
+    def test_staging_moves_first_without_turning_then_turns_there(self):
+        in_place = self.staging_candidate(None)
+        staged = self.staging_candidate(1)
+        names = [w['name'].rsplit('_', 1)[0] for w in staged['waypoints']]
+        # 顺序：平移到暂存位置 → 在那里转 → 去预放置点 → 下降。
+        order = [
+            'release_staging', 'release_orientation', 'release_preplacement',
+            'release_descent',
+        ]
+        self.assertEqual(sorted(set(names), key=names.index), order)
+        held, _, arm, _ = self.held_sideways()
+        start_rotation = (
+            grasp_geometry.controller_pose(arm['pose'])
+            @ np.linalg.inv(grasp_geometry.transform(held['object_T_tcp']))
+        )[:3, :3]
+        start = np.array(
+            in_place['waypoints'][0]['reference_position_base_m']
+        )
+        preplacement = np.array([.4, -.1, .1 + .1])
+        position = object_motion_geometry.staging_positions(
+            start, preplacement
+        )[1]
+        moving = [
+            w for w in staged['waypoints']
+            if w['name'].startswith('release_staging')
+        ]
+        # 平移这一段朝向不变（与抓起时相同），参考点到达暂存位置。
+        self.assertGreater(len(moving), 0)
+        for waypoint in moving:
+            np.testing.assert_allclose(
+                np.array(waypoint['object_pose'])[:3, :3], start_rotation,
+                atol=1e-9,
+            )
+        np.testing.assert_allclose(
+            moving[-1]['reference_position_base_m'], position, atol=1e-9
+        )
+        self.assertEqual({w['method'] for w in moving}, {'linear'})
+        turning = [
+            w for w in staged['waypoints']
+            if w['name'].startswith('release_orientation')
+        ]
+        # 转的时候参考点停在暂存位置不动。
+        self.assertGreater(len(turning), 1)
+        for waypoint in turning:
+            np.testing.assert_allclose(
+                waypoint['reference_position_base_m'], position, atol=1e-9
+            )
+        # 转完之后的朝向与平移时相差很大：确实是在暂存位置才转的。
+        after = np.array(turning[-1]['object_pose'])[:3, :3]
+        self.assertGreater(
+            grasp_geometry.rotation_error(start_rotation, after),
+            np.deg2rad(45),
+        )
+        # 最终朝向和松爪位置与原地转的方案完全相同。
+        np.testing.assert_allclose(
+            staged['base_T_object_target'], in_place['base_T_object_target'],
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            staged['waypoints'][-1]['reference_position_base_m'],
+            [.4, -.1, .1],
+            atol=1e-9,
+        )
+
+    def test_staging_only_combines_with_a_plain_release(self):
+        for options in (
+            {'release': False}, {'route': (0., .08)}, {'turn_at': 1.}
+        ):
+            with self.assertRaisesRegex(ValueError, '暂存位置只用于'):
+                self.staging_candidate(0, **options)
+
+    def test_staging_is_tried_after_every_way_of_turning_fails(self):
+        real = object_motion_geometry.build_candidate
+
+        def tagged(*args):
+            plan = real(*args)
+            plan['validation_points'][0].update(
+                turn_at=args[11], staging=args[12]
+            )
+            return plan
+
+        def reachable(points, timeout):
+            if points[0]['staging'] != 1:
+                return (
+                    False,
+                    {
+                        'reason': 'cannot turn here',
+                        'failure': {
+                            'waypoint': 'release_orientation_1_sample_1'
+                        },
+                    },
+                )
+            return True, {'verified': True}
+
+        with mock.patch.object(
+            object_motion_geometry, 'build_candidate', side_effect=tagged
+        ):
+            plan, attempts = self.search(
+                reachable, goal=self.release_goal(), release=True
+            )
+        self.assertEqual(plan['staging'], 1)
+        self.assertEqual(plan['turn_at'], 0.)
+        self.assertEqual(plan['route_offset_m'], [0., 0.])
+        # 记录最多保留 64 条：开头是 24 个方向的原地转，结尾是暂存位置。
+        self.assertEqual(
+            [(a['turn_at'], a['staging']) for a in attempts[:24]],
+            [(0., None)] * 24,
+        )
+        self.assertEqual(attempts[-1]['staging'], 1)
+        self.assertTrue(all(a['staging'] in (None, 0, 1) for a in attempts))
 
     def test_scores_are_zero_without_an_orientation_goal(self):
         held, _, arm, _ = fixture()

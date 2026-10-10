@@ -2,7 +2,7 @@
 
 import concurrent.futures
 import subprocess
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import scipy.spatial
@@ -44,6 +44,53 @@ ROUTE_OFFSETS = (
 # 时刚好转完；0.5 是走到一半时转完。原地转不了的位置（例如紧挨着立杆），
 # 边走边转往往可以。
 TURN_FRACTIONS = (0., 1., .5)
+# “先挪到顺手的位置再转”用的暂存位置里，有两处取在底座前方这么远的地方
+# （物品参考点到底座轴线的水平距离，米）。2026-10-08 至 10-10 的实测里，
+# 试管离底座 24～29 厘米时原地翻转都能成功，更远就常常够不到。
+STAGING_RADIUS_M = .28
+# 暂存位置的个数，见 `staging_positions`。
+STAGING_COUNT = 4
+# 暂存位置离当前位置不到这么远时，等同于原地转，不再单独尝试。
+STAGING_MIN_TRAVEL_M = .02
+
+
+def staging_positions(
+    start_ref: np.ndarray, preplacement: np.ndarray
+) -> List[np.ndarray]:
+    """列出“先挪到顺手的位置再转”可以用的几个位置。
+
+    物品在当前位置转不到目标朝向（够不到、被立杆或另一台臂挡住）时，
+    可以先保持现在的朝向平移到别处，在那里转好，再去预放置点。这里
+    给出几个值得一试的位置，都在当前高度与预放置高度中较高的那一层：
+
+    0. 预放置点的正上方或同高处（目标位置本来就要够得到）；
+    1. 当前位置与预放置点连线的中点；
+    2. 底座前方 `STAGING_RADIUS_M` 处，朝着预放置点的方向；
+    3. 底座前方 `STAGING_RADIUS_M` 处，朝着当前位置的方向。
+
+    Args:
+        start_ref: 物品参考点当前的位置，基座坐标，米。
+        preplacement: 预放置点（目标正上方），基座坐标，米。
+
+    Returns:
+        `STAGING_COUNT` 个位置，基座坐标，米。
+    """
+    height = max(float(start_ref[2]), float(preplacement[2]))
+
+    def level(xy: np.ndarray) -> np.ndarray:
+        return np.array([xy[0], xy[1], height])
+
+    def toward(xy: np.ndarray) -> np.ndarray:
+        distance = float(np.linalg.norm(xy))
+        direction = xy / distance if distance > 1e-9 else np.array([1., 0.])
+        return level(direction * STAGING_RADIUS_M)
+
+    return [
+        level(preplacement[:2]),
+        level((start_ref[:2] + preplacement[:2]) / 2),
+        toward(preplacement[:2]),
+        toward(start_ref[:2]),
+    ]
 
 
 def object_at_reference(reference, rotation, point):
@@ -125,6 +172,7 @@ def build_candidate(
     retreat: np.ndarray,
     route: tuple = (0., 0.),
     turn_at: float = 0.,
+    staging: Optional[int] = None,
 ) -> dict:
     """按一组候选参数生成一条完整的持物运动路径；只做几何计算。
 
@@ -148,6 +196,10 @@ def build_candidate(
         route: 转移路线 `(再抬高多少米, 向侧面绕开多少米)`。
         turn_at: 松爪前在“当前位置到预放置点”这段直线的哪个比例处
             把物品转到目标朝向。0 为原地转，1 为到预放置点时转完。
+        staging: 不为 None 时，先保持现在的朝向沿直线平移到
+            `staging_positions` 给出的第几个位置，在那里转到目标朝向，
+            再去预放置点。只用于松爪、不绕行的路线，此时 `turn_at`
+            必须为 0。
 
     Returns:
         候选方案：路点 `waypoints`、检查用的取样点 `validation_points`、
@@ -155,8 +207,13 @@ def build_candidate(
 
     Raises:
         ValueError: 目标或参考点无效，某个姿态超出工作范围或物品低于
-            桌面，或路点数超过上限。
+            桌面，路点数超过上限，或暂存位置不适用（不是松爪、与绕行
+            或边走边转同用、离当前位置太近）。
     """
+    if staging is not None and (
+        not release or route != (0., 0.) or turn_at != 0.
+    ):
+        raise ValueError('暂存位置只用于松爪时不绕行、原地转的路线')
     current = grasp_geometry.controller_pose(arm['pose'])
     attachment = grasp_geometry.transform(held['object_T_tcp'])
     obj = current @ np.linalg.inv(attachment)
@@ -270,6 +327,26 @@ def build_candidate(
                 ),
                 (reference, 'linear', 'release_descent'),
             ]
+            if staging is not None:
+                position = staging_positions(previous_ref, preplacement)[
+                    staging
+                ]
+                if (
+                    np.linalg.norm(position - previous_ref)
+                    < STAGING_MIN_TRAVEL_M
+                ):
+                    raise ValueError('暂存位置就在当前位置，与原地转相同')
+                # 第一段带着第四项：这一段要保持的朝向（现在的朝向），
+                # 只平移不转；其余各段照常转向最终朝向。
+                stages = [
+                    (
+                        position, 'linear', 'release_staging',
+                        obj[:3, :3].copy(),
+                    ),
+                    (position, method, 'release_orientation'),
+                    (preplacement, 'linear', 'release_preplacement'),
+                    (reference, 'linear', 'release_descent'),
+                ]
         if route != (0., 0.):
             expanded = []
             for destination, stage_method, label in stages:
@@ -297,15 +374,17 @@ def build_candidate(
                         )
                 expanded.append((destination, stage_method, label))
             stages = expanded
-        for stage_ref, stage_method, label in stages:
+        for stage in stages:
+            stage_ref, stage_method, label = stage[:3]
+            stage_rotation = stage[3] if len(stage) > 3 else rotation
             previous_ref = obj[:3, 3] + obj[:3, :3] @ point
             steps = rotation_steps.fractions(
-                obj[:3, :3], rotation, goal['max_rotation_step_deg']
+                obj[:3, :3], stage_rotation, goal['max_rotation_step_deg']
             )
             origin_obj = obj.copy()
             for k, f in enumerate(steps, 1):
                 rot = rotation_steps.interpolate(
-                    origin_obj[:3, :3], rotation, f
+                    origin_obj[:3, :3], stage_rotation, f
                 )
                 reference_k = previous_ref + f * (stage_ref - previous_ref)
                 target_obj = object_at_reference(reference_k, rot, point)
@@ -341,7 +420,7 @@ def build_candidate(
                 ):
                     waypoints.append(w)
                 previous_tcp = quantized
-            obj = object_at_reference(stage_ref, rotation, point)
+            obj = object_at_reference(stage_ref, stage_rotation, point)
     if (
         goal['position_mode'] == 'adaptive'
         and previous_tcp[2, 3] <= config['table_z_m'] + .10
@@ -529,10 +608,12 @@ def plan_object_motion(
 ) -> dict:
     """为夹着的物品找一条全程可行的调姿与搬运路径；只做计算。
 
-    候选方案由三样东西组合而成：目标位置的偏移（仅自适应模式）、夹爪绕
+    候选方案由几样东西组合而成：目标位置的偏移（仅自适应模式）、夹爪绕
     物品轴线转到哪个方向（仅 5D 物品且指定了朝向时，24 个，每 15 度一个）、
-    转移时走哪条路（直接过去，或抬高、向侧面绕行，共 12 条）。逐个交给
-    `reachable` 做逆解、连续性和碰撞检查，取优先顺序里第一个通过的。
+    转移时走哪条路（直接过去，或抬高、向侧面绕行，共 12 条），以及松爪
+    时在哪里把物品转到目标朝向（原地转、边走边转、先挪到别处再转，见
+    `TURN_FRACTIONS` 与 `staging_positions`）。逐个交给 `reachable` 做
+    逆解、连续性和碰撞检查，取优先顺序里第一个通过的。
 
     优先顺序：先试不绕行的路线；同一条路线里先试夹爪转动最少的方向，
     再按夹爪朝外伸的程度依次试其余方向（见 `outward_scores`）。
@@ -598,13 +679,24 @@ def plan_object_motion(
     )
 
     turns = TURN_FRACTIONS if release and len(spins) > 1 else (0.,)
+    # “在哪里、怎样把物品转到目标朝向”的全部做法：(边走边转的比例,
+    # 暂存位置序号)。先原地转，再边走边转，最后才是先挪到别处再转。
+    ways = [(turn_at, None) for turn_at in turns] + (
+        [(0., staging) for staging in range(STAGING_COUNT)]
+        if release and len(spins) > 1
+        else []
+    )
 
     def build(
-        spin: int, shift: np.ndarray, route: tuple, turn_at: float
+        spin: int,
+        shift: np.ndarray,
+        route: tuple,
+        turn_at: float,
+        staging: Optional[int],
     ) -> dict:
         return build_candidate(
             held, vertices, arm, config, goal, frame, spin, shift, release,
-            retreat, route, turn_at,
+            retreat, route, turn_at, staging,
         )
 
     def evaluate(candidate: tuple) -> tuple:
@@ -612,16 +704,18 @@ def plan_object_motion(
 
         返回 (记录, 方案或 None, 取样点)。
         """
-        shift, spin, route, turn_at = candidate
+        shift, spin, route, turn_at, staging = candidate
         attempt = {
             'spin_candidate': spin,
             'shift_m': shift.tolist(),
             'route_offset_m': list(route),
             'turn_at': turn_at,
+            'staging': staging,
         }
         try:
-            plan = build(spin, shift, route, turn_at)
+            plan = build(spin, shift, route, turn_at, staging)
             plan['turn_at'] = turn_at
+            plan['staging'] = staging
             points = plan.pop('validation_points')
             valid, detail = reachable(points, 3.)
             if not valid:
@@ -670,13 +764,15 @@ def plan_object_motion(
     with concurrent.futures.ThreadPoolExecutor(SEARCH_WORKERS) as pool:
         for shift in shifts:
             pending = [
-                (shift, spin, route, turn_at)
+                (shift, spin, route, turn_at, staging)
                 for route in ROUTE_OFFSETS
                 # 绕行路线是从当前位置出发算的，只与原地转搭配。
-                for turn_at in (turns if route == (0., 0.) else turns[:1])
+                for turn_at, staging in (
+                    ways if route == (0., 0.) else ways[:1]
+                )
                 for spin in order
             ]
-            # 卡在调姿段的（夹持方向, 转到位的位置）：转移路线帮不上忙，
+            # 卡在调姿段的（夹持方向, 转的做法）：转移路线帮不上忙，
             # 不再试它的其他路线。
             dead = set()
             while pending:
@@ -686,10 +782,10 @@ def plan_object_motion(
                 # 候选白费处理器，耗时与只检查一个相同。
                 size = SEARCH_WORKERS if attempts else 1
                 while pending and len(batch) < size:
-                    key = (pending[0][1], pending[0][3])
+                    key = (pending[0][1], *pending[0][3:])
                     if key in dead:
                         pending.pop(0)
-                    elif any(key == (other[1], other[3]) for other in batch):
+                    elif any(key == (other[1], *other[3:]) for other in batch):
                         # 同一个方向的下一条路线要等这一批的结果：它若卡在
                         # 调姿段，后面的路线就不必试了。
                         break
@@ -708,14 +804,20 @@ def plan_object_motion(
                             selected_points[:] = points
                         return plan
                     failure = attempt.get('failure') or {}
-                    if failure.get('waypoint', '').startswith(
-                        ('orient_', 'release_orientation')
-                    ):
+                    # 用暂存位置的候选不与别的路线搭配，失败了（包括位置
+                    # 不合适、根本生成不出路径）就算这种做法走不通。
+                    if attempt['staging'] is not None or failure.get(
+                        'waypoint', ''
+                    ).startswith(('orient_', 'release_orientation')):
                         dead.add(
-                            (attempt['spin_candidate'], attempt['turn_at'])
+                            (
+                                attempt['spin_candidate'],
+                                attempt['turn_at'],
+                                attempt['staging'],
+                            )
                         )
             if not adaptive:
-                if len(dead) == len(spins) * len(turns):
+                if len(dead) == len(spins) * len(ways):
                     raise OrientationUnreachable(
                         '全部 %d 个夹持方向都无法完成调姿：%s'
                         % (len(spins), attempts[-1].get('reason', ''))

@@ -20,6 +20,8 @@ from saydo.contracts import motion_contract
 
 # 一次固定抓放规划最多用多久，单位秒。超过即放弃，不发送运动。
 PLANNING_BUDGET_S = 60.
+# 连续这么多个孔位都因为“试管无法翻转到竖直”而失败，就不再试其余孔位。
+UNTURNABLE_SLOT_LIMIT = 3
 
 
 # Straight segments run as one joint move per sample (about 10 mm apart), so a
@@ -368,6 +370,7 @@ class FixedPickPlaceMixin:
             )
 
         deadline = time.monotonic() + PLANNING_BUDGET_S
+        unturnable = 0
         for slot, goal, frame, distance in goals:
             self.check_cancel()
             if time.monotonic() > deadline:
@@ -468,12 +471,16 @@ class FixedPickPlaceMixin:
                     raise ValueError('规划期间机械臂移动')
                 return self.object_plan_store().save(plan)
             except object_motion_geometry.OrientationUnreachable as error:
-                # 调姿在原地进行，与去哪个孔位无关，不必再换孔位重试。
+                # 各种翻法（原地、边走边翻、先挪到别处再翻）都试过了。
+                # 其中几种的位置与孔位有关，所以换个孔位还值得一试；
+                # 连续几个孔位都这样，就不再往下试。
                 row['error'] = str(error)
-                raise ValueError(
-                    '试管在当前位置和朝向下无法翻转到竖直，与孔位无关：'
-                    f'{error}；请换一个摆放位置或朝向。未发送运动'
-                ) from error
+                unturnable += 1
+                if unturnable >= UNTURNABLE_SLOT_LIMIT:
+                    raise ValueError(
+                        f'连续试了 {unturnable} 个孔位，试管都无法翻转到'
+                        f'竖直：{error}；请换一个摆放位置或朝向。未发送运动'
+                    ) from error
             except (ValueError, TimeoutError) as error:
                 row['error'] = str(error)
         raise ValueError('有限候选搜索结束，未找到全程通过的孔位；未发送运动')
