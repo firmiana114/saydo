@@ -1,8 +1,11 @@
 """全局相机快速标定：相机画面是按针孔模型合成的，其余是真实代码。"""
 
+import http.client
+import http.server
 import json
 import pathlib
 import tempfile
+import threading
 import types
 import unittest
 
@@ -11,9 +14,11 @@ import numpy as np
 import yaml
 
 from saydo.calibration import global_camera
+from saydo.camera_monitor import server as monitor
 from saydo.robot import arms
 from saydo.robot import collision_model
 from tests.calibration import board_render
+from tests.camera_monitor import fake_realsense
 
 OBSERVATION_DEG = [-115.4, -54.4, 81.5, 57.5, 29.0, 110.5, 195.5]
 HAND_K = np.array([[454., 0., 320.], [0., 454., 180.], [0., 0., 1.]])
@@ -400,19 +405,17 @@ class LoopTests(GlobalCameraTestCase):
         backend = types.SimpleNamespace(hand_frame=hand_frame)
         return camera, backend, (lambda: state['now']), sleep, state
 
-    def test_loop_records_until_enough_and_renews_the_camera_loan(self):
+    def test_loop_records_until_enough(self):
         camera, backend, clock, sleep, state = self.devices(
             self.script(PLACEMENTS)
         )
-        renewals = []
         with self.assertLogs(global_camera.LOG, 'INFO') as logs:
             done = global_camera.calibrate(
                 self.session, camera, backend, ['arm1'], 8, 300.,
-                lambda: renewals.append(1), clock, sleep,
+                clock, sleep,
             )
         self.assertTrue(done)
         self.assertEqual(len(self.session.samples), 8)
-        self.assertEqual(len(renewals), state['index'])
         text = '\n'.join(logs.output)
         self.assertIn('已记录第 1 组（1臂（左臂）看到）。还需要 7 组', text)
         self.assertIn('已记录第 8 组（1臂（左臂）看到）。已采够', text)
@@ -426,13 +429,36 @@ class LoopTests(GlobalCameraTestCase):
         with self.assertLogs(global_camera.LOG, 'INFO') as logs:
             done = global_camera.calibrate(
                 self.session, camera, backend, ['arm1'], 8, 20.,
-                lambda: None, clock, sleep,
+                clock, sleep,
             )
         self.assertFalse(done)
         self.assertEqual(len(self.session.samples), 2)
         # 标定板停在原处时，同一句提示只打印一次。
         repeats = [line for line in logs.output if '重复' in line]
         self.assertEqual(len(repeats), 1)
+
+    def test_loop_waits_out_rounds_without_a_global_picture(self):
+        frames = self.script(PLACEMENTS)
+        camera, backend, clock, sleep, state = self.devices(frames)
+        steady = camera.frame
+
+        def flaky():
+            # 第 3 到 6 轮相机服务给不出画面（例如有人在页面上点了释放）。
+            if 3 <= state['index'] < 7:
+                state['index'] += 1
+                raise global_camera.FrameUnavailable('该相机没有活动预览。')
+            return steady()
+
+        camera.frame = flaky
+        with self.assertLogs(global_camera.LOG, 'INFO') as logs:
+            done = global_camera.calibrate(
+                self.session, camera, backend, ['arm1'], 6, 300.,
+                clock, sleep,
+            )
+        self.assertTrue(done)
+        missing = [line for line in logs.output if '暂时取不到画面' in line]
+        self.assertEqual(len(missing), 1)
+        self.assertIn('该相机没有活动预览', missing[0])
 
     def test_verify_reports_how_far_the_stored_result_is_off(self):
         frames = self.script(PLACEMENTS[:1])
@@ -468,6 +494,105 @@ class LoopTests(GlobalCameraTestCase):
                     clock, sleep,
                 )
             )
+
+
+class ServedCameraTests(GlobalCameraTestCase):
+    """全局相机的画面经真实的 8088 服务代码取得；假的只有相机驱动。"""
+
+    def setUp(self):
+        super().setUp()
+        self.board = board_on_table(*PLACEMENTS[0])
+        self.rs = fake_realsense.Module(
+            self.global_frame(self.board)['bgr'],
+            serial='218622270784',
+            intrinsics=types.SimpleNamespace(
+                fx=654., fy=653., ppx=647., ppy=365.,
+                model='distortion.inverse_brown_conrady',
+                coeffs=[.01, -.02, 0., 0., .003],
+            ),
+        )
+        for patch in fake_realsense.patches(self.rs, monitor, str(self.root)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.server = http.server.ThreadingHTTPServer(
+            ('127.0.0.1', 0), monitor.Handler
+        )
+        self.server.daemon_threads = True
+        self.server.cameras = {
+            'd435i': monitor.Camera(1280, 720, 15, 'd435i', '405622073572'),
+            'd405': monitor.Camera(1280, 720, 15, 'd405', '218622270784'),
+        }
+        self.worker = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.worker.start()
+        self.addCleanup(self.stop_server)
+        self.url = 'http://127.0.0.1:%d' % self.server.server_address[1]
+
+    def stop_server(self):
+        for camera in self.server.cameras.values():
+            camera.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join()
+
+    def test_pictures_come_through_the_service_unaltered(self):
+        camera = global_camera.ServedCamera(self.url, '218622270784')
+        frame = camera.frame()
+        self.assertTrue(np.array_equal(frame['bgr'], self.rs.image))
+        self.assertTrue(np.allclose(frame['K'], GLOBAL_K))
+        self.assertTrue(
+            np.allclose(frame['distortion'], [.01, -.02, 0., 0., .003])
+        )
+        self.assertEqual(
+            camera.distortion_model, 'distortion.inverse_brown_conrady'
+        )
+        # 相机只被打开了一次：是相机服务开的，不是标定程序。
+        self.assertEqual(self.rs.started, 1)
+
+    def test_preview_stays_on_while_a_sample_is_recorded(self):
+        camera = global_camera.ServedCamera(self.url, '218622270784')
+        viewer = http.client.HTTPConnection(
+            *self.server.server_address, timeout=3
+        )
+        self.addCleanup(viewer.close)
+        viewer.request('GET', '/stream/d405')
+        stream = viewer.getresponse()
+        self.assertEqual(stream.status, 200)
+        hands = {'arm1': self.hand_frame(self.board)}
+        self.session.step(camera.frame(), hands)
+        recorded, message = self.session.step(camera.frame(), hands)
+        self.assertTrue(recorded, message)
+        # 预览还在出新的画面。
+        self.assertIn(b'--frame', stream.readline())
+        self.assertEqual(self.server.cameras['d405'].status()['clients'], 1)
+        self.assertEqual((self.rs.started, self.rs.stopped), (1, 0))
+
+    def test_unknown_serial_and_stopped_service_are_explained(self):
+        with self.assertRaisesRegex(
+            global_camera.FrameUnavailable, '没有序列号为 000000000000'
+        ):
+            global_camera.ServedCamera(self.url, '000000000000')
+        self.stop_server()
+        self.addCleanup(self.server.server_close)
+        self.stop_server = lambda: None
+        with self.assertRaisesRegex(
+            global_camera.FrameUnavailable, '连不上相机服务.*run_camera_monitor'
+        ):
+            global_camera.ServedCamera(self.url, '218622270784')
+
+    def test_released_camera_is_reported_for_that_round_only(self):
+        camera = global_camera.ServedCamera(self.url, '218622270784')
+        self.rs.device.serial = 'unplugged'
+        self.server.cameras['d405'].stop()
+        with self.assertRaisesRegex(
+            global_camera.FrameUnavailable, '没有找到唯一的指定相机'
+        ):
+            camera.frame()
+        self.rs.device.serial = '218622270784'
+        self.assertTrue(
+            np.array_equal(camera.frame()['bgr'], self.rs.image)
+        )
 
 
 class ResultFileTests(GlobalCameraTestCase):

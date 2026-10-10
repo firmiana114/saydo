@@ -5,13 +5,28 @@ import pathlib
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 import http.server
 
+import cv2
+import numpy as np
+
 from saydo.camera_monitor import server as monitor
+from tests.camera_monitor import fake_realsense
 
 JPEG = b'\xff\xd8test-frame\xff\xd9'
+
+
+def fake_profile(rs, device):
+    """让 Mock 出来的驱动像真设备一样给出彩色画面的内参。"""
+    profile = rs.pipeline.return_value.start.return_value
+    profile.get_device.return_value = device
+    video = profile.get_stream.return_value.as_video_stream_profile
+    video.return_value.get_intrinsics.return_value = types.SimpleNamespace(
+        fx=650., fy=650., ppx=640., ppy=360., model='none', coeffs=[0.] * 5
+    )
 
 
 def tracker_frame(serial='435123456789', age=0):
@@ -148,9 +163,7 @@ class TestCamera(unittest.TestCase):
         device = mock.Mock()
         device.get_info.side_effect = lambda key: '405123456789' if key == rs.camera_info.serial_number else 'RealSense D405'
         rs.context.return_value.query_devices.return_value = [device]
-        rs.pipeline.return_value.start.return_value.get_device.return_value = (
-            device
-        )
+        fake_profile(rs, device)
         rs.pipeline.return_value.wait_for_frames.side_effect = RuntimeError(
             'fixture ended'
         )
@@ -195,9 +208,7 @@ class TestCamera(unittest.TestCase):
         clock = [100.]
         device.get_info.side_effect = lambda key: '435123456789' if key == rs.camera_info.serial_number else 'RealSense D435I'
         rs.context.return_value.query_devices.return_value = [device]
-        rs.pipeline.return_value.start.return_value.get_device.return_value = (
-            device
-        )
+        fake_profile(rs, device)
         rs.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value = color
         color.get_frame_number.return_value = 2
         color.get_width.return_value = 1280
@@ -370,6 +381,189 @@ class TestHTTP(unittest.TestCase):
             time.sleep(.02)
         self.assertEqual(self.server.cameras['d405'].state, 'idle')
 
+
+
+class TestFramesForPrograms(unittest.TestCase):
+    """程序（如标定）向本服务要画面：相机由本服务打开，预览照常。"""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.image = rng.integers(0, 255, (72, 128, 3), dtype=np.uint8)
+        self.rs = fake_realsense.Module(self.image)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for patch in fake_realsense.patches(
+            self.rs, monitor, directory.name
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        tracker = mock.Mock()
+        sequence = iter(range(1, 100000))
+        tracker.request.side_effect = lambda path: {
+            **tracker_frame(), 'sequence': next(sequence)
+        }
+        self.server = http.server.ThreadingHTTPServer(
+            ('127.0.0.1', 0), monitor.Handler
+        )
+        self.server.daemon_threads = True
+        self.server.cameras = {
+            'd435i': monitor.Camera(
+                1280, 720, 15, 'd435i', '435123456789', tracker, arm='arm1'
+            ),
+            'd405': monitor.Camera(1280, 720, 15, 'd405', '405123456789'),
+        }
+        self.camera = self.server.cameras['d405']
+        self.worker = threading.Thread(
+            target=self.server.serve_forever, daemon=True
+        )
+        self.worker.start()
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        for camera in self.server.cameras.values():
+            camera.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        self.worker.join()
+
+    def request(self, path, method='GET', headers=None, body=None):
+        connection = http.client.HTTPConnection(
+            *self.server.server_address, timeout=15
+        )
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def wait_idle(self, timeout_s=3.):
+        deadline = time.monotonic() + timeout_s
+        while self.camera.state != 'idle' and time.monotonic() < deadline:
+            time.sleep(.02)
+        return self.camera.state
+
+    def test_request_starts_the_camera_and_returns_the_exact_pixels(self):
+        code, data = self.request('/api/cameras/d405/frame?keep_s=5&format=png')
+        self.assertEqual(code, 200)
+        self.assertEqual(data['mime_type'], 'image/png')
+        self.assertEqual(data['camera_serial'], '405123456789')
+        decoded = cv2.imdecode(
+            np.frombuffer(base64.b64decode(data['image_base64']), np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        # 无损：每个像素都与相机给出的一样。
+        self.assertTrue(np.array_equal(decoded, self.image))
+        self.assertEqual(
+            data['intrinsics'],
+            {
+                'fx': 650., 'fy': 651., 'cx': 640., 'cy': 360.,
+                'distortion_model': 'distortion.inverse_brown_conrady',
+                'distortion': [0.] * 5,
+            },
+        )
+        status = self.request('/api/cameras/d405/status')[1]
+        self.assertEqual(status['state'], 'streaming')
+        self.assertEqual(status['clients'], 0)
+        self.assertGreater(status['kept_s'], 3)
+        self.assertEqual(status['intrinsics']['fx'], 650.)
+        self.assertEqual(self.rs.started, 1)
+
+    def test_preview_and_program_share_one_open_camera(self):
+        self.request('/api/cameras/d405/frame?keep_s=5')
+        viewer = http.client.HTTPConnection(
+            *self.server.server_address, timeout=3
+        )
+        viewer.request('GET', '/stream/d405')
+        stream = viewer.getresponse()
+        self.assertEqual(stream.status, 200)
+        self.assertIn(b'--frame', stream.readline())
+        code, data = self.request('/api/cameras/d405/frame?keep_s=5&format=png')
+        self.assertEqual(code, 200)
+        # 观看者离开后，程序还在用，相机不释放。
+        stream.close()
+        viewer.close()
+        time.sleep(.3)
+        self.assertEqual(self.camera.state, 'streaming')
+        self.assertEqual(self.request('/api/cameras/d405/frame')[0], 200)
+        self.assertEqual((self.rs.started, self.rs.stopped), (1, 0))
+
+    def test_camera_is_released_once_the_program_stops_asking(self):
+        self.assertEqual(
+            self.request('/api/cameras/d405/frame?keep_s=0.3')[0], 200
+        )
+        self.assertEqual(self.wait_idle(), 'idle')
+        self.assertEqual((self.rs.started, self.rs.stopped), (1, 1))
+        self.assertEqual(
+            self.request('/api/cameras/d405/status')[1]['kept_s'], 0
+        )
+        # 再来取图时重新打开。
+        self.assertEqual(
+            self.request('/api/cameras/d405/frame?keep_s=0.3')[0], 200
+        )
+        self.assertEqual(self.rs.started, 2)
+
+    def test_a_viewer_keeps_the_camera_after_the_program_is_gone(self):
+        viewer = http.client.HTTPConnection(
+            *self.server.server_address, timeout=3
+        )
+        viewer.request('GET', '/stream/d405')
+        stream = viewer.getresponse()
+        stream.readline()
+        self.request('/api/cameras/d405/frame?keep_s=0.2')
+        time.sleep(.5)
+        self.assertEqual(self.camera.state, 'streaming')
+        stream.close()
+        viewer.close()
+        self.assertEqual(self.wait_idle(), 'idle')
+
+    def test_plain_request_still_never_starts_the_camera(self):
+        code, data = self.request('/api/cameras/d405/frame?format=png')
+        self.assertEqual(code, 409)
+        self.assertEqual(self.rs.started, 0)
+
+    def test_camera_lent_to_a_capture_program_is_not_started(self):
+        self.request(
+            '/api/cameras/d405/pause', 'POST', body=b'{"hold_s": 30}'
+        )
+        code, data = self.request('/api/cameras/d405/frame?keep_s=5')
+        self.assertEqual(code, 409)
+        self.assertIn('已让给采集程序', data['error'])
+        self.assertEqual(self.rs.started, 0)
+
+    def test_relayed_8089_picture_has_no_lossless_image(self):
+        code, data = self.request(
+            '/api/cameras/d435i/frame?keep_s=5&format=png'
+        )
+        self.assertEqual(code, 409)
+        self.assertIn('没有无损图像', data['error'])
+        # 压缩的画面照常给出。
+        code, data = self.request('/api/cameras/d435i/frame?keep_s=5')
+        self.assertEqual(code, 200)
+        self.assertIsNone(data['intrinsics'])
+        self.assertEqual(self.rs.started, 0)
+
+    def test_bad_parameters_and_cross_site_requests_are_refused(self):
+        for query in ('keep_s=abc', 'keep_s=-1', 'keep_s=61', 'keep_s=nan',
+                      'keep_s=5&format=bmp'):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    self.request('/api/cameras/d405/frame?' + query)[0], 400
+                )
+        self.assertEqual(
+            self.request(
+                '/api/cameras/d405/frame?keep_s=5',
+                headers={'Sec-Fetch-Site': 'cross-site'},
+            )[0],
+            403,
+        )
+        self.assertEqual(self.rs.started, 0)
+
+    def test_a_camera_that_cannot_open_reports_why(self):
+        self.rs.device.serial = 'another'
+        code, data = self.request('/api/cameras/d405/frame?keep_s=5')
+        self.assertEqual(code, 409)
+        self.assertIn('没有找到唯一的指定相机', data['error'])
 
 
 class TestSecondArmCameraAndHold(unittest.TestCase):

@@ -15,6 +15,10 @@
 使用前提：机械臂停在观测姿态。手上相机的校正只在那个姿态下准到 1～2
 毫米，标定板的位置是靠它算出来的。
 
+相机画面都从服务那里取，本程序不直接打开任何相机：全局相机经 8088
+相机服务，手上相机经 8089。所以采集期间 8088 页面上三路预览照常，
+操作者可以看着画面摆标定板。
+
 用法（在项目根目录，MSI 上）：
 
     .venv/bin/python -m saydo.calibration.global_camera            标定
@@ -37,12 +41,13 @@ import os
 import pathlib
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-import pyrealsense2 as rs
 import yaml
 
 from saydo.calibration import collect
@@ -108,6 +113,9 @@ OUTLIER_FACTOR = 3.
 DEFAULT_BACKEND_URL = 'http://192.168.101.65:8089'
 DEFAULT_TOKEN_FILE = '~/.local/share/saydo-mcp/robot-backend-token'
 LOOP_PERIOD_S = 1.
+# 每次取图让相机服务再保持采集多久，单位秒。比每轮的间隔长得多，
+# 所以采集中途不会断；程序退出后相机最多再开这么久。
+CAMERA_KEEP_S = 20.
 
 
 def board_points() -> np.ndarray:
@@ -792,62 +800,123 @@ class Backend:
         }
 
 
-class FixedCamera:
-    """直接读取全局相机的彩色画面；用完须调用 `close`。"""
+class FrameUnavailable(RuntimeError):
+    """全局相机这一轮取不到画面；原因写在异常信息里，给操作者看。"""
 
-    def __init__(self, serial: str) -> None:
-        """打开相机并等自动曝光稳定。
+
+class ServedCamera:
+    """经 8088 相机服务读取全局相机的彩色画面；本程序不打开相机。
+
+    每次取图都让 8088 再保持采集一小段时间（`CAMERA_KEEP_S`）。程序
+    退出后不用归还：期限一到，没有人看预览的相机由 8088 自行释放。
+
+    Attributes:
+        serial: 相机序列号。
+        camera_matrix: 彩色画面的内参矩阵。
+        distortion: 畸变系数。
+        distortion_model: 畸变模型的名字。
+    """
+
+    def __init__(self, base_url: str, serial: str) -> None:
+        """在相机服务里找到这台相机并取第一帧，必要时由服务启动相机。
 
         Args:
+            base_url: 相机服务的地址。
             serial: 相机序列号。
 
         Raises:
-            RuntimeError: 相机打不开（被占用或没有连接）。
+            FrameUnavailable: 相机服务没有运行、不认识这台相机，或
+                相机打不开。
         """
+        self.base_url = base_url.rstrip('/')
         self.serial = serial
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_device(serial)
-        config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 15)
-        profile = self.pipeline.start(config)
-        intrinsics = (
-            profile.get_stream(rs.stream.color)
-            .as_video_stream_profile()
-            .get_intrinsics()
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({})
         )
-        self.camera_matrix = np.array(
-            [
-                [intrinsics.fx, 0., intrinsics.ppx],
-                [0., intrinsics.fy, intrinsics.ppy],
-                [0., 0., 1.],
-            ]
+        cameras = self.get('/api/status').get('cameras', {})
+        self.key = next(
+            (
+                key
+                for key, row in cameras.items()
+                if row.get('camera_serial') == serial
+            ),
+            None,
         )
-        self.distortion = np.array(intrinsics.coeffs, dtype=float)
-        self.distortion_model = str(intrinsics.model)
-        for _ in range(20):
-            self.pipeline.wait_for_frames(4000)
+        if self.key is None:
+            raise FrameUnavailable(
+                f'相机服务里没有序列号为 {serial} 的相机，请检查 '
+                f'{CAMERA_CONFIG_FILE} 后重启相机服务'
+            )
+        self.camera_matrix = np.eye(3)
+        self.distortion = np.zeros(5)
+        self.distortion_model = ''
+        self.frame()
+
+    def get(self, path: str) -> dict:
+        """向相机服务发一次只读请求。
+
+        Args:
+            path: 请求路径，可带查询串。
+
+        Returns:
+            应答的 JSON。
+
+        Raises:
+            FrameUnavailable: 相机服务连不上，或拒绝了请求。
+        """
+        try:
+            with self.opener.open(self.base_url + path, timeout=15) as reply:
+                return json.load(reply)
+        except urllib.error.HTTPError as error:
+            try:
+                reason = json.load(error).get('error')
+            except ValueError:
+                reason = None
+            raise FrameUnavailable(
+                reason or f'相机服务返回 {error.code}'
+            ) from error
+        except (OSError, ValueError) as error:
+            raise FrameUnavailable(
+                f'连不上相机服务 {self.base_url}（{error}）；请先启动它：'
+                './scripts/run_camera_monitor.sh'
+            ) from error
 
     def frame(self) -> dict:
-        """取最新的一帧。
+        """取一帧本次请求之后拍到的无损画面。
 
         Returns:
             含 `bgr`、`K`、`distortion`。
+
+        Raises:
+            FrameUnavailable: 这一轮取不到画面。
         """
-        frames = self.pipeline.wait_for_frames(4000)
-        for _ in range(8):
-            newer = self.pipeline.poll_for_frames()
-            if not newer:
-                break
-            frames = newer
+        query = urllib.parse.urlencode(
+            {'keep_s': CAMERA_KEEP_S, 'format': 'png'}
+        )
+        data = self.get(f'/api/cameras/{self.key}/frame?{query}')
+        intrinsics = data.get('intrinsics')
+        if data.get('camera_serial') != self.serial or not intrinsics:
+            raise FrameUnavailable('相机服务给出的画面不是这台相机直接拍的')
+        image = cv2.imdecode(
+            np.frombuffer(base64.b64decode(data['image_base64']), np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        if image is None:
+            raise FrameUnavailable('相机服务给出的图像无法解码')
+        self.camera_matrix = np.array(
+            [
+                [intrinsics['fx'], 0., intrinsics['cx']],
+                [0., intrinsics['fy'], intrinsics['cy']],
+                [0., 0., 1.],
+            ]
+        )
+        self.distortion = np.array(intrinsics['distortion'], dtype=float)
+        self.distortion_model = intrinsics['distortion_model']
         return {
-            'bgr': np.asanyarray(frames.get_color_frame().get_data()).copy(),
+            'bgr': image,
             'K': self.camera_matrix,
             'distortion': self.distortion,
         }
-
-    def close(self) -> None:
-        """释放相机。"""
-        self.pipeline.stop()
 
 
 def load_previous(root: pathlib.Path) -> Optional[np.ndarray]:
@@ -880,7 +949,7 @@ def change_from(
 def write_result(
     root: pathlib.Path,
     result: dict,
-    camera: FixedCamera,
+    camera: Any,
     session_directory: pathlib.Path,
     arm_ids: List[str],
 ) -> pathlib.Path:
@@ -955,7 +1024,6 @@ def calibrate(
     arm_ids: List[str],
     wanted: int,
     timeout_s: float,
-    keep_camera: Callable[[], None],
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> bool:
@@ -968,7 +1036,6 @@ def calibrate(
         arm_ids: 用哪几台臂的手上相机。
         wanted: 要求的组数。
         timeout_s: 最长采集多久，单位秒。
-        keep_camera: 每轮调用一次，用来向预览服务续借全局相机。
         clock: 计时函数，测试时替换。
         sleep: 等待函数，测试时替换。
 
@@ -979,10 +1046,12 @@ def calibrate(
     last_message = ''
     while clock() - started < timeout_s:
         round_started = clock()
-        keep_camera()
-        recorded, message = session.step(
-            camera.frame(), gather(backend, arm_ids)
-        )
+        try:
+            recorded, message = session.step(
+                camera.frame(), gather(backend, arm_ids)
+            )
+        except FrameUnavailable as error:
+            recorded, message = False, f'全局相机暂时取不到画面：{error}'
         done, missing = session.enough(wanted)
         if recorded:
             LOG.info('%s。%s', message, '已采够' if done else missing)
@@ -1051,8 +1120,13 @@ def verify(
     started = clock()
     last_message = ''
     while clock() - started < timeout_s:
-        frame = camera.frame()
-        sample, message = session.observe(frame, gather(backend, arm_ids))
+        try:
+            frame = camera.frame()
+            sample, message = session.observe(
+                frame, gather(backend, arm_ids)
+            )
+        except FrameUnavailable as error:
+            sample, message = None, f'全局相机暂时取不到画面：{error}'
         if sample is not None:
             return sample_errors(
                 previous, sample, np.asarray(frame['K']),
@@ -1082,6 +1156,11 @@ def main() -> int:
         help='用哪几台臂的手上相机，逗号分隔；缺省为全部',
     )
     parser.add_argument('--backend-url', default=DEFAULT_BACKEND_URL)
+    parser.add_argument(
+        '--camera-url',
+        default=collect.PREVIEW_URL,
+        help='8088 相机服务的地址，全局相机的画面从它那里取',
+    )
     parser.add_argument('--token-file', default=DEFAULT_TOKEN_FILE)
     args = parser.parse_args()
     logging.basicConfig(
@@ -1105,73 +1184,64 @@ def main() -> int:
             'global_camera_'
             + datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
         )
-    borrowed = collect.borrow_preview_camera(serial)
-    borrowed_at = [time.monotonic()]
-
-    def keep_camera() -> None:
-        # 预览服务只借出几十秒，采集期间每隔一段时间续借一次。
-        if borrowed['camera'] and (
-            time.monotonic() - borrowed_at[0] > collect.PREVIEW_HOLD_S / 2
-        ):
-            collect.borrow_preview_camera(serial)
-            borrowed_at[0] = time.monotonic()
-
     backend = Backend(args.backend_url, args.token_file)
     session = Session(root, arm_ids, relation, directory)
-    camera = FixedCamera(serial)
     try:
-        if args.verify:
-            LOG.info('请把标定板平放在机械臂前方、三台相机都能看到的位置')
-            errors = verify(
-                session, camera, backend, arm_ids, previous, args.timeout_s
-            )
-            if errors is None:
-                LOG.error('限时内没有拍到合格的一组')
-                return 1
-            good = (
-                errors[0] <= ACCEPT_REPROJECTION_PX
-                and errors[1] <= ACCEPT_DISAGREEMENT_M
-            )
-            LOG.info(
-                '现有标定与当前实际：画面偏差 %.2f 像素，空间偏差 %.1f 毫米'
-                '——%s',
-                errors[0], errors[1] * 1000,
-                '仍然可用' if good else '已经不准，请重新标定',
-            )
-            return 0 if good else 1
+        camera = ServedCamera(args.camera_url, serial)
+    except FrameUnavailable as error:
+        LOG.error('全局相机不可用：%s', error)
+        return 1
+    LOG.info(
+        '全局相机的画面取自相机服务 %s；采集期间可以在它的页面上看着'
+        '画面摆标定板', args.camera_url,
+    )
+    if args.verify:
+        LOG.info('请把标定板平放在机械臂前方、三台相机都能看到的位置')
+        errors = verify(
+            session, camera, backend, arm_ids, previous, args.timeout_s
+        )
+        if errors is None:
+            LOG.error('限时内没有拍到合格的一组')
+            return 1
+        good = (
+            errors[0] <= ACCEPT_REPROJECTION_PX
+            and errors[1] <= ACCEPT_DISAGREEMENT_M
+        )
         LOG.info(
-            '开始采集，需要 %d 组。请把标定板平放在桌上，每记录一组后挪到'
-            '新的位置', args.samples,
+            '现有标定与当前实际：画面偏差 %.2f 像素，空间偏差 %.1f 毫米'
+            '——%s',
+            errors[0], errors[1] * 1000,
+            '仍然可用' if good else '已经不准，请重新标定',
         )
-        if not calibrate(
-            session, camera, backend, arm_ids, args.samples, args.timeout_s,
-            keep_camera,
-        ):
-            LOG.error(
-                '限时内没有采够（已有 %d 组），未改动标定结果',
-                len(session.samples),
-            )
-            return 1
-        result = solve(session.samples, camera.camera_matrix, camera.distortion)
-        directory.mkdir(parents=True, exist_ok=True)
-        collect.atomic_json(
-            directory / 'result.json',
-            {
-                **result,
-                'base_T_camera': np.asarray(result['base_T_camera']).tolist(),
-            },
+        return 0 if good else 1
+    LOG.info(
+        '开始采集，需要 %d 组。请把标定板平放在桌上，每记录一组后挪到'
+        '新的位置', args.samples,
+    )
+    if not calibrate(
+        session, camera, backend, arm_ids, args.samples, args.timeout_s
+    ):
+        LOG.error(
+            '限时内没有采够（已有 %d 组），未改动标定结果',
+            len(session.samples),
         )
-        report(result, previous)
-        if not result['accepted']:
-            LOG.error('标定未达标，未改动标定结果；数据在 %s', directory)
-            return 1
-        path = write_result(root, result, camera, directory, arm_ids)
-        LOG.info('标定达标，已写入 %s', os.path.relpath(path, root))
-        return 0
-    finally:
-        camera.close()
-        if borrowed['camera']:
-            collect.return_preview_camera(borrowed['camera'])
+        return 1
+    result = solve(session.samples, camera.camera_matrix, camera.distortion)
+    directory.mkdir(parents=True, exist_ok=True)
+    collect.atomic_json(
+        directory / 'result.json',
+        {
+            **result,
+            'base_T_camera': np.asarray(result['base_T_camera']).tolist(),
+        },
+    )
+    report(result, previous)
+    if not result['accepted']:
+        LOG.error('标定未达标，未改动标定结果；数据在 %s', directory)
+        return 1
+    path = write_result(root, result, camera, directory, arm_ids)
+    LOG.info('标定达标，已写入 %s', os.path.relpath(path, root))
+    return 0
 
 
 if __name__ == '__main__':

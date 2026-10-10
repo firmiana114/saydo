@@ -30,6 +30,11 @@ ARM2_CAMERA_KEY = 'd435i_arm2'
 # 把相机让给采集程序的最长时间，单位秒。采集程序结束时会主动归还；
 # 这个上限只是防止它异常退出后预览永远连不上。
 MAX_HOLD_S = 60.
+# 程序每次取画面时最多能让相机再保持采集多久，单位秒。程序每取一次
+# 就续一次；它退出后相机在这段时间内自行释放。
+MAX_KEEP_S = 60.
+# 相机由取画面的请求启动时，最多等它多久出第一帧，单位秒。
+START_TIMEOUT_S = 10.
 
 
 def camera_users(serial):
@@ -72,6 +77,12 @@ class Camera:
         arm: 装在哪台机械臂手上（`arm1`、`arm2`）；全局相机为 None。
         hold_until: 让给采集程序的截止时刻（`time.monotonic()` 的值）；
             在此之前不接受新的预览连接。
+        keep_until: 程序要求保持采集到的时刻（`time.monotonic()` 的
+            值）；在此之前即使没有人看预览也不释放相机。
+        image: 本服务直接采集时最近一帧未压缩的图像（蓝绿红）；共享
+            8089 的画面时为 None。
+        intrinsics: 本服务直接采集时彩色画面的内参与畸变参数；共享
+            8089 的画面时为 None。
     """
 
     def __init__(
@@ -116,6 +127,9 @@ class Camera:
         self.role = 'movable_global' if is_global else 'eye_in_hand'
         self.arm = arm
         self.hold_until = 0.
+        self.keep_until = 0.
+        self.image = None
+        self.intrinsics = None
         # 向 8089 要画面时的路径：1 臂是缺省的臂，不用写编号。
         self.frame_path = '/api/agent/frame' + (
             f'?arm={arm}' if arm not in (None, 'arm1') else ''
@@ -129,7 +143,8 @@ class Camera:
 
         Returns:
             状态、相机身份、帧率和最近一帧的时间等。`held_s` 是还要
-            让给采集程序多少秒，0 表示没有被让出。
+            让给采集程序多少秒，0 表示没有被让出；`kept_s` 是程序
+            要求再保持采集多少秒，0 表示没有程序在用。
         """
         with self.cv:
             return dict(
@@ -138,6 +153,10 @@ class Camera:
                 held_s=round(
                     max(0., self.hold_until - time.monotonic()), 1
                 ),
+                kept_s=round(
+                    max(0., self.keep_until - time.monotonic()), 1
+                ),
+                intrinsics=self.intrinsics,
                 error=self.error,
                 camera=self.name,
                 usb=self.usb,
@@ -202,31 +221,97 @@ class Camera:
                 raise RuntimeError(
                     f'相机已让给采集程序，约 {remaining:.0f} 秒内归还。'
                 )
-            if (
-                self.thread
-                and self.thread.is_alive()
-                and self.stop_event.is_set()
-            ):
-                raise RuntimeError('相机正在释放，请稍后重试。')
             if self.clients >= 4:
                 raise RuntimeError('同时预览上限为 4 个连接。')
+            self.start()
             self.clients += 1
-            if not self.thread or not self.thread.is_alive():
-                self.stop_event = threading.Event()
-                self.epoch += 1
-                self.state, self.error, self.jpeg = 'starting', None, None
-                self.frame_at, self.fps = None, 0.0
-                self.thread = threading.Thread(
-                    target=self.capture,
-                    args=(self.epoch, self.stop_event),
-                    daemon=True,
-                )
-                self.thread.start()
             return self.epoch
 
+    def start(self) -> None:
+        """没有采集线程时启动一个；调用者须持有 `cv`。
+
+        Raises:
+            RuntimeError: 上一次采集还在释放相机。
+        """
+        if self.thread and self.thread.is_alive():
+            if self.stop_event.is_set():
+                raise RuntimeError('相机正在释放，请稍后重试。')
+            return
+        self.stop_event = threading.Event()
+        self.epoch += 1
+        self.state, self.error, self.jpeg = 'starting', None, None
+        self.frame_at, self.fps = None, 0.0
+        self.thread = threading.Thread(
+            target=self.capture,
+            args=(self.epoch, self.stop_event),
+            daemon=True,
+        )
+        self.thread.start()
+
+    def keep(self, seconds: float) -> None:
+        """应程序的要求保持采集一段时间，必要时启动相机。
+
+        为什么需要它：一台相机同一时刻只能被一个进程打开。标定之类的
+        程序如果自己去打开相机，预览就得先让出来，操作者摆放物品时
+        看不到画面。让程序改为向本服务要画面，相机始终由本服务一家
+        打开，预览和程序可以同时用。程序每取一次画面续一次期限；它
+        退出后期限一到，没有人看预览的相机自行释放。
+
+        Args:
+            seconds: 从现在起至少再保持多久，单位秒；超过 `MAX_KEEP_S`
+                时按上限计。
+
+        Raises:
+            RuntimeError: 相机已让给采集程序，或正在释放。
+        """
+        seconds = min(max(0., float(seconds)), MAX_KEEP_S)
+        with self.cv:
+            remaining = self.hold_until - time.monotonic()
+            if remaining > 0:
+                raise RuntimeError(
+                    f'相机已让给采集程序，约 {remaining:.0f} 秒内归还。'
+                )
+            self.start()
+            self.keep_until = max(
+                self.keep_until, time.monotonic() + seconds
+            )
+
+    def keep_expired(self) -> bool:
+        """程序要求的期限已过、又没有人在看预览时为真：该释放相机了。"""
+        with self.cv:
+            return (
+                self.keep_until > 0
+                and self.clients == 0
+                and time.monotonic() >= self.keep_until
+            )
+
     def publish(
-        self, jpeg, captured_at, sequence, metadata, source, width, height
-    ):
+        self,
+        jpeg: bytes,
+        captured_at: float,
+        sequence: int,
+        metadata: dict,
+        source: str,
+        width: int,
+        height: int,
+        image: Optional[object] = None,
+    ) -> None:
+        """发布新的一帧，唤醒等着它的预览连接和取图请求。
+
+        Args:
+            jpeg: 压缩后的图像。
+            captured_at: 拍到这一帧的时刻（`time.time()` 的值）。
+            sequence: 帧序号。
+            metadata: 随取图请求一并给出的附加信息。
+            source: 画面来源，`device`（本服务直接采集）或 `tracker`
+                （转接 8089）。
+            width: 图像宽度，单位像素。
+            height: 图像高度，单位像素。
+            image: 未压缩的图像；转接 8089 的画面没有，为 None。
+
+        Raises:
+            RuntimeError: 图像不是 JPEG，或拍摄时刻距今超过一秒。
+        """
         if (
             not jpeg.startswith(b'\xff\xd8')
             or not 0 <= time.time() - captured_at <= 1
@@ -236,17 +321,46 @@ class Camera:
             self.jpeg, self.frame_at, self.sequence = (
                 jpeg, captured_at, sequence
             )
+            self.image = image
             self.frame_metadata = metadata
             self.source, self.width, self.height = source, width, height
             self.state = 'streaming'
             self.cv.notify_all()
 
-    def fresh_frame(self):
-        """Wait for a frame captured after this observation request, without starting a device."""
+    def fresh_frame(
+        self, lossless: bool = False, start_timeout_s: float = 0.
+    ) -> dict:
+        """等一帧在本次请求之后拍到的画面；本身不启动相机。
+
+        Args:
+            lossless: 为真时给出无损的 PNG 图像，供标定这类对像素位置
+                敏感的用途；否则给出预览用的 JPEG。
+            start_timeout_s: 相机正在启动时最多等它多久，单位秒；0
+                表示不等，没有画面就立即报错。
+
+        Returns:
+            带相机身份、拍摄时刻、内参和图像（base64）的字典。
+
+        Raises:
+            RuntimeError: 相机没有在采集、没有等到新的一帧，或要求
+                无损图像而这一路是转接 8089 的画面。
+        """
         after = time.time()
         with self.cv:
+            if start_timeout_s:
+                self.cv.wait_for(
+                    lambda: self.state != 'starting', timeout=start_timeout_s
+                )
             if self.state != 'streaming':
-                raise RuntimeError('该相机没有活动预览。')
+                raise RuntimeError(
+                    '相机不可用：' + self.error
+                    if self.error
+                    else '该相机没有活动预览。'
+                )
+            if lossless and self.image is None:
+                raise RuntimeError(
+                    '这一路是转接 8089 的画面，没有无损图像。'
+                )
             self.cv.wait_for(
                 lambda: (
                     self.frame_at is not None and self.frame_at >= after
@@ -260,7 +374,8 @@ class Camera:
                 or self.frame_at < after
             ):
                 raise RuntimeError('没有取得请求之后的新鲜相机帧。')
-            return {
+            image, encoded = self.image, self.jpeg
+            frame = {
                 **self.frame_metadata,
                 'camera_role': self.role,
                 'camera_serial': self.serial,
@@ -268,19 +383,36 @@ class Camera:
                 'captured_at': self.frame_at,
                 'sequence': self.sequence,
                 'image_size': [self.width, self.height],
+                'intrinsics': self.intrinsics,
                 'mime_type': 'image/jpeg',
-                'image_base64': base64.b64encode(self.jpeg).decode(),
                 'observation_id': uuid.uuid4().hex,
                 'timestamp_basis': 'host_frame_received_unix_seconds',
                 'capture_source': 'camera_monitor',
             }
+        if lossless:
+            import cv2
+            # 压缩级别取 1：编码只要十几毫秒，图像仍是无损的。
+            ok, png = cv2.imencode(
+                '.png', image, [cv2.IMWRITE_PNG_COMPRESSION, 1]
+            )
+            if not ok:
+                raise RuntimeError('图像编码失败。')
+            frame['mime_type'], encoded = 'image/png', png.tobytes()
+        frame['image_base64'] = base64.b64encode(encoded).decode()
+        return frame
 
-    def unsubscribe(self, epoch):
+    def unsubscribe(self, epoch: int) -> None:
+        """注销一个预览连接；没有人看也没有程序在用时释放相机。
+
+        Args:
+            epoch: `subscribe` 返回的代次；已不是当前代次时不做任何事。
+        """
         with self.cv:
             if epoch != self.epoch:
                 return
             self.clients = max(0, self.clients - 1)
-            if self.clients == 0:
+            # 程序还在用这台相机时，最后一个观看者离开也不释放。
+            if self.clients == 0 and time.monotonic() >= self.keep_until:
                 self.stop_event.set()
                 self.cv.notify_all()
 
@@ -376,11 +508,24 @@ class Camera:
                 )
             ):
                 raise RuntimeError('实际打开的相机身份不匹配。')
+            calibration = (
+                profile.get_stream(rs.stream.color)
+                .as_video_stream_profile()
+                .get_intrinsics()
+            )
             with self.cv:
                 self.name = profile.get_device().get_info(rs.camera_info.name)
                 self.usb = profile.get_device().get_info(
                     rs.camera_info.usb_type_descriptor
                 )
+                self.intrinsics = {
+                    'fx': float(calibration.fx),
+                    'fy': float(calibration.fy),
+                    'cx': float(calibration.ppx),
+                    'cy': float(calibration.ppy),
+                    'distortion_model': str(calibration.model),
+                    'distortion': [float(v) for v in calibration.coeffs],
+                }
             if self.camera_id == 'd405':
                 for _ in range(15):
                     if stop.is_set():
@@ -395,10 +540,11 @@ class Camera:
                 if not color:
                     continue
                 captured_at = time.time()
+                # 复制一份：相机驱动会回收这一帧的内存，而无损图像要
+                # 留到有程序来取。
+                image = np.asanyarray(color.get_data()).copy()
                 ok, encoded = cv2.imencode(
-                    '.jpg',
-                    np.asanyarray(color.get_data()),
-                    [cv2.IMWRITE_JPEG_QUALITY, 82],
+                    '.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 82]
                 )
                 if not ok:
                     raise RuntimeError('图像编码失败。')
@@ -426,7 +572,10 @@ class Camera:
                     'device',
                     color.get_width(),
                     color.get_height(),
+                    image,
                 )
+                if self.keep_expired():
+                    break
         except Exception as exc:
             LOG.warning('Camera stream stopped: %s', exc)
             with self.cv:
@@ -445,6 +594,7 @@ class Camera:
                 if self.state != 'error':
                     self.state = 'idle'
                 self.jpeg, self.frame_at, self.fps = None, None, 0.0
+                self.image, self.keep_until = None, 0.
                 self.cv.notify_all()
 
     def capture_tracker(self, first: dict, stop: threading.Event) -> None:
@@ -491,7 +641,7 @@ class Camera:
                 with self.cv:
                     self.fps = count / (now - last)
                 count, last = 0, now
-            if stop.wait(1 / self.target_fps):
+            if self.keep_expired() or stop.wait(1 / self.target_fps):
                 break
             data = self.tracker.request(self.frame_path)
 
@@ -535,8 +685,53 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):
-        path = urllib.parse.urlsplit(self.path).path
+    def send_frame(self, camera: Camera, query: dict) -> None:
+        """回应取一帧画面的请求。
+
+        不带参数时只在已有预览的情况下给出 JPEG，不启动相机。带
+        `keep_s` 时必要时启动相机，并让它至少再保持采集这么多秒；
+        带 `format=png` 时给出无损图像。
+
+        Args:
+            camera: 目标相机。
+            query: 地址里的查询参数。
+        """
+        try:
+            keep_s = float(query.get('keep_s', ['0'])[0])
+            image_format = query.get('format', ['jpeg'])[0]
+            if not 0 <= keep_s <= MAX_KEEP_S:
+                raise ValueError(f'keep_s 必须在 0 到 {MAX_KEEP_S:.0f} 之间')
+            if image_format not in ('jpeg', 'png'):
+                raise ValueError('format 只能是 jpeg 或 png')
+        except ValueError as exc:
+            return self.send_body(
+                400, json.dumps({'error': str(exc)}).encode()
+            )
+        if keep_s and self.headers.get('Sec-Fetch-Site') == 'cross-site':
+            return self.send_body(
+                403, b'{"error":"Cross-site camera start denied"}'
+            )
+        try:
+            if keep_s:
+                if camera.status()['state'] not in ('starting', 'streaming'):
+                    LOG.info(
+                        '%s 应程序的取图请求启动采集', camera.camera_id
+                    )
+                camera.keep(keep_s)
+            frame = camera.fresh_frame(
+                lossless=image_format == 'png',
+                start_timeout_s=START_TIMEOUT_S if keep_s else 0.,
+            )
+        except RuntimeError as exc:
+            return self.send_body(
+                409, json.dumps({'error': str(exc)}).encode()
+            )
+        self.send_body(200, json.dumps(frame).encode())
+
+    def do_GET(self) -> None:
+        """处理页面、状态、预览流、截图和取图请求；不控制机械臂。"""
+        url = urllib.parse.urlsplit(self.path)
+        path = url.path
         if path == '/':
             return self.send_body(
                 200,
@@ -573,14 +768,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if operation == 'status':
             return self.send_body(200, json.dumps(camera.status()).encode())
         if operation == 'frame':
-            try:
-                return self.send_body(
-                    200, json.dumps(camera.fresh_frame()).encode()
-                )
-            except RuntimeError as exc:
-                return self.send_body(
-                    409, json.dumps({'error': str(exc)}).encode()
-                )
+            return self.send_frame(
+                camera, urllib.parse.parse_qs(url.query)
+            )
         if operation == 'snapshot':
             with camera.cv:
                 jpeg = (
