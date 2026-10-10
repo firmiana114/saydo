@@ -12,6 +12,7 @@ from saydo.manipulation import grasp_control
 from saydo.geometry import grasp_geometry
 from tests.manipulation import test_grasp
 from tests.manipulation import test_object_motion
+from tests.robot import fake_kinematics
 
 
 class ObjectControlTests(unittest.TestCase):
@@ -116,6 +117,7 @@ class ObjectControlTests(unittest.TestCase):
 
         self.robot.move_linear.side_effect = linear
         self.robot.move_joints.side_effect = joints
+        fake_kinematics.emulate_move_joints_through(self.robot)
         self.robot.move_gripper.side_effect = open_gripper
 
         def context(held, writes=False):

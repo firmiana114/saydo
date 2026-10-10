@@ -25,10 +25,81 @@ import dataclasses
 from typing import Optional, Sequence
 
 import numpy as np
-from scipy import interpolate
 
 # 算速度、加速度峰值时沿时间取多少个点。
 PROFILE_SAMPLES = 400
+
+
+class NaturalCubicSpline:
+    """过全部给定点的三次样条，两端的二阶变化率为零。
+
+    只用 numpy 实现：`grasp_robot` 会被好几套 Python 环境导入，不是
+    每一套都装了 scipy。
+    """
+
+    def __init__(self, knots: np.ndarray, values: np.ndarray) -> None:
+        """由节点和各节点处的值建立样条。
+
+        Args:
+            knots: 节点位置，长度 M（M ≥ 2），严格递增。
+            values: 各节点处的值，M×K。
+        """
+        self.knots = np.asarray(knots, dtype=float)
+        self.values = np.asarray(values, dtype=float)
+        count = len(self.knots)
+        width = np.diff(self.knots)
+        # 解出各节点处的二阶变化率：相邻两段在节点处一阶变化率相等。
+        matrix = np.zeros((count, count))
+        right = np.zeros_like(self.values)
+        matrix[0, 0] = matrix[-1, -1] = 1.
+        for i in range(1, count - 1):
+            matrix[i, i - 1:i + 2] = (
+                width[i - 1], 2 * (width[i - 1] + width[i]), width[i]
+            )
+            right[i] = 6 * (
+                (self.values[i + 1] - self.values[i]) / width[i]
+                - (self.values[i] - self.values[i - 1]) / width[i - 1]
+            )
+        self.second = np.linalg.solve(matrix, right)
+
+    def __call__(self, position: np.ndarray, order: int = 0) -> np.ndarray:
+        """求样条在给定位置的值或变化率。
+
+        Args:
+            position: 位置，标量或一维数组；超出节点范围的按端点算。
+            order: 0 求值，1 求一阶变化率，2 求二阶变化率。
+
+        Returns:
+            标量输入返回长度 K 的数组，数组输入返回 N×K。
+        """
+        x = np.clip(
+            np.atleast_1d(np.asarray(position, dtype=float)),
+            self.knots[0], self.knots[-1],
+        )
+        index = np.clip(
+            np.searchsorted(self.knots, x, side='right') - 1,
+            0, len(self.knots) - 2,
+        )
+        width = (self.knots[index + 1] - self.knots[index])[:, None]
+        left = (self.knots[index + 1] - x)[:, None]
+        right = (x - self.knots[index])[:, None]
+        y0, y1 = self.values[index], self.values[index + 1]
+        m0, m1 = self.second[index], self.second[index + 1]
+        if order == 0:
+            result = (
+                (m0 * left ** 3 + m1 * right ** 3) / (6 * width)
+                + (y0 / width - m0 * width / 6) * left
+                + (y1 / width - m1 * width / 6) * right
+            )
+        elif order == 1:
+            result = (
+                (m1 * right ** 2 - m0 * left ** 2) / (2 * width)
+                + (y1 - y0) / width
+                - (m1 - m0) * width / 6
+            )
+        else:
+            result = (m0 * left + m1 * right) / width
+        return result[0] if np.ndim(position) == 0 else result
 
 
 def progress(fraction: np.ndarray) -> np.ndarray:
@@ -65,7 +136,7 @@ class JointTrajectory:
     duration_s: float
     peak_speed_deg_s: float
     peak_acceleration_deg_s2: float
-    spline: interpolate.CubicSpline
+    spline: NaturalCubicSpline
 
     def position_deg(self, time_s: float) -> np.ndarray:
         """返回某一时刻的关节角。
@@ -148,7 +219,7 @@ def plan_through(
             or not (np.diff(position) > 0).all()
         ):
             raise ValueError('knots 须与路点一一对应，从 0 严格递增到 1')
-    spline = interpolate.CubicSpline(position, points, bc_type='natural')
+    spline = NaturalCubicSpline(position, points)
     tau = np.linspace(0., 1., PROFILE_SAMPLES + 1)
     first, second = _progress_rates(tau)
     along = progress(tau)
@@ -170,3 +241,36 @@ def plan_through(
         peak_acceleration_deg_s2=float(unit_acceleration / duration_s ** 2),
         spline=spline,
     )
+
+
+def deviation_from_polyline(
+    joint_deg: Sequence[Sequence[float]],
+    waypoints_deg: Sequence[Sequence[float]],
+) -> np.ndarray:
+    """算出每个姿态离一条关节角折线有多远。
+
+    折线是依次连接各路点、相邻两点之间走关节角直线的路径，也就是碰撞
+    检查所查的路径。
+
+    Args:
+        joint_deg: 要比较的关节角，N×7，度。
+        waypoints_deg: 计划的路点，M×7（M ≥ 2），第一个是起点，度。
+
+    Returns:
+        长度 N 的数组：每个姿态到折线上最近一点，偏差最大的那个
+        关节相差多少度。
+    """
+    actual = np.asarray(joint_deg, dtype=float)
+    path = np.asarray(waypoints_deg, dtype=float)
+    best = np.full(len(actual), np.inf)
+    for start, end in zip(path[:-1], path[1:]):
+        step = end - start
+        length_squared = float(step @ step)
+        fraction = (
+            np.clip((actual - start) @ step / length_squared, 0., 1.)
+            if length_squared > 0
+            else np.zeros(len(actual))
+        )
+        residual = np.abs(actual - (start + fraction[:, None] * step))
+        best = np.minimum(best, residual.max(axis=1))
+    return best

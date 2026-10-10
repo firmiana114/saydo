@@ -117,35 +117,40 @@ class GlobalCameraTestCase(unittest.TestCase):
             )
         )
 
-    def global_frame(self, base_T_board=None):
+    def global_frame(self, base_T_board=None, square_m=.03):
         image = (
             np.full((720, 1280, 3), board_render.BACKGROUND, np.uint8)
             if base_T_board is None
             else board_render.render(
-                GLOBAL_K, 1280, 720, np.linalg.inv(GLOBAL_POSE) @ base_T_board
+                GLOBAL_K, 1280, 720,
+                np.linalg.inv(GLOBAL_POSE) @ base_T_board, square_m=square_m,
             )
         )
         return {'bgr': image, 'K': GLOBAL_K, 'distortion': np.zeros(5)}
 
     def hand_frame(
-        self, base_T_board, pose=HAND_POSE, joint_deg=None, depth_bias_m=0.
+        self, base_T_board, pose=HAND_POSE, joint_deg=None, depth_bias_m=0.,
+        square_m=.03,
     ):
         """手上相机的一帧；`depth_bias_m` 模拟深度读数整体偏近或偏远。"""
         camera_T_board = np.linalg.inv(pose) @ base_T_board
         depth = board_render.plane_depth(HAND_K, 640, 360, camera_T_board)
         return {
-            'bgr': board_render.render(HAND_K, 640, 360, camera_T_board),
+            'bgr': board_render.render(
+                HAND_K, 640, 360, camera_T_board, square_m=square_m
+            ),
             'depth_m': depth + np.float32(depth_bias_m),
             'K': HAND_K.tolist(),
             'joint_deg': joint_deg or OBSERVATION_DEG,
         }
 
-    def show(self, placement, times=2, session=None):
+    def show(self, placement, times=2, session=None, square_m=.03):
         """让标定板在某处停住若干轮，返回每一轮的结果。"""
         board = board_on_table(*placement)
         return [
             (session or self.session).step(
-                self.global_frame(board), {'arm1': self.hand_frame(board)}
+                self.global_frame(board, square_m),
+                {'arm1': self.hand_frame(board, square_m=square_m)},
             )
             for _ in range(times)
         ]
@@ -271,6 +276,73 @@ class SolveTests(GlobalCameraTestCase):
         self.assertLess(result['disagreement_rms_m'], .001)
         self.assertGreater(result['spread_m'][1], .12)
 
+    def test_a_board_printed_smaller_than_nominal_still_calibrates(self):
+        # 真实情况（2026-10-10）：标定板打印时缩小了 2.7%，方格实际边长
+        # 29.2 毫米而不是标称的 30 毫米。求解和验收都不该依赖标称边长。
+        # 这里用 29 毫米：合成图案的分辨率下它正好是整数个像素。
+        for placement in PLACEMENTS:
+            self.assertTrue(
+                self.show(placement, square_m=.029)[-1][0], placement
+            )
+        result = global_camera.solve(
+            self.session.samples, GLOBAL_K, np.zeros(5)
+        )
+        self.assertTrue(result['accepted'], result['problems'])
+        self.assert_pose_close(result['base_T_camera'])
+        self.assertLess(result['disagreement_rms_m'], .001)
+        self.assertAlmostEqual(result['measured_square_m'], .029, delta=.0001)
+        with self.assertLogs(global_camera.LOG, 'INFO') as logs:
+            global_camera.report(result, None)
+        text = '\n'.join(logs.output)
+        self.assertIn('方格边长 29.0', text)
+        self.assertRegex(text, r'方格比标称值小 3\.\d%')
+        self.assertIn('手眼标定', text)
+
+    def test_nominal_board_raises_no_size_warning(self):
+        self.record_all()
+        result = global_camera.solve(
+            self.session.samples, GLOBAL_K, np.zeros(5)
+        )
+        self.assertAlmostEqual(result['measured_square_m'], .03, delta=.0001)
+        with self.assertLogs(global_camera.LOG, 'INFO') as logs:
+            global_camera.report(result, None)
+        self.assertNotIn('标称值小', '\n'.join(logs.output))
+
+    def test_space_error_is_the_distance_from_the_sight_line(self):
+        self.record_all()
+        sample = self.session.samples[0]
+        moved = GLOBAL_POSE.copy()
+        # 把相机的位置沿它自己的视线挪 20 毫米：角点仍大致在视线上，
+        # 偏差很小；横着挪 20 毫米，偏差就接近 20 毫米。
+        moved[:3, 3] += .02 * GLOBAL_POSE[:3, 2]
+        along = global_camera.sample_errors(
+            moved, sample, GLOBAL_K, np.zeros(5)
+        )[1]
+        moved = GLOBAL_POSE.copy()
+        moved[:3, 3] += .02 * GLOBAL_POSE[:3, 0]
+        across = global_camera.sample_errors(
+            moved, sample, GLOBAL_K, np.zeros(5)
+        )[1]
+        self.assertLess(along, .004)
+        self.assertAlmostEqual(across, .02, delta=.002)
+
+    def test_saved_groups_can_be_solved_again(self):
+        self.session = global_camera.Session(
+            self.root, ['arm1'], None, self.root / 'work/session'
+        )
+        self.record_all()
+        loaded = global_camera.load_samples(self.root / 'work/session')
+        self.assertEqual(len(loaded), 8)
+        again = global_camera.solve(loaded, GLOBAL_K, np.zeros(5))
+        first = global_camera.solve(
+            self.session.samples, GLOBAL_K, np.zeros(5)
+        )
+        np.testing.assert_allclose(
+            again['base_T_camera'], first['base_T_camera'], atol=1e-9
+        )
+        with self.assertRaisesRegex(ValueError, '没有采集数据'):
+            global_camera.load_samples(self.root / 'work/nothing')
+
     def test_one_bad_group_is_dropped(self):
         self.record_all()
         bad = self.session.samples[2]
@@ -372,11 +444,9 @@ class TwoArmTests(GlobalCameraTestCase):
         self.assertEqual(session.samples, [])
 
     def test_cameras_are_used_the_way_their_correction_was_fitted(self):
-        # 真实情况（2026-10-10）：两台手上相机的深度读数都偏近，相机校正
-        # 里各有十来毫米的平移专门补偿它。角点必须按深度读数来量，套上
-        # 校正后才是对的；若按标定板尺寸从彩色图反推（本身不偏）再套
-        # 校正，两台臂会各自沿视线多推出十几毫米，从相对的两侧看过去
-        # 就对不上。
+        # 相机校正是按“彩色像素加深度读数”量出的点拟合的。这里假设
+        # 两台手上相机的深度读数各有一个固定的偏差，校正里的平移正好
+        # 补偿它：角点按深度读数来量、再套校正，两台臂应当对得上。
         bias = {'arm1': -.010, 'arm2': -.014}
         self.write_arm('arm1', HAND_POSE, shift_m=(0., 0., .010))
         self.write_arm(
@@ -718,6 +788,7 @@ class ResultFileTests(GlobalCameraTestCase):
             'reprojection_rms_px': .21,
             'disagreement_rms_m': .0011,
             'spread_m': [.3, .2],
+            'measured_square_m': .03,
         }
         with self.assertLogs(global_camera.LOG, 'INFO') as logs:
             global_camera.LOG.info('开始写入')

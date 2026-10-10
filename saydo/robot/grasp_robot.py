@@ -1,12 +1,18 @@
 """Narrow RealMan JSON transport. Motion requires an explicitly enabled client."""
 
 import json
+import logging
 import select
 import socket
+import threading
 import time
 from typing import Callable, Optional, Sequence
 
 import numpy as np
+
+from saydo.robot import joint_trajectory
+
+LOG = logging.getLogger(__name__)
 
 
 READS = {
@@ -31,6 +37,19 @@ STREAM_START_TOLERANCE_DEG = .5
 MAX_STREAM_STEP_DEG = 2.
 # 角度透传：两帧之间最多允许隔多久，单位秒。超过说明本机卡顿。
 MAX_STREAM_GAP_S = .05
+# 角度透传：监视线程多久检查一次，单位秒。
+STREAM_MONITOR_INTERVAL_S = .1
+# 连贯关节运动：速度百分比换算成关节转速、加速度上限的系数，以及两者
+# 的封顶值。封顶值是 2026-10-10 在 1 臂上实测过的（每秒 40 度、每二次
+# 方秒 120 度，对应 25%）；更高的还没有测过，所以超过 25% 的速度设置
+# 目前不会让这种运动更快。
+THROUGH_SPEED_DEG_S_PER_PERCENT = 1.6
+THROUGH_ACCELERATION_DEG_S2_PER_PERCENT = 4.8
+THROUGH_MAX_SPEED_DEG_S = 40.
+THROUGH_MAX_ACCELERATION_DEG_S2 = 120.
+# 连贯关节运动：平滑轨迹最多允许偏离“逐点之间走关节角直线”多少度。
+# 碰撞检查查的是后者；路点太稀时平滑曲线会鼓出去，超过就不走这条路。
+THROUGH_MAX_PATH_DEVIATION_DEG = .5
 
 # 夹爪经末端 RM Plus 接口通信时，控制器应报告的模式值（即波特率）。
 # 报告 0 表示该接口未启用，此时读不到夹爪状态，也无法下发开合指令。
@@ -455,7 +474,9 @@ class RobotClient:
           就停止发送并报错。
         - 取消标志置位、`watchdog` 报错，或实际关节角落后指令超过
           `max_lag_deg` 时，不是立刻停发，而是沿着原轨迹在 `brake_s`
-          内减速到停，然后报错。
+          内减速到停，然后报错。`watchdog` 和读取实际关节角都在另一个
+          线程里做：它们要查询控制器，每次几毫秒到十几毫秒，放在发送
+          循环里会打乱节拍。
         - 两帧之间的间隔超过 `MAX_STREAM_GAP_S`（本机卡顿）时停止
           发送并报错；机械臂停在最后收到的那一帧。
 
@@ -467,15 +488,15 @@ class RobotClient:
                 算起的秒数，返回七个关节角（度）。
             duration_s: 轨迹的总时间，秒。
             cancelled: 取消标志（`threading.Event`）。
-            watchdog: 发送期间每 0.1 秒调用一次的检查函数；它抛出
-                异常时减速停下并把该异常传出。
+            watchdog: 发送期间约每 0.1 秒在另一个线程里调用一次的
+                检查函数；它抛出异常时减速停下并把该异常传出。
             period_s: 发送间隔，秒。
             follow: 控制器的跟随方式：True 高跟随（要求间隔不超过
                 10 毫秒且轨迹平滑），False 低跟随。
             hold_s: 走到终点后继续发送终点多久，秒。
             brake_s: 中途需要停下时，用多长时间减速到停，秒。
             actual_joint_deg: 返回最近一次实测关节角（度）的函数，
-                没有读数时返回 None；不给就不检查是否跟上。
+                没有读数时返回 None；不给时向控制器只读查询。
             max_lag_deg: 实测关节角与当前指令最多允许相差多少度。
             record_frames: 是否把发出的每一帧连同时刻（`clock` 的读数）
                 记在运动记录里。
@@ -565,84 +586,126 @@ class RobotClient:
         × 速率”累加：正常时速率为 1；需要停下时速率在 `brake_s` 内
         线性降到 0，于是机械臂沿原轨迹减速，而不是急停在半路。
         """
+        if actual_joint_deg is None:
+
+            def actual_joint_deg() -> Sequence[float]:
+                state = self.query('get_current_arm_state')['arm_state']
+                return [value / 1000 for value in state['joint']]
+
+        # 监视线程与发送循环之间只通过这个字典交换：最新的指令、
+        # 监视发现的第一个问题。
+        shared = {
+            'command': np.asarray(position_deg(0.), dtype=float),
+            'problem': None,
+        }
+        finished = threading.Event()
+
+        def monitor() -> None:
+            while not finished.wait(STREAM_MONITOR_INTERVAL_S):
+                try:
+                    watchdog()
+                    actual = actual_joint_deg()
+                    if actual is None:
+                        continue
+                    lag_deg = float(
+                        np.abs(np.asarray(actual) - shared['command']).max()
+                    )
+                    if lag_deg > max_lag_deg:
+                        raise RuntimeError(
+                            f'机械臂没有跟上指令（相差 {lag_deg:.1f} 度）'
+                        )
+                except Exception as error:
+                    shared['problem'] = error
+                    return
+
+        thread = threading.Thread(target=monitor, daemon=True)
         with socket.create_connection(self.address, timeout=2) as connection:
             connection.settimeout(.2)
-            began = last = clock()
-            along_s, rate, sent = 0., 1., 0
-            previous = np.asarray(position_deg(0.), dtype=float)
-            stopping: Optional[Exception] = None
-            last_check = began
-            finished_at: Optional[float] = None
-            while True:
-                now = clock()
-                gap_s, last = now - last, now
-                record['max_gap_s'] = max(record['max_gap_s'], gap_s)
-                if gap_s > MAX_STREAM_GAP_S:
-                    raise RuntimeError(
-                        f'两帧之间隔了 {gap_s * 1000:.0f} 毫秒，超过 '
-                        f'{MAX_STREAM_GAP_S * 1000:.0f} 毫秒；已停止发送'
-                    )
-                if stopping is None:
-                    try:
-                        if cancelled.is_set():
-                            raise RuntimeError('操作员取消抓取')
-                        if now - last_check >= .1:
-                            last_check = now
-                            watchdog()
-                            actual = (
-                                actual_joint_deg()
-                                if actual_joint_deg is not None
-                                else None
-                            )
-                            if actual is not None:
-                                lag_deg = float(
-                                    np.abs(np.asarray(actual) - previous).max()
-                                )
-                                if lag_deg > max_lag_deg:
-                                    raise RuntimeError(
-                                        f'机械臂没有跟上指令（相差 '
-                                        f'{lag_deg:.1f} 度）'
-                                    )
-                    except Exception as error:
-                        stopping = error
-                if stopping is not None:
-                    rate = max(0., rate - gap_s / brake_s)
-                along_s += gap_s * rate
-                target = np.asarray(position_deg(along_s), dtype=float)
-                step_deg = float(np.abs(target - previous).max())
-                if not step_deg <= MAX_STREAM_STEP_DEG:
-                    raise RuntimeError(
-                        f'相邻两帧关节变化 {step_deg:.2f} 度，超过 '
-                        f'{MAX_STREAM_STEP_DEG:g} 度；已停止发送'
-                    )
-                joint_raw = np.rint(target * 1000).astype(int).tolist()
-                connection.sendall(
-                    (
-                        json.dumps(
-                            {
-                                'command': 'movej_canfd',
-                                'joint': joint_raw,
-                                'follow': follow,
-                                'expand': 0,
-                            }
-                        )
-                        + '\r\n'
-                    ).encode()
+            thread.start()
+            try:
+                self._stream_frames(
+                    connection, position_deg, duration_s, cancelled,
+                    period_s, follow, hold_s, brake_s, record, clock, sleep,
+                    shared,
                 )
-                previous, sent = target, sent + 1
-                record['frames_sent'] = sent
-                if 'frames' in record:
-                    record['frames'].append([now, *joint_raw])
-                self._drain_replies(connection, record, now - began)
-                if stopping is not None and rate == 0:
-                    raise stopping
-                if along_s >= duration_s:
-                    finished_at = now if finished_at is None else finished_at
-                    if now - finished_at >= hold_s:
-                        return
-                remaining = began + sent * period_s - clock()
-                if remaining > 0:
-                    sleep(remaining)
+            finally:
+                finished.set()
+                thread.join(2)
+
+    def _stream_frames(
+        self,
+        connection: object,
+        position_deg: Callable[[float], Sequence[float]],
+        duration_s: float,
+        cancelled: object,
+        period_s: float,
+        follow: bool,
+        hold_s: float,
+        brake_s: float,
+        record: dict,
+        clock: Callable[[], float],
+        sleep: Callable[[float], None],
+        shared: dict,
+    ) -> None:
+        """逐帧发送；`shared` 用来与监视线程交换最新指令和发现的问题。"""
+        began = last = clock()
+        along_s, rate, sent = 0., 1., 0
+        previous = shared['command']
+        stopping: Optional[Exception] = None
+        finished_at: Optional[float] = None
+        while True:
+            now = clock()
+            gap_s, last = now - last, now
+            record['max_gap_s'] = max(record['max_gap_s'], gap_s)
+            if gap_s > MAX_STREAM_GAP_S:
+                raise RuntimeError(
+                    f'两帧之间隔了 {gap_s * 1000:.0f} 毫秒，超过 '
+                    f'{MAX_STREAM_GAP_S * 1000:.0f} 毫秒；已停止发送'
+                )
+            if stopping is None:
+                if cancelled.is_set():
+                    stopping = RuntimeError('操作员取消抓取')
+                elif shared['problem'] is not None:
+                    stopping = shared['problem']
+            if stopping is not None:
+                rate = max(0., rate - gap_s / brake_s)
+            along_s += gap_s * rate
+            target = np.asarray(position_deg(along_s), dtype=float)
+            step_deg = float(np.abs(target - previous).max())
+            if not step_deg <= MAX_STREAM_STEP_DEG:
+                raise RuntimeError(
+                    f'相邻两帧关节变化 {step_deg:.2f} 度，超过 '
+                    f'{MAX_STREAM_STEP_DEG:g} 度；已停止发送'
+                )
+            joint_raw = np.rint(target * 1000).astype(int).tolist()
+            connection.sendall(
+                (
+                    json.dumps(
+                        {
+                            'command': 'movej_canfd',
+                            'joint': joint_raw,
+                            'follow': follow,
+                            'expand': 0,
+                        }
+                    )
+                    + '\r\n'
+                ).encode()
+            )
+            previous, sent = target, sent + 1
+            shared['command'] = target
+            record['frames_sent'] = sent
+            if 'frames' in record:
+                record['frames'].append([now, *joint_raw])
+            self._drain_replies(connection, record, now - began)
+            if stopping is not None and rate == 0:
+                raise stopping
+            if along_s >= duration_s:
+                finished_at = now if finished_at is None else finished_at
+                if now - finished_at >= hold_s:
+                    return
+            remaining = began + sent * period_s - clock()
+            if remaining > 0:
+                sleep(remaining)
 
     @staticmethod
     def _drain_replies(
@@ -667,6 +730,91 @@ class RobotClient:
                 'elapsed_s': elapsed_s,
                 'raw': chunk.decode('utf-8', errors='replace')[:2048],
             }
+        )
+
+    def move_joints_through(
+        self,
+        targets: list,
+        speed: int,
+        cancelled: object,
+        watchdog: Callable[[], None],
+    ) -> None:
+        """让机械臂连贯地依次经过一串关节角目标：会发送运动指令。
+
+        用于沿直线密集取样得到的关节解：把当前关节角和这些目标连成
+        一条平滑轨迹（`joint_trajectory.plan_through`），从静止平滑
+        加速、再平滑减速到最后一个目标，中途不停；然后用高跟随的角度
+        透传（`stream_joints`）让控制器照着走。逐个发 `movej` 时每个
+        目标都会停一下。
+
+        平滑轨迹与“逐点之间走关节角直线”相差超过
+        `THROUGH_MAX_PATH_DEVIATION_DEG` 时（目标太稀），改为逐个发
+        `movej`：碰撞检查查的是后一种路径。
+
+        Args:
+            targets: 关节角目标序列，每个 7 个整数（0.001 度），至少
+                一个。
+            speed: 速度百分比，1～100；换算成关节转速和加速度上限，
+                超过 25% 的部分目前不再加快（见模块开头的常量）。
+            cancelled: 取消标志（`threading.Event`）；置位后沿原轨迹
+                减速停下并报错。
+            watchdog: 运动期间在另一个线程里定期调用的检查函数。
+
+        Raises:
+            ValueError: 没有启用运动、参数无效，或机械臂报错。
+            RuntimeError: 操作员取消、机械臂没有跟上、控制器断开等。
+        """
+        if (
+            not self.writes
+            or not targets
+            or any(
+                len(joints) != 7 or not all(type(v) is int for v in joints)
+                for joints in targets
+            )
+            or not 1 <= speed <= 100
+        ):
+            raise ValueError('连贯关节运动未启用或参数无效')
+        state = self.query('get_current_arm_state')['arm_state']
+        waypoints_deg = np.vstack(
+            [np.asarray(state['joint'], dtype=float), np.asarray(targets)]
+        ) / 1000
+        moved = np.abs(np.diff(waypoints_deg, axis=0)).max(axis=1) > 1e-6
+        waypoints_deg = waypoints_deg[np.concatenate([[True], moved])]
+        if len(waypoints_deg) < 2:
+            return
+        trajectory = joint_trajectory.plan_through(
+            waypoints_deg,
+            min(
+                THROUGH_MAX_SPEED_DEG_S,
+                speed * THROUGH_SPEED_DEG_S_PER_PERCENT,
+            ),
+            min(
+                THROUGH_MAX_ACCELERATION_DEG_S2,
+                speed * THROUGH_ACCELERATION_DEG_S2_PER_PERCENT,
+            ),
+        )
+        deviation_deg = float(
+            joint_trajectory.deviation_from_polyline(
+                trajectory.sample(.02), waypoints_deg
+            ).max()
+        )
+        if deviation_deg > THROUGH_MAX_PATH_DEVIATION_DEG:
+            LOG.warning(
+                '平滑轨迹偏离逐点关节直线 %.2f 度，超过 %.2f 度；这一段改为'
+                '逐个关节运动',
+                deviation_deg, THROUGH_MAX_PATH_DEVIATION_DEG,
+            )
+            for joints in targets:
+                self.move_joints(joints, speed, cancelled, watchdog)
+            return
+        self.stream_joints(
+            trajectory.position_deg, trajectory.duration_s, cancelled,
+            watchdog, follow=True,
+        )
+        self.motion_log[-1].update(
+            through_targets=len(targets),
+            path_deviation_deg=deviation_deg,
+            peak_speed_deg_s=trajectory.peak_speed_deg_s,
         )
 
     def _move(self, command, cancelled, watchdog, timeout):

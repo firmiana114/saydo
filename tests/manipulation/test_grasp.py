@@ -769,6 +769,12 @@ class GraspTests(unittest.TestCase):
                     self.calls.append(('move', pose))
                     arm['pose'] = list(pose)
 
+                def move_joints_through(
+                    self, targets, speed, cancelled, watchdog
+                ):
+                    for target in targets:
+                        self.move_joints(target, speed, cancelled, watchdog)
+
             # 替身没有 move_joint_pose：预抓点若仍用位姿关节运动，
             # 这里会直接报属性错误。
             robot = FakeRobot()
@@ -926,6 +932,7 @@ class GraspTests(unittest.TestCase):
         robot.query.side_effect = query
         robot.move_joints.side_effect = move_joints
         robot.move_gripper.side_effect = move_gripper
+        fake_kinematics.emulate_move_joints_through(robot)
         robot.move_linear.side_effect = RuntimeError('到直线接近为止')
         service.robot = robot
         return service, config, plan, arm, kinematics, robot

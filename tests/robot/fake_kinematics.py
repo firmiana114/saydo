@@ -17,6 +17,25 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 
+def emulate_move_joints_through(robot: object) -> None:
+    """让 `mock.Mock` 做的控制器替身支持“连贯关节运动”。
+
+    真实控制器沿平滑轨迹不停顿地经过每个目标；替身只需要表现出同样
+    的结果：依次到达每个目标。这里让它逐个调用替身自己的
+    `move_joints`，于是各测试给 `move_joints` 安排的行为（记录、
+    模拟没到位、模拟途中失败）对连贯运动同样生效。
+
+    Args:
+        robot: `mock.Mock` 做的控制器替身。
+    """
+
+    def through(targets, speed, cancelled, watchdog):
+        for target in targets:
+            robot.move_joints(target, speed, cancelled, watchdog)
+
+    robot.move_joints_through.side_effect = through
+
+
 class PairedKinematics:
     """记住“位姿 ↔ 关节角”对应关系的逆解与控制器替身。"""
 

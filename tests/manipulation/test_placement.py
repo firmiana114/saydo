@@ -509,6 +509,7 @@ class PlacementControlTests(unittest.TestCase):
             self.arm['joint'] = list(joints)
 
         robot.move_joints.side_effect = move_joints
+        fake_kinematics.emulate_move_joints_through(robot)
         robot.move_gripper.side_effect = open_gripper
         robot.query.side_effect = query
         self.service.arm_state = mock.Mock(side_effect=read_arm)

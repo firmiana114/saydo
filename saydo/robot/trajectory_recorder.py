@@ -20,6 +20,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from saydo.robot import collision_model
+from saydo.robot import joint_trajectory
 
 # 两次读取之间的间隔，单位秒。一次查询约 5 毫秒。
 DEFAULT_PERIOD_S = .01
@@ -134,32 +135,17 @@ def deviation_from_polyline(
     joint_deg: Sequence[Sequence[float]],
     waypoints_deg: Sequence[Sequence[float]],
 ) -> np.ndarray:
-    """算出每个实测姿态离计划路径有多远。
-
-    计划路径是依次连接各路点的关节角折线。
+    """算出每个实测姿态离计划路径有多远；见
+    `joint_trajectory.deviation_from_polyline`。
 
     Args:
         joint_deg: 实测的关节角，N×7，度。
-        waypoints_deg: 计划的路点，M×7（M ≥ 2），第一个是起点，度。
+        waypoints_deg: 计划的路点，M×7（M ≥ 2），度。
 
     Returns:
-        长度 N 的数组：每个实测姿态到折线上最近一点，偏差最大的那个
-        关节相差多少度。
+        长度 N 的数组，度。
     """
-    actual = np.asarray(joint_deg, dtype=float)
-    path = np.asarray(waypoints_deg, dtype=float)
-    best = np.full(len(actual), np.inf)
-    for start, end in zip(path[:-1], path[1:]):
-        step = end - start
-        length_squared = float(step @ step)
-        fraction = (
-            np.clip((actual - start) @ step / length_squared, 0., 1.)
-            if length_squared > 0
-            else np.zeros(len(actual))
-        )
-        residual = np.abs(actual - (start + fraction[:, None] * step))
-        best = np.minimum(best, residual.max(axis=1))
-    return best
+    return joint_trajectory.deviation_from_polyline(joint_deg, waypoints_deg)
 
 
 def tcp_line_deviation_m(

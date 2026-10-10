@@ -7,11 +7,11 @@
 相机已经标好（手眼标定加相机校正），由它可以量出标定板每个角点在基座
 坐标系里的位置；全局相机看到的是同一批角点在自己画面里的像素位置。
 
-手上相机量角点的办法必须与它定位物品时相同：彩色图里的像素位置加上
-深度图的读数。相机校正就是按这种量法拟合出来的，里面有十来毫米是在
-补偿深度读数偏近。如果改为按标定板的已知尺寸从彩色图反推距离（这种
-办法本身不偏），再套上同一份校正，角点就会被沿视线方向多推出十几
-毫米（2026-10-10 实测两台臂因此相差 12.8 毫米）。
+手上相机量角点的办法与它定位物品时相同：彩色图里的像素位置加上深度
+图的读数；相机校正就是按这种量法拟合的。不按标定板的标称尺寸从彩色
+图反推距离：现用的这块板方格实际边长约 29.2 毫米而不是标称的 30
+毫米，反推出的距离会远 2.7%，0.6～0.7 米处就是十几毫米（2026-10-10
+实测两台臂因此相差 12.8 毫米）。求解和验收都不用标称尺寸。
 “空间位置 ↔ 像素位置”的对应关系足够多时，就能反推出全局相机相对基座
 的位置和朝向。整个过程机械臂不动，只需要人把标定板在桌上挪几个位置。
 
@@ -76,7 +76,11 @@ REFERENCE_ARM_ID = 'arm1'
 # 一偶，转 180 度后黑白相反，所以角点顺序不会认反。
 BOARD_COLUMNS = 8
 BOARD_ROWS = 11
+# 方格的标称边长。只用来检查画面是否合格、判断两次摆位是否重复，求解
+# 和验收都不用它：2026-10-10 发现现用的这块板实际边长约 29.2 毫米。
 SQUARE_M = .03
+# 量出的方格边长与标称值相差超过这个比例时提醒操作者。
+SQUARE_TOLERANCE = .01
 
 # 以下是一组画面合格的条件。
 # 角点离画面边缘至少这么远：边缘处镜头畸变大，角点也容易被裁掉半个。
@@ -458,10 +462,14 @@ def sample_errors(
         distortion: 全局相机畸变参数。
 
     Returns:
-        `(像素偏差, 空间偏差)`：把手上相机算出的角点投到全局相机画面，
-        与实际检测到的角点相差多少（均方根，像素）；把全局相机自己看到
-        的标定板按标定结果换到基座坐标，与手上相机算出的位置相差多少
-        （均方根，米）。
+        `(像素偏差, 空间偏差)`：把手上相机量出的角点投到全局相机画面，
+        与实际检测到的角点相差多少（均方根，像素）；手上相机量出的
+        角点，离全局相机看见它的那条视线有多远（均方根，米）。
+
+        两个数都不用标定板的方格边长。2026-10-10 之前空间偏差是拿全局
+        相机按标称边长自己算出的角点位置去比的；所用的标定板实际边长
+        比标称值小 2.7%，全局相机在 0.8 米外因此把板子算远了 22 毫米，
+        好的标定也被判为不达标。
     """
     points = np.asarray(sample['points_base_m'])
     camera_T_base = np.linalg.inv(base_T_camera)
@@ -473,13 +481,39 @@ def sample_errors(
         distortion,
     )[0].reshape(-1, 2)
     pixel_error = np.asarray(sample['corners_px']) - projected
-    seen = transformed(
-        base_T_camera @ np.asarray(sample['camera_T_board']), board_points()
-    )
+    # 每个检测到的角点对应一条从相机出发的视线（已去畸变）。
+    directions = cv2.undistortPoints(
+        np.asarray(sample['corners_px'], dtype=np.float64).reshape(-1, 1, 2),
+        camera_matrix,
+        distortion,
+    ).reshape(-1, 2)
+    directions = np.c_[directions, np.ones(len(directions))]
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    in_camera = transformed(camera_T_base, points)
+    along = np.sum(in_camera * directions, axis=1)[:, None] * directions
     return (
         float(np.sqrt(np.mean(np.sum(pixel_error ** 2, axis=1)))),
-        float(np.sqrt(np.mean(np.sum((seen - points) ** 2, axis=1)))),
+        float(np.sqrt(np.mean(np.sum((in_camera - along) ** 2, axis=1)))),
     )
+
+
+def measured_square_m(samples: List[dict]) -> float:
+    """由手上相机量出的角点，算出标定板方格的实际边长。
+
+    Args:
+        samples: 记录的各组数据。
+
+    Returns:
+        相邻角点间距的平均值，单位米。
+    """
+    steps = []
+    for sample in samples:
+        grid = np.asarray(sample['points_base_m']).reshape(
+            BOARD_ROWS, BOARD_COLUMNS, 3
+        )
+        steps.append(np.linalg.norm(np.diff(grid, axis=1), axis=2).ravel())
+        steps.append(np.linalg.norm(np.diff(grid, axis=0), axis=2).ravel())
+    return float(np.mean(np.concatenate(steps)))
 
 
 def solve(
@@ -498,8 +532,9 @@ def solve(
     Returns:
         含 `base_T_camera`、所用的组 `used`、被剔除的组 `rejected`（序号
         从 1 起）、`reprojection_rms_px`、`disagreement_rms_m`、各组的
-        偏差 `per_sample`、标定板铺开的范围 `spread_m`，以及
-        `accepted`（是否达到验收条件）和不达标的原因 `problems`。
+        偏差 `per_sample`、标定板铺开的范围 `spread_m`、手上相机量出的
+        方格边长 `measured_square_m`，以及 `accepted`（是否达到验收
+        条件）和不达标的原因 `problems`。
 
     Raises:
         ValueError: 没有数据，或求解失败。
@@ -568,6 +603,7 @@ def solve(
             for i, e in enumerate(errors)
         ],
         'spread_m': list(extent),
+        'measured_square_m': measured_square_m(chosen),
         'accepted': not problems,
         'problems': problems,
     }
@@ -1112,6 +1148,24 @@ def write_result(
     return path
 
 
+def load_samples(directory: pathlib.Path) -> List[dict]:
+    """读入一次采集存下的各组数据，供重新求解。
+
+    Args:
+        directory: 采集目录，里面是 `sample_01`、`sample_02`……
+
+    Returns:
+        各组数据，按序号排列。
+
+    Raises:
+        ValueError: 目录里没有数据。
+    """
+    paths = sorted(pathlib.Path(directory).glob('sample_*/sample.json'))
+    if not paths:
+        raise ValueError(f'{directory} 里没有采集数据')
+    return [json.loads(path.read_text()) for path in paths]
+
+
 def gather(backend: Backend, arm_ids: List[str]) -> Dict[str, dict]:
     """取各台手上相机的画面与关节角；取不到的臂不在结果里。"""
     frames = {}
@@ -1187,6 +1241,19 @@ def report(result: dict, previous: Optional[np.ndarray]) -> None:
         result['spread_m'][0] * 100,
         result['spread_m'][1] * 100,
     )
+    square_m = result['measured_square_m']
+    LOG.info(
+        '手上相机量出的方格边长 %.2f 毫米（标称 %.0f 毫米）',
+        square_m * 1000, SQUARE_M * 1000,
+    )
+    if abs(square_m / SQUARE_M - 1) > SQUARE_TOLERANCE:
+        LOG.warning(
+            '标定板的方格比标称值%s %.1f%%。本标定不用标称边长，结果不受'
+            '影响；但手眼标定是按标称边长算的，用这块板做手眼标定前要先'
+            '把实际边长量准',
+            '小' if square_m < SQUARE_M else '大',
+            abs(square_m / SQUARE_M - 1) * 100,
+        )
     if previous is not None:
         shift_m, turn_deg = change_from(previous, result['base_T_camera'])
         LOG.info(
@@ -1253,6 +1320,14 @@ def main() -> int:
     """
     parser = argparse.ArgumentParser(description='全局相机快速外参标定')
     parser.add_argument('--verify', action='store_true', help='只核对现有标定')
+    parser.add_argument(
+        '--resolve',
+        metavar='采集目录',
+        help=(
+            '不重新采集，用以前某次采集存下的数据重新求解，例如 '
+            'work/calibration/global_camera_20261010T153346'
+        ),
+    )
     parser.add_argument('--samples', type=int, default=DEFAULT_SAMPLES)
     parser.add_argument('--timeout-s', type=float, default=300.)
     parser.add_argument(
@@ -1284,7 +1359,9 @@ def main() -> int:
         LOG.error('还没有标定结果，无法核对')
         return 1
     directory = None
-    if not args.verify:
+    if args.resolve:
+        directory = pathlib.Path(args.resolve)
+    elif not args.verify:
         directory = root / 'work/calibration' / (
             'global_camera_'
             + datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
@@ -1319,20 +1396,36 @@ def main() -> int:
             '仍然可用' if good else '已经不准，请重新标定',
         )
         return 0 if good else 1
-    LOG.info(
-        '开始采集，需要 %d 组。请把标定板平放在桌上，每记录一组后挪到'
-        '新的位置', args.samples,
-    )
-    if not calibrate(
-        session, camera, backend, arm_ids, args.samples, args.timeout_s
-    ):
-        LOG.error(
-            '限时内没有采够（已有 %d 组），未改动标定结果',
-            len(session.samples),
+    if args.resolve:
+        samples = load_samples(directory)
+        LOG.info(
+            '读入 %s 里存下的 %d 组数据，重新求解', directory, len(samples)
         )
-        return 1
-    result = solve(session.samples, camera.camera_matrix, camera.distortion)
+        arm_ids = sorted({arm for s in samples for arm in s['seen_by']})
+    else:
+        LOG.info(
+            '开始采集，需要 %d 组。请把标定板平放在桌上，每记录一组后挪到'
+            '新的位置', args.samples,
+        )
+        if not calibrate(
+            session, camera, backend, arm_ids, args.samples, args.timeout_s
+        ):
+            LOG.error(
+                '限时内没有采够（已有 %d 组），未改动标定结果',
+                len(session.samples),
+            )
+            return 1
+        samples = session.samples
+    result = solve(samples, camera.camera_matrix, camera.distortion)
     directory.mkdir(parents=True, exist_ok=True)
+    earlier = directory / 'result.json'
+    if args.resolve and earlier.is_file():
+        # 保留当时的求解结果，便于对照。
+        earlier.rename(
+            directory / datetime.datetime.now().strftime(
+                'result.before-%Y%m%dT%H%M%S.json'
+            )
+        )
     collect.atomic_json(
         directory / 'result.json',
         {

@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import traceback
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import yaml
@@ -1784,26 +1784,66 @@ class GraspController(
         return detail['joint_solutions_deg'][:len(samples)]
 
     def follow_joint_samples(
-        self, solutions_deg, speed, watchdog, report, stage
-    ):
-        """Drive one segment as joint moves through its verified samples; returns the last joint target."""
-        target = None
+        self,
+        solutions_deg: list,
+        speed: int,
+        watchdog: Callable[[], None],
+        report: dict,
+        stage: str,
+    ) -> list:
+        """沿一段已检查过的关节解运动：会发送运动指令。
+
+        只有一个关节解时（关节段，例如到预抓点）用控制器的关节运动
+        `movej`。有多个时（直线段沿线取样得到的一串解）连贯地走完：
+        把它们连成一条平滑轨迹、按固定节拍发给控制器照着走，中途
+        不停，见 `grasp_robot.RobotClient.move_joints_through`。
+        2026-10-10 之前多个解也是逐个发 `movej`，每个点都会停一下。
+
+        走完后核对实际关节角与最后一个解相差不超过 0.5 度。
+
+        Args:
+            solutions_deg: 这一段各检查点的关节解，单位度，最后一个是
+                这一段的终点。
+            speed: 速度百分比。
+            watchdog: 运动期间定期调用的检查函数，它抛出异常时停下。
+                连贯运动时它在另一个线程里被调用。
+            report: 本次任务的诊断记录。
+            stage: 这一段的名称，写进记录。
+
+        Returns:
+            最后一个关节目标，控制器原始单位（0.001 度）。
+
+        Raises:
+            ValueError: 没有关节解、关节解无效，或走完后没有到位。
+        """
+        targets = []
         for solution in solutions_deg:
             if len(solution) != 7 or not np.isfinite(solution).all():
                 raise ValueError('缺少已验证的关节解，不能执行关节方案')
-            target = np.rint(np.asarray(solution) * 1000).astype(int).tolist()
-            self.robot.move_joints(target, speed, self.cancelled, watchdog)
-            if (
-                np.max(np.abs(np.asarray(self.arm_state()['joint']) - target))
-                > 500
-            ):
-                raise ValueError('关节运动未到达所选关节解，停止固定流程')
-        if target is None:
+            targets.append(
+                np.rint(np.asarray(solution) * 1000).astype(int).tolist()
+            )
+        if not targets:
             raise ValueError('缺少已验证的关节解，不能执行关节方案')
+        if len(targets) == 1:
+            self.robot.move_joints(
+                targets[0], speed, self.cancelled, watchdog
+            )
+        else:
+            self.robot.move_joints_through(
+                targets, speed, self.cancelled, watchdog
+            )
+        target = targets[-1]
+        if (
+            np.max(np.abs(np.asarray(self.arm_state()['joint']) - target))
+            > 500
+        ):
+            raise ValueError('关节运动未到达所选关节解，停止固定流程')
         report.setdefault('sampled_joint_segments', []).append(
             {
                 'stage': stage,
                 'joint_moves': len(solutions_deg),
+                'continuous': len(targets) > 1,
                 'final_joint_raw': target,
             }
         )
