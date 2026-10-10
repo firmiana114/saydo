@@ -11,6 +11,7 @@ import numpy as np
 from saydo.manipulation import grasp_control
 from saydo.manipulation import gripper_diagnostics
 from tests.manipulation import test_grasp
+from tests.robot import fake_kinematics
 
 
 def state(**changes):
@@ -119,8 +120,13 @@ class ClosureDiagnosticsTests(unittest.TestCase):
                 raise RuntimeError('close rejected')
             closed = position == 0
 
+        kinematics = fake_kinematics.PairedKinematics()
+
         def move(pose, *args):
             arm['pose'] = list(pose)
+
+        def move_joints(joints, *args):
+            arm.update(pose=kinematics.pose_for(joints), joint=list(joints))
 
         def stop():
             # Simulate feedback changing as a consequence of the failure-stop.
@@ -140,7 +146,7 @@ class ClosureDiagnosticsTests(unittest.TestCase):
         robot.set_register.side_effect = set_register
         robot.move_gripper.side_effect = gripper
         robot.move_linear.side_effect = move
-        robot.move_joint_pose.side_effect = move
+        robot.move_joints.side_effect = move_joints
         robot.stop.side_effect = stop
         with mock.patch(
             'saydo.robot.grasp_robot.RobotClient', return_value=robot
@@ -151,7 +157,7 @@ class ClosureDiagnosticsTests(unittest.TestCase):
         ), mock.patch.object(
             service,
             'verify_motion_targets',
-            return_value={'joint_travel_deg': 1},
+            side_effect=kinematics.verify_motion_targets,
         ), mock.patch('saydo.robot.motion_validation.wait_for_pose'):
             service.run(observation)
         report = json.loads(

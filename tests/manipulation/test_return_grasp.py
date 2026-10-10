@@ -14,6 +14,7 @@ from saydo.manipulation import grasp_control
 from saydo.geometry import grasp_geometry
 from saydo.robot import grasp_robot
 from tests.manipulation import test_grasp
+from tests.robot import fake_kinematics
 
 
 class ReturnGraspTests(unittest.TestCase):
@@ -97,25 +98,34 @@ class ReturnGraspTests(unittest.TestCase):
 
                 robot.move_linear.side_effect = linear
 
-                def joint_pose(pose, speed, cancelled, watchdog):
-                    watchdog()
-                    calls.append(('joint_pose', pose))
-                    arm['pose'] = pose
+                kinematics = fake_kinematics.PairedKinematics()
 
-                robot.move_joint_pose.side_effect = joint_pose
-                robot.move_joints.side_effect = AssertionError(
-                    'Automatic return after grasp is removed'
-                )
+                def joints(target, speed, cancelled, watchdog):
+                    watchdog()
+                    calls.append(('joints', target))
+                    arm.update(
+                        pose=kinematics.pose_for(target), joint=list(target)
+                    )
+
+                robot.move_joints.side_effect = joints
                 service.robot = robot
-                with mock.patch.object(service, 'verify_motion_targets'):
+                with mock.patch.object(
+                    service,
+                    'verify_motion_targets',
+                    side_effect=kinematics.verify_motion_targets,
+                ):
                     if failure:
                         with self.assertRaises(ValueError):
                             service.execute(plan, config, {})
                     else:
                         service.execute(plan, config, {})
                         self.assertEqual(service.status['state'], 'completed')
-                        robot.move_joint_pose.assert_called_once_with(
-                            plan['waypoints'][0]['controller_pose'],
+                        # 预抓点：向逆解给出的关节角做关节运动，
+                        # 到位后的位姿正是预抓点。
+                        robot.move_joints.assert_called_once_with(
+                            kinematics.joint_raw_for(
+                                plan['waypoints'][0]['controller_pose']
+                            ),
                             config['arm_speed_percent'],
                             service.cancelled,
                             unittest.mock.ANY,
@@ -135,7 +145,12 @@ class ReturnGraspTests(unittest.TestCase):
                         self.assertEqual(
                             service.held_object['object_id'], 'sample'
                         )
-                    robot.move_joints.assert_not_called()
+                    # 位姿关节运动已停用；也没有抬升后自动返回的关节运动。
+                    robot.move_joint_pose.assert_not_called()
+                    self.assertNotIn(
+                        ('joints', plan['return_joint_raw']), calls
+                    )
+                    self.assertLessEqual(robot.move_joints.call_count, 1)
                 self.assertEqual(
                     [x for x in calls if x[0] == 'gripper'],
                     [('gripper', 1000), ('gripper', 0)],

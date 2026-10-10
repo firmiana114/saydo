@@ -12,6 +12,7 @@ import numpy as np
 from saydo.geometry import grasp_geometry
 from saydo.robot import grasp_robot
 from saydo.manipulation import grasp_control
+from tests.robot import fake_kinematics
 
 
 class GraspTests(unittest.TestCase):
@@ -713,6 +714,8 @@ class GraspTests(unittest.TestCase):
                 work_response={},
             )
 
+            kinematics = fake_kinematics.PairedKinematics()
+
             class FakeRobot:
                 def __init__(self):
                     self.calls = []
@@ -750,19 +753,24 @@ class GraspTests(unittest.TestCase):
                     self.calls.append(('position', position))
                     self.contact = position == 0
 
-                def move_joint_pose(self, pose, speed, cancelled, watchdog):
+                def move_joints(self, joints, speed, cancelled, watchdog):
                     watchdog()
+                    pose = kinematics.pose_for(joints)
                     self.calls.append(('move', pose))
-                    arm['pose'] = list(pose)
+                    arm.update(pose=list(pose), joint=list(joints))
 
                 def move_linear(self, pose, speed, cancelled, watchdog):
                     watchdog()
                     self.calls.append(('move', pose))
                     arm['pose'] = list(pose)
 
+            # 替身没有 move_joint_pose：预抓点若仍用位姿关节运动，
+            # 这里会直接报属性错误。
             robot = FakeRobot()
             service.robot = robot
-            service.verify_motion_targets = mock.Mock()
+            service.verify_motion_targets = mock.Mock(
+                side_effect=kinematics.verify_motion_targets
+            )
             report = {}
             service.execute(plan, config, report)
             self.assertEqual(service.status['state'], 'completed')
@@ -802,7 +810,7 @@ class GraspTests(unittest.TestCase):
                 next(i for i, x in enumerate(robot.calls) if x[0] == 'move'),
             )
             robot.calls.clear()
-            arm['pose'] = [0, 0, 200000, 0, 0, 0]
+            arm.update(pose=[0, 0, 200000, 0, 0, 0], joint=[0] * 7)
             with mock.patch.object(
                 robot, 'set_register', side_effect=RuntimeError('rejected')
             ):
@@ -812,7 +820,7 @@ class GraspTests(unittest.TestCase):
             original_query = robot.query
             for stop_state in (2, 5):
                 robot.calls.clear()
-                arm['pose'] = [0, 0, 200000, 0, 0, 0]
+                arm.update(pose=[0, 0, 200000, 0, 0, 0], joint=[0] * 7)
 
                 def failed_close(command):
                     reply = original_query(command)
@@ -833,7 +841,7 @@ class GraspTests(unittest.TestCase):
                     len([c for c in robot.calls if c[0] == 'move']), 2
                 )
             robot.calls.clear()
-            arm['pose'] = [0, 0, 200000, 0, 0, 0]
+            arm.update(pose=[0, 0, 200000, 0, 0, 0], joint=[0] * 7)
             move = robot.move_linear
 
             def wrong_orientation(*args):
@@ -847,6 +855,126 @@ class GraspTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '朝向'):
                     service.execute(plan, config, {})
             self.assertNotIn(('position', 0), robot.calls)
+
+    def solved_joint_fixture(self, root):
+        """页面抓取执行到“直线接近”为止的最小场景。
+
+        只在两处边界打替身：逆解子进程和控制器。路径重查、取关节解、
+        下发、核对到位都是真实代码。直线接近那一步由替身抛出异常收尾，
+        因为这里只关心预抓点这一段。
+        """
+        config = self.config()
+        config['ik_checker'] = 'checker'
+        (root / 'checker').touch()
+        cfg = root / 'config.json'
+        cfg.write_text(json.dumps(config))
+        service = grasp_control.GraspController(
+            root, types.SimpleNamespace(), cfg, 'execute'
+        )
+        arm = {'pose': [0, 0, 200000, 0, 0, 0], 'joint': [0] * 7, 'err': [0]}
+        target = np.eye(4)
+        target[:3, 3] = [.1, 0, .2]
+        plan = grasp_geometry.plan_grasp(
+            arm['pose'], target, config['grasp_profile'], config
+        )
+        plan.update(
+            current_arm=copy.deepcopy(arm),
+            gripper_base={'force_up': [100], 'speed_up': [500]},
+            tool_response={},
+            work_response={},
+            flange_T_grip_tcp=np.eye(4).tolist(),
+        )
+        kinematics = fake_kinematics.PairedKinematics()
+        robot = mock.Mock()
+
+        def query(command):
+            if command == 'get_current_arm_state':
+                return {'arm_state': copy.deepcopy(arm)}
+            return {
+                'state_info': {
+                    'sys_err': 0,
+                    'sys_state': 0,
+                    'dof_err': [0],
+                    'dof_state': [2],
+                    'pos': [1000],
+                    'force': [0],
+                    'speed': [0],
+                }
+            }
+
+        def move_joints(joints, speed, cancelled, watchdog):
+            arm.update(pose=kinematics.pose_for(joints), joint=list(joints))
+
+        robot.query.side_effect = query
+        robot.move_joints.side_effect = move_joints
+        robot.move_linear.side_effect = RuntimeError('到直线接近为止')
+        service.robot = robot
+        return service, config, plan, arm, kinematics, robot
+
+    def test_pregrasp_moves_to_joints_solved_for_the_remaining_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service, config, plan, arm, kinematics, robot = (
+                self.solved_joint_fixture(pathlib.Path(directory))
+            )
+            report = {}
+            with mock.patch(
+                'saydo.robot.motion_validation.check_waypoints',
+                side_effect=kinematics.check_waypoints,
+            ) as check:
+                with self.assertRaisesRegex(RuntimeError, '到直线接近为止'):
+                    service.execute(plan, config, report)
+            pregrasp, grasp = plan['waypoints'][:2]
+            pregrasp_joint = kinematics.joint_raw_for(
+                pregrasp['controller_pose']
+            )
+            # 预抓点：关节运动，目标是逆解给出的关节角；不再把位姿交给
+            # 控制器自己去选手臂摆法。
+            robot.move_joints.assert_called_once_with(
+                pregrasp_joint,
+                config['arm_speed_percent'],
+                service.cancelled,
+                mock.ANY,
+            )
+            robot.move_joint_pose.assert_not_called()
+            self.assertEqual(arm['pose'], pregrasp['controller_pose'])
+            first, second = check.call_args_list
+            # 发令前查的是从这一段起的全部路点，且带着障碍物。
+            self.assertEqual(
+                [w['name'] for w in first.args[3]],
+                ['pregrasp', 'grasp', 'lift'],
+            )
+            self.assertIsNotNone(first.kwargs['environment'])
+            # 下一段从实际到达的关节角出发重查。
+            self.assertEqual(second.args[2]['joint'], pregrasp_joint)
+            self.assertEqual(
+                [w['name'] for w in second.args[3]], ['grasp', 'lift']
+            )
+            self.assertEqual(
+                report['sampled_joint_segments'][0]['final_joint_raw'],
+                pregrasp_joint,
+            )
+
+    def test_grasp_stops_when_arm_misses_the_solved_pregrasp_joints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service, config, plan, arm, kinematics, robot = (
+                self.solved_joint_fixture(pathlib.Path(directory))
+            )
+            reach = robot.move_joints.side_effect
+
+            def miss(joints, *rest):
+                reach(joints, *rest)
+                # 0.6 度，超过 0.5 度的到位界限。
+                arm['joint'][1] += 600
+
+            robot.move_joints.side_effect = miss
+            with mock.patch(
+                'saydo.robot.motion_validation.check_waypoints',
+                side_effect=kinematics.check_waypoints,
+            ):
+                with self.assertRaisesRegex(ValueError, '未到达所选关节解'):
+                    service.execute(plan, config, {})
+            robot.move_linear.assert_not_called()
+            robot.move_gripper.assert_called_once_with(1000)
 
 
 if __name__ == '__main__':

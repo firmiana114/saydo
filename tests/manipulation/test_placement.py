@@ -17,6 +17,7 @@ from saydo.geometry import grasp_geometry
 from saydo.manipulation import placement_control
 from saydo.robot import motion_validation
 from saydo.manipulation import placement_geometry
+from tests.robot import fake_kinematics
 
 
 def fixture():
@@ -138,7 +139,7 @@ class PlacementGeometryTests(unittest.TestCase):
         self.assertFalse(
             any(w['name'].startswith(('raise:', 'transfer:')) for w in calls[1])
         )
-        self.assertEqual(plan['motion_commands']['transfer'], 'movej_p')
+        self.assertEqual(plan['motion_commands']['transfer'], 'movej')
         self.assertEqual(plan['motion_commands']['lower'], 'movel')
         self.assertEqual(plan['motion_commands']['retreat'], 'movel')
         self.assertTrue(
@@ -479,13 +480,26 @@ class PlacementControlTests(unittest.TestCase):
                 state['sys_err'] = 1
             return {'state_info': state}
 
+        # 关节段：程序下发逆解给出的关节角，替身按同一对应关系把它换回
+        # 位姿再“到位”。个别测试会替换 joint_pose_move 来模拟途中的反馈。
+        self.kinematics = fake_kinematics.PairedKinematics()
+        self.joint_pose_move = lambda *args: move('joint', *args)
+
+        def move_joints(joints, speed, cancelled, watchdog):
+            self.joint_pose_move(
+                self.kinematics.pose_for(joints), speed, cancelled, watchdog
+            )
+            self.arm['joint'] = list(joints)
+
         robot.move_linear.side_effect = lambda *args: move('linear', *args)
-        robot.move_joint_pose.side_effect = lambda *args: move('joint', *args)
+        robot.move_joints.side_effect = move_joints
         robot.move_gripper.side_effect = open_gripper
         robot.query.side_effect = query
         self.service.arm_state = mock.Mock(side_effect=read_arm)
         self.service.check_reorient_contact = mock.Mock()
-        self.service.verify_motion_targets = mock.Mock()
+        self.service.verify_motion_targets = mock.Mock(
+            side_effect=self.kinematics.verify_motion_targets
+        )
         self.service.reorientation_hardware = mock.Mock(
             side_effect=lambda *_: (
                 read_arm(), {'flange_T_grip_tcp': np.eye(4).tolist()}
@@ -517,14 +531,14 @@ class PlacementControlTests(unittest.TestCase):
         self.assertFalse(client.call_args.kwargs['writes'])
         self.assertEqual(self.service.held_object['hold_id'], 'hold1')
         robot.move_linear.assert_not_called()
-        robot.move_joint_pose.assert_not_called()
+        robot.move_joints.assert_not_called()
         robot.move_gripper.assert_not_called()
         robot.stop.assert_not_called()
         self.service.mode = 'preview'
         robot = self.robot()
         self.run_job(robot)
         robot.move_linear.assert_not_called()
-        robot.move_joint_pose.assert_not_called()
+        robot.move_joints.assert_not_called()
         robot.move_gripper.assert_not_called()
 
     def test_success_uses_joint_transfer_then_linear_lower_and_retreat(self):
@@ -545,8 +559,16 @@ class PlacementControlTests(unittest.TestCase):
             self.commands[-1][1], plan['waypoints'][-1]['controller_pose']
         )
         self.assertIsNone(self.service.held_object)
-        self.assertEqual(robot.move_joint_pose.call_count, 2)
-        robot.move_joints.assert_not_called()
+        # 抬升和转移各一次关节运动，目标是逆解给出的关节角；位姿关节
+        # 运动（由控制器自己选手臂摆法）不再使用。
+        self.assertEqual(
+            [call.args[0] for call in robot.move_joints.call_args_list],
+            [
+                self.kinematics.joint_raw_for(w['controller_pose'])
+                for w in plan['waypoints'][:2]
+            ],
+        )
+        robot.move_joint_pose.assert_not_called()
         robot.set_register.assert_not_called()
         report = json.loads(
             next(
@@ -574,8 +596,8 @@ class PlacementControlTests(unittest.TestCase):
 
             return move
 
-        robot.move_joint_pose.side_effect = feedback_outside_rectangle(
-            robot.move_joint_pose.side_effect
+        self.joint_pose_move = feedback_outside_rectangle(
+            self.joint_pose_move
         )
         robot.move_linear.side_effect = feedback_outside_rectangle(
             robot.move_linear.side_effect
@@ -616,7 +638,7 @@ class PlacementControlTests(unittest.TestCase):
         robot.move_gripper.assert_called_once_with(1000)
         robot.stop.assert_not_called()
 
-    def test_raise_and_transfer_both_use_joint_pose(self):
+    def test_raise_and_transfer_both_move_to_solved_joints(self):
         self.arm['pose'][2] = 70000
         robot = self.robot()
         self.run_job(robot)
@@ -629,8 +651,18 @@ class PlacementControlTests(unittest.TestCase):
             [x[0] for x in self.commands],
             ['joint', 'joint', 'linear', 'open', 'linear', 'linear'],
         )
-        self.assertEqual(robot.move_joint_pose.call_count, 2)
+        self.assertEqual(robot.move_joints.call_count, 2)
+        robot.move_joint_pose.assert_not_called()
         self.assertEqual(robot.move_linear.call_count, 3)
+        report = json.loads(
+            next(
+                (self.root / 'work/grasp/placement_jobs').glob('*.json')
+            ).read_text()
+        )
+        self.assertEqual(
+            [s['joint_moves'] for s in report['sampled_joint_segments']],
+            [1, 1],
+        )
         checks = self.service.verify_motion_targets.call_args_list
         self.assertEqual([w['name'] for w in checks[0].args[-1]], ['raise'])
         self.assertEqual([w['name'] for w in checks[1].args[-1]], ['transfer'])
@@ -642,19 +674,19 @@ class PlacementControlTests(unittest.TestCase):
         self
     ):
         robot = self.robot()
-        original = robot.move_joint_pose.side_effect
+        original = self.joint_pose_move
 
         def curve(pose, speed, cancelled, watchdog):
             start = list(self.arm['pose'])
             self.arm['pose'][0] += 30000
             self.arm['pose'][2] += 30000
             self.arm['pose'][5] += 300
-            # Intermediate Cartesian curve and rotation are valid for movej_p.
+            # 关节运动途中夹爪走曲线、朝向变化都是正常的。
             watchdog()
             self.arm['pose'] = start
             return original(pose, speed, cancelled, watchdog)
 
-        robot.move_joint_pose.side_effect = curve
+        self.joint_pose_move = curve
         self.run_job(robot)
         self.assertEqual(
             self.service.status['state'],
@@ -662,6 +694,63 @@ class PlacementControlTests(unittest.TestCase):
             self.service.status.get('error'),
         )
         robot.move_gripper.assert_called_once_with(1000)
+
+    def test_joint_segments_run_through_the_real_path_verifier(self):
+        # 不替换 verify_motion_targets，只在逆解子进程这一处边界打替身，
+        # 让“重查 → 取关节解 → 下发 → 核对到位”这条流程完整走一遍。
+        robot = self.robot()
+        del self.service.verify_motion_targets
+        self.service.status.update(busy=True, operation='place')
+        with mock.patch(
+            'saydo.robot.grasp_robot.RobotClient',
+            return_value=robot,
+        ), mock.patch(
+            'saydo.manipulation.reorientation_geometry.model_geometry',
+            return_value={'vertices': self.vertices, 'model_sha256': 'mesh1'},
+        ), mock.patch(
+            'saydo.robot.motion_validation.check_waypoints',
+            side_effect=self.kinematics.check_waypoints,
+        ) as check:
+            self.service.run_placement(
+                copy.deepcopy(self.held), self.settings, False
+            )
+        self.assertEqual(
+            self.service.status['state'],
+            'completed',
+            self.service.status.get('error'),
+        )
+        plan = self.service.status['placement_plan']
+        self.assertEqual(
+            [call.args[0] for call in robot.move_joints.call_args_list],
+            [
+                self.kinematics.joint_raw_for(w['controller_pose'])
+                for w in plan['waypoints'][:2]
+            ],
+        )
+        robot.move_joint_pose.assert_not_called()
+        self.assertTrue(
+            all(
+                call.kwargs['environment'] is not None
+                for call in check.call_args_list
+            )
+        )
+
+    def test_joint_segment_stops_when_arm_misses_the_solved_joints(self):
+        robot = self.robot()
+        reach = robot.move_joints.side_effect
+
+        def miss(joints, *rest):
+            reach(joints, *rest)
+            # 0.6 度，超过 0.5 度的到位界限。
+            self.arm['joint'][1] += 600
+
+        robot.move_joints.side_effect = miss
+        self.run_job(robot)
+        self.assertEqual(self.service.status['state'], 'failed')
+        self.assertIn('未到达所选关节解', self.service.status['error'])
+        self.assertEqual(robot.move_joints.call_count, 1)
+        robot.move_linear.assert_not_called()
+        robot.move_gripper.assert_not_called()
 
     def test_linear_descent_still_rejects_curves_and_rotation(self):
         for index, offset in [(0, 30000), (5, 300)]:
@@ -867,6 +956,7 @@ class PlacementControlTests(unittest.TestCase):
         self.assertIn('模型已变化', self.service.status['error'])
         robot.move_linear.assert_not_called()
         robot.move_joint_pose.assert_not_called()
+        robot.move_joints.assert_not_called()
         robot.move_gripper.assert_not_called()
 
     def test_external_config_change_before_motion_blocks(self):
@@ -889,6 +979,7 @@ class PlacementControlTests(unittest.TestCase):
             self.service.run_placement(self.held, self.settings)
         robot.move_linear.assert_not_called()
         robot.move_joint_pose.assert_not_called()
+        robot.move_joints.assert_not_called()
         robot.move_gripper.assert_not_called()
         self.assertIn('配置在规划后变化', self.service.status['error'])
 

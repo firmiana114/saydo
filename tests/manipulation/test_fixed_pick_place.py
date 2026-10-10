@@ -5,6 +5,7 @@ from unittest import mock
 import numpy as np
 from saydo.manipulation import fixed_pick_place as manipulation_fixed_pick_place
 from tests.manipulation import test_object_motion_control as control
+from tests.robot import fake_kinematics
 from tests.workbench import test_agent_api as api_base
 from saydo.workbench import agent_api
 
@@ -441,12 +442,50 @@ class GraspSegmentVerificationTests(unittest.TestCase):
                 {'name': 'pregrasp', 'controller_pose': [0] * 6},
             )
 
-    def test_ordinary_grasp_without_fixed_targets_still_checks_only_its_waypoint(
+    def test_ordinary_grasp_solves_its_remaining_waypoints_without_sampling(
         self
     ):
-        waypoint = {'name': 'pregrasp', 'controller_pose': [0] * 6}
-        self.assertIsNone(self.service.verify_waypoint({}, {}, {}, waypoint))
-        self.assertEqual(self.seen, [['pregrasp']])
+        # 页面抓取没有预先存好的取样路径：重查方案里从这一段起的路点，
+        # 每段只查终点，返回这一段终点的关节解。
+        plan = {
+            'waypoints': [
+                {
+                    'name': name,
+                    'controller_pose': [300000, 0, height_um, 0, 0, 0],
+                }
+                for name, height_um in (
+                    ('pregrasp', 145000), ('grasp', 120000), ('lift', 155000)
+                )
+            ],
+        }
+        kinematics = fake_kinematics.PairedKinematics()
+        self.service.verify_motion_targets = mock.Mock(
+            side_effect=kinematics.verify_motion_targets
+        )
+        for name, remaining in (
+            ('pregrasp', ['pregrasp', 'grasp', 'lift']),
+            ('grasp', ['grasp', 'lift']),
+            ('lift', ['lift']),
+        ):
+            with self.subTest(name=name):
+                waypoint = next(
+                    w for w in plan['waypoints'] if w['name'] == name
+                )
+                solved = self.service.verify_waypoint(plan, {}, {}, waypoint)
+                checked = self.service.verify_motion_targets.call_args.args[-1]
+                self.assertEqual([w['name'] for w in checked], remaining)
+                self.assertNotIn('method', checked[0])
+                self.assertEqual(len(solved), 1)
+                self.assertEqual(
+                    kinematics.pose_for(
+                        [round(value * 1000) for value in solved[0]]
+                    ),
+                    waypoint['controller_pose'],
+                )
+        with self.assertRaisesRegex(ValueError, '没有这个航点'):
+            self.service.verify_waypoint(
+                plan, {}, {}, {'name': 'transfer', 'controller_pose': [0] * 6}
+            )
 
 
 class SampledJointSegmentTests(unittest.TestCase):

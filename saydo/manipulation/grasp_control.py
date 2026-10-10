@@ -1207,7 +1207,27 @@ class GraspController(
                 f"{state.get('force')}）"
             )
 
-    def prepare_grasp_plan(self, observation, config, arm, report):
+    def prepare_grasp_plan(
+        self, observation: dict, config: dict, arm: dict, report: dict
+    ) -> tuple:
+        """核对硬件状态并为一次抓取选出夹法和路径；只读，不发送指令。
+
+        依次核对控制器型号与固件、当前工具与工作坐标系、关节使能、夹爪
+        通信与身份、相机与标定是否对应，然后把物品位姿换到基座坐标，
+        交给 `select_grasp_candidate` 选出第一套全程通过检查的夹法。
+
+        Args:
+            observation: 视觉观测；带 `scene_id` 时用场景里已固定的基座位姿。
+            config: 这台臂的抓取配置。
+            arm: 控制器报告的机械臂当前状态。
+            report: 本次任务的诊断记录，各项读数与候选结果写入其中。
+
+        Returns:
+            `(方案, 生效的配置)`。方案的 `execution_blockers` 非空时不能执行。
+
+        Raises:
+            ValueError: 硬件状态、标定或模型设置不符，或没有夹法通过检查。
+        """
         handeye, tool = self.calibration(config)
         software = self.robot.query('get_arm_software_info')
         report['controller_software'] = software
@@ -1305,12 +1325,15 @@ class GraspController(
             blockers.append('当前夹爪未声明支持力度控制')
         report['plan'] = plan
         plan['motion_validation'] = {
-            'method': 'ik_fk_endpoints_then_controller_movej_p_movel_movej',
+            'method': 'ik_fk_endpoints_then_movej_to_solved_joints_and_movel',
+            # 直线段的手臂摆法仍由控制器决定，所以不算完整的离线路径检查。
             'offline_path_checked': False,
             'ik_fk_checked': not blockers,
             'message': (
-                '抓取航点先做逆解及正解回验，每段发令前按实际关节重查；'
-                '控制器完成后等待稳定到位。未检查完整中间轨迹或环境碰撞。'
+                '预抓点由程序求出关节角后以关节运动到达，接近和抬升是控制器'
+                '的直线运动。各路点先做逆解、正解回验和桌面/立杆碰撞检查，'
+                '每段发令前按实际关节重查剩余路径。直线段的手肘摆法由控制器'
+                '决定，可能与检查的不同。'
             ),
         }
         plan['execution_blockers'] = blockers
@@ -1523,22 +1546,49 @@ class GraspController(
             raise ValueError(detail['reason'])
         return detail
 
-    def verify_waypoint(self, plan, config, report, waypoint):
-        """Offline check before one grasp segment; a fixed plan gets the joint solution of each of its samples."""
+    def verify_waypoint(
+        self, plan: dict, config: dict, report: dict, waypoint: dict
+    ) -> list:
+        """发令前按实际关节角重查从这一段起的剩余路径；只做计算。
+
+        为什么查剩余的整条路径而不只查这一段：RM75 有 7 个关节，同一个
+        夹爪位姿对应很多种手臂摆法。只看眼前这一段选出的摆法，可能让
+        后面的路点够不到；把后面的路点一起交给逆解搜索，选出的摆法才与
+        规划时一致，也能在靠近物品之前就发现后面走不通。
+
+        查哪些点：
+
+        - 页面抓取：方案里从这一段起的路点（预抓点、夹持点、抬升点），
+          每段只查终点。直线段不沿线取样：2026-10-10 用真实检查器回放
+          63 次历史抓取，沿线每 10 毫米取样并要求相邻关节解变化不超过
+          10 度时，有 7 次被拒，其中 5 次当时由控制器的直线运动实际执行
+          成功，即取样检查比控制器的实际能力更严。
+        - 固定抓放：规划时存下的整条取样路径（含放置部分）。它的直线段
+          是沿取样点逐点关节运动，必须逐点有解。
+
+        Args:
+            plan: 抓取方案。
+            config: 这台臂生效的抓取配置。
+            report: 本次任务的诊断记录。
+            waypoint: 即将执行的路点，`pregrasp`、`grasp` 或 `lift`。
+
+        Returns:
+            这一段的关节解，单位度，最后一个是这一段的终点。页面抓取
+            只有终点一个解；固定抓放的直线段有多个。
+
+        Raises:
+            ValueError: 找不到这一段的检查点，或剩余路径检查不通过。
+        """
         fixed = plan.get('fixed_joint_targets', {}).get(waypoint['name'])
         if fixed is None:
-            self.verify_motion_targets(
-                plan, config, report, self.arm_state(), [waypoint]
+            names = [w['name'] for w in plan['waypoints']]
+            if waypoint['name'] not in names:
+                raise ValueError('方案里没有这个航点：' + waypoint['name'])
+            remaining = plan['waypoints'][names.index(waypoint['name']):]
+            detail = self.verify_motion_targets(
+                plan, config, report, self.arm_state(), remaining
             )
-            return None
-        # A 7-joint arm reaches one pose with many joint sets, and the
-        # controller's movel was
-        # measured swinging them by up to 35 degrees. A fixed plan therefore
-        # never sends movel:
-        # the whole remaining path is re-solved from real feedback before every
-        # segment, and the
-        # segment is then driven through the solved joint set of each of its
-        # samples.
+            return detail['joint_solutions_deg'][:1]
         points = getattr(self, '_fixed_path_points', None) or []
         own = [
             i
@@ -1586,7 +1636,33 @@ class GraspController(
         )
         return target
 
-    def execute(self, plan, config, report):
+    def execute(self, plan: dict, config: dict, report: dict) -> None:
+        """执行一次抓取：会发送运动指令和夹爪指令。
+
+        顺序：张开夹爪 → 关节运动到预抓点 → 直线接近夹持点 → 按力度
+        闭合并确认接触 → 直线抬升。每一段发令前都按实际关节角重查剩余
+        路径，到位后等待位姿稳定。
+
+        三段各用什么指令：
+
+        - 预抓点：程序自己求出关节角，用关节运动（`movej`）到达。不用
+          位姿关节运动（`movej_p`）：那条指令由控制器自己做逆解，选哪种
+          手臂摆法、途中怎么走我们都不知道，碰撞检查查的就不是实际走的
+          路。自己给关节角时，各关节同步转动，路径就是检查过的那一条。
+        - 接近、抬升：页面抓取用控制器的直线运动（`movel`），手肘怎么摆
+          仍由控制器决定；固定抓放改为沿取样点逐点关节运动。
+
+        Args:
+            plan: `prepare_grasp_plan` 给出的抓取方案。
+            config: 这台臂生效的抓取配置。
+            report: 本次任务的诊断记录；一旦发出运动即置
+                `robot_motion_sent`。
+
+        Raises:
+            ValueError: 规划后机械臂被移动、参数越界、路径重查不通过、
+                到位或接触确认失败。
+            TimeoutError: 夹爪张开或闭合确认超时。
+        """
         grip = config['gripper']
         grasp_geometry.minimum_table_clearance(config)
         if any(
@@ -1664,7 +1740,10 @@ class GraspController(
             solved = self.verify_waypoint(plan, config, report, waypoint)
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            if solved is not None:
+            if (
+                waypoint['name'] == 'pregrasp'
+                or waypoint['name'] in plan.get('fixed_joint_targets', {})
+            ):
                 self.follow_joint_samples(
                     solved,
                     config['arm_speed_percent'],
@@ -1673,12 +1752,7 @@ class GraspController(
                     report['active_stage'],
                 )
             else:
-                move = (
-                    self.robot.move_joint_pose
-                    if waypoint['name'] == 'pregrasp'
-                    else self.robot.move_linear
-                )
-                move(
+                self.robot.move_linear(
                     waypoint['controller_pose'],
                     config['arm_speed_percent'],
                     self.cancelled,

@@ -372,7 +372,40 @@ class PlacementMixin:
                     robot_lock.close()
                 self.update(busy=False)
 
-    def execute_placement(self, plan, held, config, settings, report, vertices):
+    def execute_placement(
+        self,
+        plan: dict,
+        held: dict,
+        config: dict,
+        settings: dict,
+        report: dict,
+        vertices: np.ndarray,
+    ) -> None:
+        """执行桌面放置方案：会发送运动指令和夹爪指令。
+
+        顺序：必要时抬到转移高度 → 移到放置点上方 → 保持朝向直线下降 →
+        张开夹爪 → 沿夹爪轴线后撤 → 竖直退出。每一段发令前按实际关节角
+        重查，运动中持续核对实际位姿没有偏离这一段的路径。
+
+        抬升和转移两段由程序自己求出关节角，用关节运动（`movej`）到达，
+        不用位姿关节运动（`movej_p`）：后者由控制器自己选手臂摆法，实际
+        路径与碰撞检查查的那一条可能不同。下降、后撤、退出三段是控制器
+        的直线运动（`movel`），发令前沿直线取样检查。
+
+        Args:
+            plan: `placement_geometry.plan_placement` 给出的放置方案。
+            held: 这台臂当前的夹持记录。
+            config: 这台臂的抓取配置。
+            settings: 已校验的放置设置。
+            report: 本次任务的诊断记录；一旦发出运动即置
+                `robot_motion_sent`。
+            vertices: 物品模型的顶点，物品坐标系，单位米。
+
+        Raises:
+            ValueError: 配置在规划后变化、末端已离开规划起点、路径重查
+                不通过、实际位姿偏离路径，或释放高度不符。
+            TimeoutError: 夹爪没有确认完全张开。
+        """
         previous = list(plan['current_arm']['pose'])
         names = {
             'raise': '关节运动至转移高度',
@@ -485,7 +518,9 @@ class PlacementMixin:
             points = placement_geometry.placement_validation_points(
                 sampling_start, [target], settings['linear_sample_step_m']
             )
-            self.verify_motion_targets(plan, config, report, arm, points)
+            detail = self.verify_motion_targets(
+                plan, config, report, arm, points
+            )
             self.check_cancel()
             self.placement_config_unchanged(report)
             self.actuated = True
@@ -499,17 +534,23 @@ class PlacementMixin:
             report.setdefault(
                 'executed_waypoints', []
             ).append(copy.deepcopy(target))
-            move = (
-                self.robot.move_joint_pose
-                if joint_motion
-                else self.robot.move_linear
-            )
-            move(
-                target['controller_pose'],
-                speed,
-                self.cancelled,
-                read_motion_state,
-            )
+            if joint_motion:
+                # 关节段只有终点一个检查点，它的关节解就是下发的目标；
+                # 到位后 follow_joint_samples 会核对实际关节角。
+                self.follow_joint_samples(
+                    detail['joint_solutions_deg'][-1:],
+                    speed,
+                    read_motion_state,
+                    report,
+                    report['active_stage'],
+                )
+            else:
+                self.robot.move_linear(
+                    target['controller_pose'],
+                    speed,
+                    self.cancelled,
+                    read_motion_state,
+                )
             record = {'stage': report['active_stage']}
             report.setdefault('arrival_checks', []).append(record)
             actual = motion_validation.wait_for_pose(

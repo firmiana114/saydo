@@ -211,7 +211,7 @@ class PlacementPanel {
           w =>
           (labels[w.name] || w.name) +
           ' (' +
-          (w.method === 'joint_pose' ? 'movej_p' : 'movel') +
+          (w.method === 'joint_pose' ? 'movej' : 'movel') +
           ') [' +
           w.position_m.map(mm).join(', ') +
           ']'

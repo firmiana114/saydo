@@ -3,6 +3,7 @@
 import heapq
 import subprocess
 import time
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 
@@ -215,15 +216,44 @@ def candidate_xy(low, high, current, step):
 
 
 def plan_placement(
-    held,
-    vertices,
-    arm,
-    config,
-    settings,
-    reachable,
-    cancelled,
-    diagnostics=None,
-):
+    held: dict,
+    vertices: np.ndarray,
+    arm: dict,
+    config: dict,
+    settings: dict,
+    reachable: Callable[[list, float], Tuple[bool, dict]],
+    cancelled: Callable[[], None],
+    diagnostics: Optional[list] = None,
+) -> dict:
+    """在桌面矩形范围内找一个放得下、走得到的放置位置；只做计算。
+
+    物品保持当前被夹着的朝向。先由模型最低点和释放间隙算出松爪时夹爪的
+    高度，再从离当前位置最近的候选点起逐个尝试：生成“抬升 → 转移 →
+    下降 → 后撤 → 退出”五个路点，检查工作范围和落点范围，再交给
+    `reachable` 做逆解与碰撞检查，取第一个通过的。
+
+    抬升和转移两段是关节运动（方案里记为 `movej`，由程序给出关节角），
+    只检查终点；下降、后撤、退出三段是直线运动（`movel`），沿线取样检查。
+
+    Args:
+        held: 夹持记录，取其中的 `object_T_tcp` 和 `pose_mode`。
+        vertices: 物品模型的顶点，N×3，物品坐标系，单位米。
+        arm: 控制器报告的机械臂当前状态。
+        config: 这台臂的抓取配置，取桌面高度、工作范围和预抓距离。
+        settings: 放置设置，含范围矩形、释放间隙、搜索步长等。
+        reachable: 路径检查函数，参数为取样点和时间上限（秒），返回
+            `(通过与否, 记录)`。
+        cancelled: 取消检查，需要中止时由它抛出异常。
+        diagnostics: 给出时，每个候选点的尝试结果追加到这个列表。
+
+    Returns:
+        放置方案，含路点 `waypoints`、检查用的取样点 `validation_points`、
+        各段的运动指令 `motion_commands` 和搜索记录。
+
+    Raises:
+        ValueError: 配置无效、物品放不进范围，或没有候选点通过检查。
+        TimeoutError: 搜索超过设置的时间。
+    """
     settings = placement_settings(settings)
     table = config.get('table_z_m')
     if type(table) not in (int, float) or not np.isfinite(table):
@@ -364,7 +394,7 @@ def plan_placement(
             ),
             'motion_command': 'mixed',
             'motion_commands': {
-                w['name']: 'movej_p' if w['method'] == 'joint_pose' else 'movel'
+                w['name']: 'movej' if w['method'] == 'joint_pose' else 'movel'
                 for w in targets
             },
             'joint_path_checked': False,
