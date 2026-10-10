@@ -246,6 +246,7 @@ def execute(
     speed: int,
     stop_after_s: Optional[float],
     blend_percent: int = 0,
+    keep: Optional[List[int]] = None,
 ) -> dict:
     """按计划让机械臂运动，并记录实际轨迹：会发送运动指令。
 
@@ -259,6 +260,8 @@ def execute(
         stop_after_s: 不为 None 时，在开始发送运动指令这么多秒之后
             发一次停止指令，用来观察排队的后续轨迹会不会接着走。
         blend_percent: 连接方式下中间各点的交融半径，0～100。
+        keep: 只把路径上这些序号的点发给控制器（见
+            `trajectory_recorder.thin_joint_path`）；None 表示全部。
 
     Returns:
         试验记录：控制器的应答、实测样本和出错信息（如果有）。
@@ -269,8 +272,10 @@ def execute(
     )
     robot.motion_stage = f'trajectory_connect_test:{mode}'
     targets = [
-        np.rint(np.asarray(joint) * 1000).astype(int).tolist()
-        for joint in summary['path_deg'][1:]
+        np.rint(np.asarray(summary['path_deg'][index]) * 1000)
+        .astype(int)
+        .tolist()
+        for index in (keep or range(1, len(summary['path_deg'])))
     ]
     recorder = trajectory_recorder.TrajectoryRecorder(
         (config['robot_ip'], config['robot_port'])
@@ -280,6 +285,7 @@ def execute(
         'mode': mode,
         'speed_percent': speed,
         'blend_percent': blend_percent,
+        'kept_points': keep,
         'targets_raw': targets,
     }
     recorder.start()
@@ -460,6 +466,13 @@ def main() -> int:
         help='连接方式下中间各点的交融半径，0～100；0 时每个点都会停一下',
     )
     parser.add_argument(
+        '--max-deviation-mm', type=float, default=None,
+        help=(
+            '按这个允许偏差从取样点里只挑必须保留的发给控制器；'
+            '不给时全部发送'
+        ),
+    )
+    parser.add_argument(
         '--stop-after-s', type=float, default=None,
         help='开始运动这么多秒后发一次停止指令（观察排队的轨迹）',
     )
@@ -479,6 +492,10 @@ def main() -> int:
         or not 1 <= args.speed <= MAX_SPEED_PERCENT
         or not 0 <= args.blend_percent <= 100
         or (args.stop_after_s is not None and args.stop_after_s <= 0)
+        or (
+            args.max_deviation_mm is not None
+            and not 0 < args.max_deviation_mm <= 50
+        )
     ):
         parser.error(
             f'直线须在 {MAX_DISTANCE_MM:g} 毫米以内，路点 1～30 个，速度 '
@@ -496,6 +513,17 @@ def main() -> int:
         LOG.error('%s；未发送运动', error)
         return 1
     summary = describe_plan(planned)
+    keep = None
+    if args.max_deviation_mm is not None:
+        keep = trajectory_recorder.thin_joint_path(
+            summary['path_deg'],
+            planned['tool']['flange_T_grip_tcp'],
+            args.max_deviation_mm / 1000,
+        )
+        LOG.info(
+            '允许偏离直线 %g 毫米：%d 个取样点里只发第 %s 个，共 %d 条指令',
+            args.max_deviation_mm, args.points, keep, len(keep),
+        )
     if not args.execute:
         LOG.info('只做了计算，未发送运动。确认无误后加 --execute 执行。')
         return 0
@@ -510,7 +538,7 @@ def main() -> int:
         LOG.info('开始运动，Ctrl-C 可随时停止')
         record = execute(
             planned, summary, args.mode, args.speed, args.stop_after_s,
-            args.blend_percent,
+            args.blend_percent, keep,
         )
     analysis = analyse(planned, summary, record)
     report(analysis, record)

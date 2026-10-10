@@ -128,6 +128,35 @@ class AnalysisTests(unittest.TestCase):
             deviation[1], radius * (1 - np.cos(np.radians(10.))), places=6
         )
 
+    def test_thinning_keeps_only_the_points_the_line_needs(self):
+        # 第 1 关节从 0 转到 40 度，每 2 度一个点：夹爪走圆弧。把这段
+        # 圆弧两端连成的弦当作“直线”，容差越小要保留的点越多。
+        path = [[angle, 30., 0., 60., 0., 0., 0.] for angle in range(0, 41, 2)]
+        radius = float(
+            np.hypot(*(collision_model.link_frames(path[0])[7] @ TOOL)[:2, 3])
+        )
+        sagitta = radius * (1 - np.cos(np.radians(20.)))
+        # 容差比整段弧高还大：一步走完。
+        self.assertEqual(
+            trajectory_recorder.thin_joint_path(path, TOOL, sagitta * 1.05),
+            [20],
+        )
+        # 容差为零：每个点都得留（相邻两点之间的小弧也偏离弦）。
+        everything = trajectory_recorder.thin_joint_path(path, TOOL, 0.)
+        self.assertEqual(everything, list(range(1, 21)))
+        # 一般情形：序号升序、不含起点、以终点结束。
+        kept = trajectory_recorder.thin_joint_path(path, TOOL, sagitta)
+        self.assertEqual(kept[-1], 20)
+        self.assertEqual(kept, sorted(set(kept)))
+        self.assertNotIn(0, kept)
+
+    def test_thinning_a_straight_joint_line_through_a_true_line(self):
+        # 只有第 2、4 关节等量反向转动时并不走直线；这里直接用两个点。
+        path = [[0., 30., 0., 60., 0., 0., 0.], [5., 30., 0., 60., 0., 0., 0.]]
+        self.assertEqual(
+            trajectory_recorder.thin_joint_path(path, TOOL, .001), [1]
+        )
+
     def test_stops_only_count_between_first_and_last_motion(self):
         times = np.arange(0., 2.01, .01)
         position = np.piecewise(

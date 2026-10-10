@@ -193,6 +193,56 @@ def tcp_line_deviation_m(
     return np.array(result)
 
 
+def thin_joint_path(
+    path_deg: Sequence[Sequence[float]],
+    flange_T_tool: np.ndarray,
+    tolerance_m: float,
+) -> List[int]:
+    """从一条沿直线密集取样的关节角路径里挑出必须保留的点。
+
+    直线段为了走得直，先按很小的间隔（例如 10 毫米）取样求关节解。
+    但逐点运动时每个点都要减速，点越多越顿。本函数只保留那些“不保留
+    就会偏离直线超过允许值”的点：相邻两个保留点之间按关节角直线走，
+    夹爪参考点离整条直线不超过 `tolerance_m`。
+
+    Args:
+        path_deg: 路径上各点的关节角，M×7（M ≥ 2），第一个是起点，
+            度；它们对应的夹爪参考点应当排在一条直线上。
+        flange_T_tool: 夹爪参考点在法兰坐标系里的位姿。
+        tolerance_m: 允许夹爪参考点偏离直线多少，米。
+
+    Returns:
+        保留下来的点在 `path_deg` 里的序号，升序，不含起点（序号 0），
+        一定含终点。
+    """
+    path = np.asarray(path_deg, dtype=float)
+    tool = np.asarray(flange_T_tool, dtype=float)
+    tips = [(collision_model.link_frames(q)[7] @ tool)[:3, 3] for q in path]
+    fractions = np.linspace(0., 1., 11)[1:-1]
+
+    def within(first: int, last: int) -> bool:
+        between = [
+            path[first] + (path[last] - path[first]) * fraction
+            for fraction in fractions
+        ]
+        return bool(
+            tcp_line_deviation_m(between, tool, tips[0], tips[-1]).max()
+            <= tolerance_m
+        )
+
+    kept, current = [], 0
+    while current < len(path) - 1:
+        reach = current + 1
+        # 能跳多远跳多远；紧挨着的下一个点总是可以到。
+        for candidate in range(len(path) - 1, current + 1, -1):
+            if within(current, candidate):
+                reach = candidate
+                break
+        kept.append(reach)
+        current = reach
+    return kept
+
+
 def speed_deg_s(
     samples: Sequence[dict], span_s: float = SPEED_SPAN_S
 ) -> Tuple[np.ndarray, np.ndarray]:
