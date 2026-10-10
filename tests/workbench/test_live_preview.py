@@ -9,8 +9,10 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from saydo.workbench import live_tracker
 from saydo.perception import live_checks
+from saydo.robot import arms
+from saydo.workbench import live_tracker
+from tests.robot import fake_controller
 
 
 class LivePreviewTests(unittest.TestCase):
@@ -19,9 +21,13 @@ class LivePreviewTests(unittest.TestCase):
         root = pathlib.Path(self.directory.name)
         mesh = root / 'model.obj'
         mesh.write_text('# fixture\n')
+        # 跟踪器按项目根目录找抓取配置和配置里引用的标定文件，所以
+        # 在临时根目录下自备一份，不读运行所在目录里本机的 config/。
+        fake_controller.write_arm_config(
+            root, arms.default(), '10.0.0.1', [0] * 7
+        )
         args = types.SimpleNamespace(
             mesh=mesh,
-            grasp_config=live_tracker.ROOT / 'config/grasp/trial.json',
             serial='test',
             detector_class='bottle',
             auto_recover=True,
