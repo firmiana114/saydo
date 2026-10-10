@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
   }
   // 按臂角枚举逆解并搜索连续、不碰撞的关节角路径。
   const bool arm_angle =
-      argc == 2 && std::string(argv[1]) == "--arm-angle-v1";
+      argc == 2 && std::string(argv[1]) == "--arm-angle-v2";
   const bool multi = argc == 2 && std::string(argv[1]) == "--multi-seed-v1";
   auto fk = rm_algo_forward_kinematics(nullptr, joints);
   std::cout.precision(12);
@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
     std::cout << "CAPABILITY MULTI_SEED_V1\n";
   }
   if (arm_angle) {
-    std::cout << "CAPABILITY ARM_ANGLE_V1\n";
+    std::cout << "CAPABILITY ARM_ANGLE_V2\n";
   }
   std::cout << "FK " << fk.position.x << ' ' << fk.position.y << ' '
             << fk.position.z << ' ' << fk.euler.rx << ' ' << fk.euler.ry

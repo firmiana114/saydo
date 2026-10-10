@@ -581,6 +581,7 @@ class GraspProfilesMixin:
                                 arm,
                                 candidate['waypoints'],
                                 timeout=min(3., remaining),
+                                claim=False,
                             )
                             or {}
                         )

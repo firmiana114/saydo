@@ -33,6 +33,10 @@ constexpr double kStricterM = .0002;
 constexpr double kTableToleranceM = .0005;
 // 胶囊体挂在夹爪参考点坐标系上时用的坐标系序号；0～7 是底座和 7 个连杆。
 constexpr int kToolFrame = 8;
+// 另一台臂占着的空间最多用多少个胶囊体表示。
+constexpr int kMaxOtherArmCapsules = 512;
+// 给另一台臂的胶囊体算包围盒时，在余量之外再多留的距离，单位米。
+constexpr double kOtherArmBoxSlackM = .002;
 
 // 一个胶囊体：一条线段加一个半径，坐标在它所挂的坐标系里，单位米。
 struct Capsule {
@@ -41,6 +45,17 @@ struct Capsule {
   std::array<double, 3> end{};
   double radius_m = 0;
   bool table_checked = false;
+};
+
+// 另一台臂占着的一块空间：一个胶囊体，坐标在本臂的基座坐标系里，单位米。
+// low / high 是它的包围盒，已按自身半径和两臂之间的余量向外扩过，用来
+// 快速跳过离得远的胶囊体。
+struct ObstacleCapsule {
+  std::array<double, 3> start{};
+  std::array<double, 3> end{};
+  double radius_m = 0;
+  std::array<double, 3> low{};
+  std::array<double, 3> high{};
 };
 
 // 一台臂的外形和它周围要避开的东西，坐标都在这台臂的基座坐标系里。
@@ -58,16 +73,60 @@ struct ArmModel {
   double pole_radius_m = 0;
   double pole_margin_m = 0;
   std::vector<Capsule> capsules;
+  // 另一台臂占着的空间，以及本臂与它之间至少要留的距离。
+  std::vector<ObstacleCapsule> other_arm;
+  double other_arm_margin_m = 0;
 
   // 有没有任何需要检查的障碍物。
-  bool HasObstacles() const { return has_table || has_pole; }
+  bool HasObstacles() const {
+    return has_table || has_pole || !other_arm.empty();
+  }
 };
 
-// 一个姿态下离障碍物的间距，单位米；不检查的一项为正无穷。
+// 一个姿态下离障碍物的间距，单位米；不检查的一项为正无穷。离另一台臂
+// 的间距只在小于“余量 + 2 毫米”时才是准确值，更远时可能报为正无穷。
 struct Clearance {
   double table_m = std::numeric_limits<double>::infinity();
   double pole_m = std::numeric_limits<double>::infinity();
+  double other_arm_m = std::numeric_limits<double>::infinity();
 };
+
+// 两条线段之间的最短距离，单位米。长度为零的线段按一个点处理。
+inline double SegmentDistance(
+    const std::array<double, 3>& a0, const std::array<double, 3>& a1,
+    const std::array<double, 3>& b0, const std::array<double, 3>& b1) {
+  const double tiny = 1e-12;
+  double d1[3], d2[3], r[3];
+  double a = 0, e = 0, b = 0, c = 0, f = 0;
+  for (int k = 0; k < 3; ++k) {
+    d1[k] = a1[k] - a0[k];
+    d2[k] = b1[k] - b0[k];
+    r[k] = a0[k] - b0[k];
+    a += d1[k] * d1[k];
+    e += d2[k] * d2[k];
+    b += d1[k] * d2[k];
+    c += d1[k] * r[k];
+    f += d2[k] * r[k];
+  }
+  // 先求两条直线上最近的一对点，再把落在线段外的那一端夹回端点。
+  const double denominator = a * e - b * b;
+  double s = denominator > tiny && a > tiny
+                 ? std::clamp((b * f - c * e) / denominator, 0., 1.)
+                 : 0.;
+  double t = e > tiny ? (b * s + f) / e : 0.;
+  if (t < 0) {
+    s = a > tiny ? std::clamp(-c / a, 0., 1.) : 0.;
+  } else if (t > 1) {
+    s = a > tiny ? std::clamp((b - c) / a, 0., 1.) : 0.;
+  }
+  t = std::clamp(t, 0., 1.);
+  double squared = 0;
+  for (int k = 0; k < 3; ++k) {
+    const double gap = r[k] + s * d1[k] - t * d2[k];
+    squared += gap * gap;
+  }
+  return std::sqrt(squared);
+}
 
 // 两个 3×4 位姿相乘：返回 a·b。
 inline Transform Multiply(const Transform& a, const Transform& b) {
@@ -152,6 +211,21 @@ inline Clearance MeasureClearance(
           result.table_m,
           std::min(start[2], end[2]) - capsule.radius_m - model.table_z_m);
     }
+    for (const ObstacleCapsule& other : model.other_arm) {
+      // 包围盒不相交时，两者的间距一定大于“余量 + 2 毫米”，不必细算。
+      bool apart = false;
+      for (int k = 0; k < 3; ++k) {
+        apart = apart ||
+                std::min(start[k], end[k]) - capsule.radius_m > other.high[k] ||
+                std::max(start[k], end[k]) + capsule.radius_m < other.low[k];
+      }
+      if (!apart) {
+        result.other_arm_m = std::min(
+            result.other_arm_m,
+            SegmentDistance(start, end, other.start, other.end) -
+                capsule.radius_m - other.radius_m);
+      }
+    }
   }
   return result;
 }
@@ -164,7 +238,8 @@ inline bool ConfigurationClear(
   }
   const Clearance clearance = MeasureClearance(model, joints_deg);
   return clearance.pole_m >= model.pole_margin_m + kStricterM &&
-         clearance.table_m >= -kTableToleranceM + kStricterM;
+         clearance.table_m >= -kTableToleranceM + kStricterM &&
+         clearance.other_arm_m >= model.other_arm_margin_m + kStricterM;
 }
 
 // 从一个姿态按关节角直线走到另一个姿态，途中（不含两端）是否都足够远。
@@ -193,7 +268,9 @@ inline bool MotionClear(
 //   flange_T_tool 的前三行共 12 个数；
 //   有无桌面(0/1) 桌面高度 有无立杆(0/1) 立杆 x 立杆 y 立杆半径 立杆余量；
 //   胶囊体个数 m，随后 m 行
-//     (坐标系序号 起点 xyz 终点 xyz 半径 是否参与桌面检查 0/1)。
+//     (坐标系序号 起点 xyz 终点 xyz 半径 是否参与桌面检查 0/1)；
+//   与另一台臂之间的余量、它占着的胶囊体个数 k，随后 k 行
+//     (起点 xyz 终点 xyz 半径)。
 // 数值缺失、不是有限数或序号越界时返回 false。
 inline bool ReadArmModel(std::istream& input, ArmModel* model) {
   auto finite = [&input](double* value) {
@@ -249,6 +326,34 @@ inline bool ReadArmModel(std::istream& input, ArmModel* model) {
       return false;
     }
     capsule.table_checked = table_checked != 0;
+  }
+  int other_count = 0;
+  if (!finite(&model->other_arm_margin_m) || model->other_arm_margin_m < 0 ||
+      !(input >> other_count) || other_count < 0 ||
+      other_count > kMaxOtherArmCapsules) {
+    return false;
+  }
+  model->other_arm.assign(other_count, {});
+  for (ObstacleCapsule& other : model->other_arm) {
+    for (double& value : other.start) {
+      if (!finite(&value)) {
+        return false;
+      }
+    }
+    for (double& value : other.end) {
+      if (!finite(&value)) {
+        return false;
+      }
+    }
+    if (!finite(&other.radius_m) || other.radius_m < 0) {
+      return false;
+    }
+    const double reach =
+        other.radius_m + model->other_arm_margin_m + kOtherArmBoxSlackM;
+    for (int k = 0; k < 3; ++k) {
+      other.low[k] = std::min(other.start[k], other.end[k]) - reach;
+      other.high[k] = std::max(other.start[k], other.end[k]) + reach;
+    }
   }
   // 有障碍物要查，却没有外形数据，属于调用方出错。
   return !model->HasObstacles() ||

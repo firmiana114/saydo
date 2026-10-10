@@ -39,8 +39,8 @@ int main() {
     read(&q);
     const auto clearance = saydo_ik::MeasureClearance(model, q);
     std::printf(
-        "%.9f %.9f %d\n", clearance.table_m, clearance.pole_m,
-        int(saydo_ik::ConfigurationClear(model, q)));
+        "%.9f %.9f %d %.9f\n", clearance.table_m, clearance.pole_m,
+        int(saydo_ik::ConfigurationClear(model, q)), clearance.other_arm_m);
   }
   std::cin >> count;
   for (int i = 0; i < count; ++i) {
@@ -112,7 +112,7 @@ class NativeCollisionTests(unittest.TestCase):
         joints = self.random_joints(400, 1)
         rows, _ = self.run_native(self.environment, joints)
         agreed = 0
-        for q, (table, pole, clear) in zip(joints, rows):
+        for q, (table, pole, clear, _) in zip(joints, rows):
             # 检查器内部用单精度保存关节角。
             state = collision_model.check_configuration(
                 q.astype(np.float32).astype(float), self.tool,
@@ -165,7 +165,9 @@ class NativeCollisionTests(unittest.TestCase):
         joints = self.random_joints(20, 4)
         for environment in (None, collision_model.Environment()):
             rows, _ = self.run_native(environment, joints)
-            self.assertTrue(all(row == ['inf', 'inf', '1'] for row in rows))
+            self.assertTrue(
+                all(row == ['inf', 'inf', '1', 'inf'] for row in rows)
+            )
 
     def test_table_only_and_pole_only(self):
         joints = self.random_joints(50, 5)
@@ -184,6 +186,53 @@ class NativeCollisionTests(unittest.TestCase):
         )
         rows, _ = self.run_native(pole_only, joints)
         self.assertTrue(all(row[0] == 'inf' for row in rows))
+
+    def test_other_arm_clearance_matches_the_python_model(self):
+        # 另一台臂：底座在本臂旁边 0.52 米、转了约 170 度，摆成观测姿态。
+        other_base = np.eye(4)
+        yaw = np.radians(170.5)
+        other_base[:2, :2] = [
+            [np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]
+        ]
+        other_base[:3, 3] = [-.046, -.516, 0.]
+        starts, ends, radii, _, _ = collision_model.capsules_in_base(
+            [39., 43.7, 1.7, -71.6, -1.3, -116., -52.5], self.tool
+        )
+        environment = collision_model.Environment(
+            other_arm_capsules=(
+                starts @ other_base[:3, :3].T + other_base[:3, 3],
+                ends @ other_base[:3, :3].T + other_base[:3, 3],
+                radii,
+            ),
+            other_arm_margin_m=.03,
+        )
+        joints = self.random_joints(400, 6)
+        rows, _ = self.run_native(environment, joints)
+        near = blocked = 0
+        for q, (_, _, clear, other) in zip(joints, rows):
+            state = collision_model.check_configuration(
+                q.astype(np.float32).astype(float), self.tool, environment
+            )
+            expected = state['other_arm_clearance_m']
+            if other == 'inf':
+                # 包围盒不相交时检查器不细算，此时间距一定大于余量。
+                self.assertGreater(expected, .03)
+            else:
+                # 细算过的值不一定是最小的那个（离得远的被包围盒跳过），
+                # 但只要真实间距在“余量 + 2 毫米”以内，它就是准确的。
+                self.assertGreaterEqual(float(other), expected - 1e-6)
+                if expected < .032:
+                    self.assertAlmostEqual(float(other), expected, places=6)
+                    near += 1
+            if clear == '1':
+                self.assertIsNone(state['violation'])
+            elif state['violation'] is None:
+                self.assertLess(expected - .03, .00021)
+            else:
+                blocked += 1
+        self.assertGreater(near, 20)
+        self.assertGreater(blocked, 20)
+        self.assertTrue(any(row[2] == '1' for row in rows))
 
     def test_malformed_model_is_refused(self):
         values = collision_model.native_model_values(

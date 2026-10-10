@@ -2,11 +2,13 @@
 
 import pathlib
 import copy
+import dataclasses
 import fcntl
 import hashlib
 import json
 import os
 import re
+import logging
 import tempfile
 import threading
 import time
@@ -17,6 +19,7 @@ import numpy as np
 import yaml
 
 from saydo.geometry import grasp_geometry
+from saydo.robot import arm_occupancy
 from saydo.robot import arms
 from saydo.robot import collision_model
 from saydo.robot import grasp_robot
@@ -25,6 +28,7 @@ from saydo.perception import camera_checks
 from saydo.perception import vision_refinement
 from saydo.manipulation import reorientation_control
 from saydo.manipulation import placement_control
+from saydo.manipulation import placement_geometry
 from saydo.manipulation import grasp_profiles_control
 from saydo.geometry import pose_symmetry
 from saydo.manipulation import gripper_diagnostics
@@ -36,6 +40,13 @@ from saydo.manipulation import motion_recovery
 from saydo.objects import object_catalog
 from saydo.objects import grasp_library
 
+
+LOG = logging.getLogger(__name__)
+
+# 页面抓取的接近和抬升两段沿直线逐点关节运动时，相邻取样点的间隔。
+LINEAR_SAMPLE_STEP_M = .01
+# 检查路径和登记占位之间，另一台臂的占位变了就重新检查，最多试这么多次。
+OCCUPANCY_ATTEMPTS = 3
 
 # 关节与观测姿态相差不超过这个角度，就认为在观测姿态。取 2 度：复位
 # 到位的误差在 0.05 度以内，而 2 度的关节偏差对应相机移动约 1～2 厘米，
@@ -114,7 +125,11 @@ class GraspController(
     def collision_environment(
         self, config: dict
     ) -> collision_model.Environment:
-        """返回这台臂规划时要避开的障碍物：桌面和本机登记的立杆。
+        """返回这台臂规划时要避开的障碍物：桌面、立杆和另一台臂。
+
+        另一台臂没有在执行动作时，取它当前姿态下的外形（向它的控制器
+        只读查询关节角）；正在执行动作时，取它登记的、即将要走的路径
+        扫过的空间。见 `saydo/robot/arm_occupancy.py`。
 
         Args:
             config: 这台臂的抓取配置，桌面高度取自 `table_z_m`。
@@ -123,10 +138,20 @@ class GraspController(
             障碍物设置，坐标在这台臂的基座坐标系里。
 
         Raises:
-            ValueError: 本机的障碍物文件格式不对或数值无效。
+            ValueError: 本机的障碍物文件格式不对或数值无效；或者读不到
+                另一台臂的当前姿态（可在障碍物文件里设置为忽略）。
         """
-        return collision_model.load_environment(
+        environment = collision_model.load_environment(
             self.root, self.arm.arm_id, config['table_z_m']
+        )
+        other = arm_occupancy.shared(self.root).other_arm(self.arm.arm_id)
+        if other is None:
+            return environment
+        return dataclasses.replace(
+            environment,
+            other_arm_capsules=other.capsules,
+            other_arm_margin_m=other.margin_m,
+            other_arm_label=other.label,
         )
 
     def camera_reuse_path(self, config: dict) -> pathlib.Path:
@@ -419,17 +444,34 @@ class GraspController(
                 or np.max(np.abs(last - first)) > 30
             ):
                 raise ValueError('机械臂未停稳或关节反馈无效，不能复位')
-            # 复位是从当前姿态直接转到目标关节角，发令前先查这条路径。
-            path_check = collision_model.check_path(
-                [last / 1000, np.asarray(target, dtype=float) / 1000],
-                tool['flange_T_grip_tcp'],
-                self.collision_environment(config),
-            )
-            report['collision_check'] = path_check
-            if path_check['violation'] is not None:
+            # 复位是从当前姿态直接转到目标关节角，发令前先查这条路径，
+            # 通过后登记占位，另一台臂在复位期间不得进入。
+            joint_path_deg = [
+                last / 1000, np.asarray(target, dtype=float) / 1000
+            ]
+            occupancy = arm_occupancy.shared(self.root)
+            for _ in range(OCCUPANCY_ATTEMPTS):
+                version = occupancy.version()
+                path_check = collision_model.check_path(
+                    joint_path_deg,
+                    tool['flange_T_grip_tcp'],
+                    self.collision_environment(config),
+                )
+                report['collision_check'] = path_check
+                if path_check['violation'] is not None:
+                    raise ValueError(
+                        '复位路径不安全：'
+                        + path_check['violation']['message']
+                        + '；请先手动把机械臂移到空旷处再复位'
+                    )
+                if occupancy.claim_if_unchanged(
+                    self.arm.arm_id, joint_path_deg,
+                    tool['flange_T_grip_tcp'], version,
+                ):
+                    break
+            else:
                 raise ValueError(
-                    '复位路径不安全：' + path_check['violation']['message']
-                    + '；请先手动把机械臂移到空旷处再复位'
+                    '另一台臂的占位在检查期间反复变化，未发送运动；请稍后重试'
                 )
             self.check_cancel()
             self.actuated = True
@@ -671,7 +713,17 @@ class GraspController(
                 ),
             }
 
-    def update(self, **values):
+    def update(self, **values: object) -> None:
+        """更新任务状态并通知订阅者。
+
+        任务开始或结束（`busy` 改变）时撤销这台臂登记的占位：此后另
+        一台臂按“静止在当前姿态”对待它，直到它下一次发令前重新登记。
+
+        Args:
+            **values: 要写入 `status` 的各项。
+        """
+        if 'busy' in values:
+            arm_occupancy.shared(self.root).release(self.arm.arm_id)
         with self.lock:
             self.status.update(values)
             observer = getattr(self, 'agent_observer', None)
@@ -1499,11 +1551,17 @@ class GraspController(
         arm: dict,
         waypoints: list,
         timeout: float = 3.,
+        claim: bool = True,
     ) -> dict:
-        """发令前离线检查一串路点；只做计算，不发送指令。
+        """发令前离线检查一串路点，并登记这条路径的占位；不发送指令。
 
         检查逆解、正解回验、关节连续性，以及机械臂和夹爪会不会碰到
-        桌面或立杆。结果追加到 `report['kinematics_checks']`。
+        桌面、立杆或另一台臂。结果追加到 `report['kinematics_checks']`。
+
+        检查通过后，把“从当前关节角起沿这串路点走”扫过的空间登记为
+        这台臂的占位（只在任务进行中登记，任务结束时自动撤销），另
+        一台臂此后规划和发令都不得进入。如果另一台臂的占位在检查期间
+        变了，按新的占位重新检查。
 
         Args:
             plan: 抓取方案，取其中的 `flange_T_grip_tcp`。
@@ -1512,12 +1570,15 @@ class GraspController(
             arm: 机械臂当前状态，关节为原始单位（0.001 度）。
             waypoints: 要检查的路点序列。
             timeout: 逆解搜索的时间上限，单位秒。
+            claim: 是否登记占位。只是在多个候选里挑选、并不马上执行
+                时传 False。
 
         Returns:
             检查记录，含各路点的关节解 `joint_solutions_deg`。
 
         Raises:
-            ValueError: 缺少离线检查器，或检查不通过（原因写在消息里）。
+            ValueError: 缺少离线检查器，检查不通过（原因写在消息里），
+                或另一台臂的占位在检查期间反复变化。
         """
         self.check_cancel()
         executable = (self.root / config['ik_checker']).resolve()
@@ -1525,26 +1586,43 @@ class GraspController(
             raise ValueError(
                 '缺少支持正解回验的离线检查器，请重新构建 grasp_ik.cc'
             )
-        valid, detail = motion_validation.check_waypoints(
-            executable,
-            {'flange_T_grip_tcp': plan['flange_T_grip_tcp']},
-            arm,
-            waypoints,
-            timeout=timeout,
-            environment=self.collision_environment(config),
+        occupancy = arm_occupancy.shared(self.root)
+        for _ in range(OCCUPANCY_ATTEMPTS):
+            version = occupancy.version()
+            valid, detail = motion_validation.check_waypoints(
+                executable,
+                {'flange_T_grip_tcp': plan['flange_T_grip_tcp']},
+                arm,
+                waypoints,
+                timeout=timeout,
+                environment=self.collision_environment(config),
+            )
+            report.setdefault('kinematics_checks', []).append(
+                {
+                    'stage': report.get('active_stage'),
+                    'waypoints': [w['name'] for w in waypoints],
+                    'initial_arm': copy.deepcopy(arm),
+                    **detail,
+                }
+            )
+            self.check_cancel()
+            if not valid:
+                raise ValueError(detail['reason'])
+            if not claim or not self.status['busy']:
+                return detail
+            if occupancy.claim_if_unchanged(
+                self.arm.arm_id,
+                [
+                    np.asarray(arm['joint'], dtype=float) / 1000,
+                    *detail.get('joint_solutions_deg', []),
+                ],
+                plan['flange_T_grip_tcp'],
+                version,
+            ):
+                return detail
+        raise ValueError(
+            '另一台臂的占位在检查期间反复变化，未发送运动；请稍后重试'
         )
-        report.setdefault('kinematics_checks', []).append(
-            {
-                'stage': report.get('active_stage'),
-                'waypoints': [w['name'] for w in waypoints],
-                'initial_arm': copy.deepcopy(arm),
-                **detail,
-            }
-        )
-        self.check_cancel()
-        if not valid:
-            raise ValueError(detail['reason'])
-        return detail
 
     def verify_waypoint(
         self, plan: dict, config: dict, report: dict, waypoint: dict
@@ -1610,6 +1688,66 @@ class GraspController(
         )
         return solved
 
+    def linear_joint_samples(
+        self, plan: dict, config: dict, report: dict, waypoint: dict
+    ) -> Optional[list]:
+        """为页面抓取的一段直线找一串逐点的关节解；只做计算。
+
+        为什么不直接用控制器的直线运动（`movel`）：那条指令下手肘怎么
+        摆由控制器决定，碰撞检查查不到实际走的路。这里把直线每 10 毫米
+        取一个点，连同后面剩余的路点一起求一条连续、不碰撞的关节角
+        路径；找到后由调用方沿这些关节角逐点运动。
+
+        找不到连续解时返回 None，调用方退回 `movel`：2026-10-10 回放
+        历史抓取时，沿线取样检查拒绝过控制器实际能走的直线，所以不把
+        它当作失败。退回的情况记在 `report['linear_fallbacks']` 里。
+
+        Args:
+            plan: 抓取方案。
+            config: 这台臂生效的抓取配置。
+            report: 本次任务的诊断记录。
+            waypoint: 即将执行的直线段的终点，`grasp` 或 `lift`。
+
+        Returns:
+            这一段各取样点的关节解（度），最后一个是终点；找不到连续
+            解时为 None。
+
+        Raises:
+            ValueError: 任务已取消。
+        """
+        arm = self.arm_state()
+        names = [w['name'] for w in plan['waypoints']]
+        remaining = plan['waypoints'][names.index(waypoint['name']) + 1:]
+        # 取样从实际位置出发，朝向用目标的：到位时朝向允许有小偏差，
+        # 而直线段要求全程保持同一个朝向。
+        samples = placement_geometry.sample_linear_path(
+            list(arm['pose'][:3]) + list(waypoint['controller_pose'][3:]),
+            [waypoint],
+            LINEAR_SAMPLE_STEP_M,
+        )
+        try:
+            detail = self.verify_motion_targets(
+                plan, config, report, arm, samples + remaining
+            )
+        except ValueError as error:
+            self.check_cancel()
+            report.setdefault('linear_fallbacks', []).append(
+                {
+                    'stage': waypoint['name'],
+                    'samples': len(samples),
+                    'reason': str(error),
+                }
+            )
+            LOG.warning(
+                '%s %s 段沿直线取样找不到连续的关节解，退回控制器的直线'
+                '运动：%s',
+                self.arm.label,
+                waypoint['name'],
+                error,
+            )
+            return None
+        return detail['joint_solutions_deg'][:len(samples)]
+
     def follow_joint_samples(
         self, solutions_deg, speed, watchdog, report, stage
     ):
@@ -1649,8 +1787,9 @@ class GraspController(
           位姿关节运动（`movej_p`）：那条指令由控制器自己做逆解，选哪种
           手臂摆法、途中怎么走我们都不知道，碰撞检查查的就不是实际走的
           路。自己给关节角时，各关节同步转动，路径就是检查过的那一条。
-        - 接近、抬升：页面抓取用控制器的直线运动（`movel`），手肘怎么摆
-          仍由控制器决定；固定抓放改为沿取样点逐点关节运动。
+        - 接近、抬升：沿直线每 10 毫米取一个点，逐点关节运动。页面抓取
+          在找不到连续的关节解时退回控制器的直线运动（`movel`，手肘
+          怎么摆由控制器决定），并记在 `linear_fallbacks` 里。
 
         Args:
             plan: `prepare_grasp_plan` 给出的抓取方案。
@@ -1737,13 +1876,18 @@ class GraspController(
                 state='lifting' if lifting else 'moving',
                 message='执行路径：' + names[waypoint['name']],
             )
-            solved = self.verify_waypoint(plan, config, report, waypoint)
+            fixed = waypoint['name'] in plan.get('fixed_joint_targets', {})
+            solved = None
+            if waypoint['name'] != 'pregrasp' and not fixed:
+                solved = self.linear_joint_samples(
+                    plan, config, report, waypoint
+                )
+            along_samples = solved is not None
+            if solved is None:
+                solved = self.verify_waypoint(plan, config, report, waypoint)
             report['robot_motion_sent'] = True
             self.robot.motion_stage = report['active_stage']
-            if (
-                waypoint['name'] == 'pregrasp'
-                or waypoint['name'] in plan.get('fixed_joint_targets', {})
-            ):
+            if waypoint['name'] == 'pregrasp' or fixed or along_samples:
                 self.follow_joint_samples(
                     solved,
                     config['arm_speed_percent'],

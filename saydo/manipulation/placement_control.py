@@ -300,6 +300,8 @@ class PlacementMixin:
             report['active_stage'] = (
                 '搜索放置位置并检查运动端点及下降/退出直线路径'
             )
+            # 障碍物（含另一台臂当前占着的空间）在规划开始时取一次。
+            environment = self.collision_environment(config)
             plan = placement_geometry.plan_placement(
                 held,
                 mesh['vertices'],
@@ -308,7 +310,7 @@ class PlacementMixin:
                 settings,
                 lambda points, timeout: motion_validation.check_waypoints(
                     checker, tool, arm, points, timeout,
-                    environment=self.collision_environment(config),
+                    environment=environment,
                 ),
                 self.check_cancel,
                 report.setdefault('search_attempts', []),
@@ -534,23 +536,20 @@ class PlacementMixin:
             report.setdefault(
                 'executed_waypoints', []
             ).append(copy.deepcopy(target))
-            if joint_motion:
-                # 关节段只有终点一个检查点，它的关节解就是下发的目标；
-                # 到位后 follow_joint_samples 会核对实际关节角。
-                self.follow_joint_samples(
-                    detail['joint_solutions_deg'][-1:],
-                    speed,
-                    read_motion_state,
-                    report,
-                    report['active_stage'],
-                )
-            else:
-                self.robot.move_linear(
-                    target['controller_pose'],
-                    speed,
-                    self.cancelled,
-                    read_motion_state,
-                )
+            # 关节段只有终点一个检查点；直线段沿线每隔一小段有一个
+            # 检查点。两种都沿刚检查过的关节解逐点关节运动，不用控制器
+            # 的直线运动（`movel`）：那条指令下手肘怎么摆由控制器决定，
+            # 碰撞检查查不到实际走的路。到位后 follow_joint_samples 会
+            # 核对实际关节角。
+            self.follow_joint_samples(
+                detail['joint_solutions_deg'][-1:]
+                if joint_motion
+                else detail['joint_solutions_deg'],
+                speed,
+                read_motion_state,
+                report,
+                report['active_stage'],
+            )
             record = {'stage': report['active_stage']}
             report.setdefault('arrival_checks', []).append(record)
             actual = motion_validation.wait_for_pose(

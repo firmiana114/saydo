@@ -58,6 +58,8 @@ class ObjectControlTests(unittest.TestCase):
         self.joint_targets = {}
         self.counter = 0
         self.calls = []
+        self.samples = []
+        self.segment_ends = {}
 
         def query(command):
             if command == 'get_current_arm_state':
@@ -87,7 +89,18 @@ class ObjectControlTests(unittest.TestCase):
             watchdog()
 
         def joints(values, speed, cancelled, watchdog):
-            self.calls.append(('movej', values, speed))
+            # 全部运动都是关节运动。直线段沿取样点逐点走：途中的取样点
+            # 记在 samples 里，走到这一段终点的那一次记为 line；普通的
+            # 关节段记为 movej。
+            linear, last = self.segment_ends.get(
+                tuple(values), (False, True)
+            )
+            if linear and not last:
+                self.samples.append((values, speed))
+            else:
+                self.calls.append(
+                    ('line' if linear else 'movej', values, speed)
+                )
             watchdog()
             if self.fail == 'move':
                 raise RuntimeError('motion failed')
@@ -118,12 +131,18 @@ class ObjectControlTests(unittest.TestCase):
 
         self.service.motion_context = mock.Mock(side_effect=context)
 
-        def verify(plan, config, report, arm, points, timeout=3):
+        def verify(plan, config, report, arm, points, timeout=3, claim=True):
             solutions = []
-            for point in points:
+            segments = [p['name'].split('_sample_')[0] for p in points]
+            for index, point in enumerate(points):
                 self.counter += 1
                 raw = [self.counter * 1000, 0, 0, 0, 0, 0, 0]
                 self.joint_targets[tuple(raw)] = point['controller_pose']
+                # 这个取样点是不是直线段上的、是不是所在那一段的最后一个。
+                self.segment_ends[tuple(raw)] = (
+                    point.get('method') == 'linear',
+                    segments[index + 1:index + 2] != [segments[index]],
+                )
                 solutions.append([v / 1000 for v in raw])
             return {'verified': True, 'joint_solutions_deg': solutions}
 
@@ -184,11 +203,15 @@ class ObjectControlTests(unittest.TestCase):
         self.assertEqual(status['state'], 'completed', status.get('error'))
         self.assertEqual(self.service.held_object['orientation_version'], 1)
         self.assertEqual(
-            [x[0] for x in self.calls], ['movej', 'movej', 'movej', 'movel']
+            [x[0] for x in self.calls], ['movej', 'movej', 'movej', 'line']
         )
+        # 直线段沿取样点逐点关节运动，不用控制器的直线运动。
+        self.assertGreater(len(self.samples), 0)
+        self.robot.move_linear.assert_not_called()
         self.robot.move_joint_pose.assert_not_called()
         self.robot.move_gripper.assert_not_called()
         self.assertTrue(all(x[2] == 25 for x in self.calls))
+        self.assertTrue(all(x[1] == 25 for x in self.samples))
         self.calls.clear()
         args = self.args()
         args.update(goal=None, retreat_vector_base_m=[0, 0, .05])
@@ -198,8 +221,9 @@ class ObjectControlTests(unittest.TestCase):
         self.assertEqual(status['state'], 'completed', status.get('error'))
         self.assertIsNone(self.service.held_object)
         self.assertEqual(
-            [x[0] for x in self.calls], ['movel', 'movel', 'open', 'movel']
+            [x[0] for x in self.calls], ['line', 'line', 'open', 'line']
         )
+        self.robot.move_linear.assert_not_called()
         np.testing.assert_allclose(
             grasp_geometry.controller_pose(self.arm['pose'])[:3, 3],
             before[:3, 3] + [0, 0, .05],
@@ -219,7 +243,7 @@ class ObjectControlTests(unittest.TestCase):
         status = self.execute(plan)
         self.assertEqual(status['state'], 'failed')
         self.assertIsNone(self.service.held_object)
-        self.assertEqual([x[0] for x in self.calls], ['movel', 'movel', 'open'])
+        self.assertEqual([x[0] for x in self.calls], ['line', 'line', 'open'])
         self.robot.stop.assert_called_once()
         self.service.retain_reorientation_hold.assert_not_called()
         with self.assertRaises(ValueError):
@@ -231,14 +255,14 @@ class ObjectControlTests(unittest.TestCase):
         plan = self.planned(
             self.args({'target_position_m': [.4, -.1, .3]}), True
         )
-        original = self.robot.move_linear.side_effect
+        original = self.robot.move_joints.side_effect
 
         def fail_descent(*args):
             if self.robot.motion_stage.startswith('release_descent'):
                 raise RuntimeError('descent failed')
             return original(*args)
 
-        self.robot.move_linear.side_effect = fail_descent
+        self.robot.move_joints.side_effect = fail_descent
         status = self.execute(plan)
         self.assertEqual(status['state'], 'failed')
         self.robot.move_gripper.assert_not_called()
@@ -321,14 +345,14 @@ class ObjectControlTests(unittest.TestCase):
         args = self.args()
         args.update(goal=None, retreat_vector_base_m=[0, 0, .05])
         plan = self.planned(args, True)
-        original = self.robot.move_linear.side_effect
+        original = self.robot.move_joints.side_effect
 
         def fail_retreat(*args):
             if self.opened:
                 raise RuntimeError('retreat failed')
             return original(*args)
 
-        self.robot.move_linear.side_effect = fail_retreat
+        self.robot.move_joints.side_effect = fail_retreat
         status = self.execute(plan)
         self.assertEqual(status['state'], 'failed')
         self.assertIsNone(self.service.held_object)

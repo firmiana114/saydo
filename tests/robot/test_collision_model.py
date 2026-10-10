@@ -259,6 +259,171 @@ class ValidationHookTests(unittest.TestCase):
         self.assertEqual(len(detail['failure']['joint_deg']), 7)
 
 
+def other_arm_environment(joint_deg, margin=.03, base_y=-.52):
+    """另一台臂摆成给定姿态时，本臂要避开的障碍物。
+
+    另一台臂的底座在本臂底座的 −Y 方向 `-base_y` 米处，朝向相同。
+    """
+    starts, ends, radii = collision_model.swept_capsules([joint_deg], TOOL)
+    offset = np.array([0., base_y, 0.])
+    return collision_model.Environment(
+        other_arm_capsules=(starts + offset, ends + offset, radii),
+        other_arm_margin_m=margin,
+        other_arm_label='2 臂',
+    )
+
+
+class SegmentDistanceTests(unittest.TestCase):
+    def test_known_configurations(self):
+        zero, x, y, z = np.eye(4)[[3, 0, 1, 2], :3]
+        cases = [
+            # 平行，相距 1。
+            (zero, x, y, x + y, 1.),
+            # 交叉。
+            (-x, x, -y, y, 0.),
+            # 异面垂直，相距 2。
+            (-x, x, -y + 2 * z, y + 2 * z, 2.),
+            # 端点对端点。
+            (zero, x, 3 * x, 4 * x, 2.),
+            # 一条退化成一个点。
+            (zero, zero, x + y, x - y, 1.),
+            # 两条都退化成点。
+            (zero, zero, 3 * x + 4 * y, 3 * x + 4 * y, 5.),
+        ]
+        for a0, a1, b0, b1, expected in cases:
+            distance = collision_model.segment_distances(
+                a0[None], a1[None], b0[None], b1[None]
+            )
+            self.assertAlmostEqual(float(distance[0, 0]), expected, places=9)
+
+    def test_matches_dense_sampling_for_random_segments(self):
+        random = np.random.default_rng(2)
+        a0, a1, b0, b1 = random.normal(size=(4, 30, 3))
+        distances = collision_model.segment_distances(a0, a1, b0[:7], b1[:7])
+        self.assertEqual(distances.shape, (30, 7))
+        fractions = np.linspace(0, 1, 401)[:, None]
+        for i in range(30):
+            for j in range(7):
+                on_a = a0[i] + fractions * (a1[i] - a0[i])
+                on_b = b0[j] + fractions * (b1[j] - b0[j])
+                sampled = np.linalg.norm(
+                    on_a[:, None] - on_b[None], axis=2
+                ).min()
+                self.assertLessEqual(distances[i, j], sampled + 1e-9)
+                self.assertLess(sampled - distances[i, j], .01)
+
+
+class OtherArmTests(unittest.TestCase):
+    def test_distant_other_arm_is_reported_but_not_a_violation(self):
+        state = collision_model.check_configuration(
+            ZERO, TOOL, other_arm_environment(ZERO)
+        )
+        # 两臂都竖直向上，底座相距 0.52 米，两边最粗的一段半径 74 毫米。
+        self.assertIsNone(state['violation'])
+        self.assertGreater(state['other_arm_clearance_m'], .3)
+        self.assertLess(state['other_arm_clearance_m'], .52 - 2 * .074)
+        self.assertIsNone(state['pole_clearance_m'])
+
+    def test_reaching_into_the_other_arm_is_refused(self):
+        # 本臂的手臂水平伸向另一台臂的底座。
+        reaching = [-90., 90., 0., 0., 0., 0., 0.]
+        state = collision_model.check_configuration(
+            reaching, TOOL, other_arm_environment(ZERO)
+        )
+        self.assertLess(state['other_arm_clearance_m'], 0)
+        self.assertRegex(
+            state['violation'], '离2 臂 -?[0-9]+ 毫米，要求至少 30 毫米'
+        )
+        # 朝相反方向伸出去就没有问题。
+        away = [90., 90., 0., 0., 0., 0., 0.]
+        self.assertIsNone(
+            collision_model.check_configuration(
+                away, TOOL, other_arm_environment(ZERO)
+            )['violation']
+        )
+
+    def test_margin_decides_the_boundary(self):
+        environment = other_arm_environment(ZERO, margin=0.)
+        clearance = collision_model.check_configuration(
+            ZERO, TOOL, environment
+        )['other_arm_clearance_m']
+        for margin, refused in (
+            (clearance - .001, False), (clearance + .001, True)
+        ):
+            state = collision_model.check_configuration(
+                ZERO, TOOL, other_arm_environment(ZERO, margin=margin)
+            )
+            self.assertEqual(state['violation'] is not None, refused)
+
+    def test_path_through_the_other_arm_is_caught_between_waypoints(self):
+        # 起点和终点都背对另一台臂，但第 1 关节转过去时手臂扫过它。
+        start = [0., 90., 0., 0., 0., 0., 0.]
+        end = [-180., 90., 0., 0., 0., 0., 0.]
+        environment = other_arm_environment(ZERO)
+        for joint in (start, end):
+            self.assertIsNone(
+                collision_model.check_configuration(
+                    joint, TOOL, environment
+                )['violation']
+            )
+        report = collision_model.check_path([start, end], TOOL, environment)
+        self.assertIn('离2 臂', report['violation']['message'])
+        self.assertLess(report['min_other_arm_clearance_m'], 0)
+        self.assertIsNotNone(report['min_other_arm_part'])
+
+
+class SweptCapsuleTests(unittest.TestCase):
+    def test_single_pose_gives_the_plain_capsules(self):
+        starts, ends, radii = collision_model.swept_capsules([ZERO], TOOL)
+        expected = collision_model.capsules_in_base(ZERO, TOOL)
+        np.testing.assert_allclose(starts, expected[0])
+        np.testing.assert_allclose(ends, expected[1])
+        np.testing.assert_allclose(radii, expected[2])
+
+    def test_swept_set_covers_every_pose_on_the_path(self):
+        path = [
+            ZERO,
+            [60., 40., 10., -80., 20., 30., 90.],
+            [-90., -40., 10., 80., 20., -30., 0.],
+        ]
+        starts, ends, radii = collision_model.swept_capsules(path, TOOL)
+        self.assertLessEqual(len(radii), collision_model.SWEPT_MAX_CAPSULES)
+        self.assertGreater(len(radii), 13)
+        swept = collision_model.Environment(
+            other_arm_capsules=(starts, ends, radii)
+        )
+        # 路径上任取姿态：它的每个胶囊体的轴线都落在登记的空间里面，
+        # 而且深入的距离不小于它自己的半径（即整个胶囊体被包住）。
+        random = np.random.default_rng(5)
+        for previous, target in zip(path[:-1], path[1:]):
+            for fraction in random.random(40):
+                joint = np.array(previous) + fraction * (
+                    np.array(target) - previous
+                )
+                a, b, r, _, _ = collision_model.capsules_in_base(joint, TOOL)
+                for point in (a, b, (a + b) / 2):
+                    depth = (
+                        collision_model.segment_distances(
+                            point, point, starts, ends
+                        )
+                        - radii[None, :]
+                    ).min(axis=1)
+                    # 取样间隔 2 度，相邻取样之间允许有很小的缝。
+                    self.assertTrue((depth <= -r + .004).all(), depth + r)
+
+    def test_fewer_capsules_means_fatter_ones(self):
+        path = [ZERO, [170., 80., 100., -100., 90., 80., 200.]]
+        fine = collision_model.swept_capsules(path, TOOL, max_count=400)
+        coarse = collision_model.swept_capsules(path, TOOL, max_count=30)
+        self.assertLessEqual(len(coarse[2]), 30)
+        self.assertGreater(len(fine[2]), len(coarse[2]))
+        self.assertGreater(coarse[2].max(), fine[2].max())
+
+    def test_bad_path_is_refused(self):
+        with self.assertRaisesRegex(ValueError, '7 个关节角'):
+            collision_model.swept_capsules([[0.] * 6], TOOL)
+
+
 class LoadTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -295,6 +460,37 @@ class LoadTests(unittest.TestCase):
         self.write(side_m=.02, margin_m=.03, position_m={'arm1': list(POLE_1)})
         loaded = collision_model.load_environment(self.root, 'arm2', -.0275)
         self.assertIsNone(loaded.pole_xy_m)
+
+    def test_other_arm_settings_default_and_override(self):
+        self.path.parent.rmdir()
+        self.assertEqual(
+            collision_model.other_arm_settings(self.root),
+            {'margin_m': .03, 'when_unreadable': 'refuse'},
+        )
+        self.path.parent.mkdir(parents=True)
+        self.write()
+        self.assertEqual(
+            collision_model.other_arm_settings(self.root)['margin_m'], .03
+        )
+        self.path.write_text(
+            yaml.safe_dump(
+                {
+                    'schema_version': 1,
+                    'other_arm': {'margin_m': .05, 'when_unreadable': 'ignore'},
+                }
+            )
+        )
+        self.assertEqual(
+            collision_model.other_arm_settings(self.root),
+            {'margin_m': .05, 'when_unreadable': 'ignore'},
+        )
+        for bad in ({'margin_m': -.01}, {'when_unreadable': 'maybe'},
+                    {'margin_m': True}):
+            self.path.write_text(
+                yaml.safe_dump({'schema_version': 1, 'other_arm': bad})
+            )
+            with self.assertRaisesRegex(ValueError, 'other_arm 的设置无效'):
+                collision_model.other_arm_settings(self.root)
 
     def test_bad_values_are_refused(self):
         self.write(side_m=0., margin_m=.03, position_m={'arm1': list(POLE_1)})

@@ -98,7 +98,11 @@ class ReturnGraspTests(unittest.TestCase):
 
                 robot.move_linear.side_effect = linear
 
-                kinematics = fake_kinematics.PairedKinematics()
+                # 本测试关注的不是直线段怎么走：让沿线取样“求不出连续解”，
+                # 接近和抬升走退回控制器直线运动的那条分支。
+                kinematics = fake_kinematics.PairedKinematics(
+                    sampled_lines_fail=True
+                )
 
                 def joints(target, speed, cancelled, watchdog):
                     watchdog()

@@ -588,6 +588,8 @@ class ReorientationMixin:
             if not checker.is_file():
                 raise ValueError('缺少姿态调整航点可达性检查程序')
             report['active_stage'] = '检查姿态路径及最终离桌高度'
+            # 障碍物（含另一台臂当前占着的空间）在规划开始时取一次。
+            environment = self.collision_environment(config)
             plan = reorientation_geometry.plan_reorientation(
                 held,
                 mesh['vertices'],
@@ -597,7 +599,7 @@ class ReorientationMixin:
                 settings,
                 lambda waypoints, timeout: motion_validation.check_waypoints(
                     checker, tool, arm, waypoints, timeout,
-                    environment=self.collision_environment(config),
+                    environment=environment,
                 ),
                 self.check_cancel,
                 position_mode,

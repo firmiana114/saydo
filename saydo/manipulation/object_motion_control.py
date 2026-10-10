@@ -422,6 +422,8 @@ class ObjectMotionMixin:
                     configuration_binding=binding,
                     flange_T_grip_tcp=tool['flange_T_grip_tcp'],
                 )
+                # 障碍物（含另一台臂当前占着的空间）在规划开始时取一次。
+                environment = self.collision_environment(config)
                 plan = object_motion_geometry.plan_object_motion(
                     held,
                     geometry['vertices'],
@@ -431,7 +433,7 @@ class ObjectMotionMixin:
                     frame,
                     lambda points, timeout: motion_validation.check_waypoints(
                         checker, tool, arm, points, timeout,
-                        environment=self.collision_environment(config),
+                        environment=environment,
                     ),
                     self.check_cancel,
                     release,
@@ -829,7 +831,10 @@ class ObjectMotionMixin:
                     return feedback
 
                 joint_target = None
-                if target['method'] == 'linear' and fixed is not None:
+                if target['method'] == 'linear':
+                    # 直线段沿刚检查过的取样点逐点关节运动，不用控制器
+                    # 的直线运动（`movel`）：那条指令下手肘怎么摆由
+                    # 控制器决定，碰撞检查查不到实际走的路。
                     self.actuated = True
                     report['robot_motion_sent'] = True
                     joint_target = self.follow_joint_samples(
@@ -840,15 +845,6 @@ class ObjectMotionMixin:
                         observed,
                         report,
                         target['name'],
-                    )
-                elif target['method'] == 'linear':
-                    self.actuated = True
-                    report['robot_motion_sent'] = True
-                    self.robot.move_linear(
-                        target['controller_pose'],
-                        plan['speed_percent'],
-                        self.cancelled,
-                        observed,
                     )
                 else:
                     solutions = (

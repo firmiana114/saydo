@@ -15,7 +15,9 @@ ORIENTATION_TOLERANCE_RAD = np.deg2rad(2)
 # 所有摆法都列出来之后才下结论，所以前两种是确定的“没有解”。
 SEARCH_FAILURE_TEXT = {
     'out_of_reach': '这个位姿在手臂的任何摆法下都够不到或超出关节限位',
-    'blocked_by_obstacle': '这个位姿下手臂的所有摆法都会碰到桌面或立杆',
+    'blocked_by_obstacle': (
+        '这个位姿下手臂的所有摆法都会碰到桌面、立杆或另一台臂'
+    ),
     'no_continuous_solution': (
         '这个位姿有可行的摆法，但从前面的路径走不过去'
         '（关节角变化过大、途中会碰到障碍物或自碰撞）'
@@ -392,19 +394,19 @@ def check_waypoints(
         )
     )
     result = subprocess.run(
-        [str(executable), '--arm-angle-v1'],
+        [str(executable), '--arm-angle-v2'],
         input=' '.join(str(x) for x in values) + '\n',
         text=True,
         capture_output=True,
         timeout=timeout,
     )
-    if 'CAPABILITY ARM_ANGLE_V1' not in result.stdout.splitlines():
+    if 'CAPABILITY ARM_ANGLE_V2' not in result.stdout.splitlines():
         return (
             False,
             {
                 'verified': False,
                 'reason': (
-                    '离线检查器尚未支持按臂角搜索路径的协议，请运行 '
+                    '离线检查器与程序版本不一致（缺少 ARM_ANGLE_V2），请运行 '
                     'bash scripts/build_ik_checker.sh 重新构建，不发送运动'
                 ),
             },

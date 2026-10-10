@@ -7,7 +7,9 @@
 闭合，被测的流程代码不需要任何改动。
 
 它只替换逆解子进程和控制器这两处边界，不做任何可达性或碰撞判断：
-交给它的路点一律“有解”。
+交给它的路点一律“有解”。唯一的例外是 `sampled_lines_fail`：打开后，
+沿直线取样的路径（页面抓取的接近和抬升）一律“求不出连续解”，用来走到
+“退回控制器直线运动”的那条分支。
 """
 
 from __future__ import annotations
@@ -18,9 +20,40 @@ from typing import Dict, List, Optional, Tuple
 class PairedKinematics:
     """记住“位姿 ↔ 关节角”对应关系的逆解与控制器替身。"""
 
-    def __init__(self) -> None:
+    def __init__(self, sampled_lines_fail: bool = False) -> None:
+        """创建替身。
+
+        Args:
+            sampled_lines_fail: True 时，含有直线取样点（名字形如
+                `grasp:3/10`）的路径一律判为没有连续解。
+        """
+        self.sampled_lines_fail = sampled_lines_fail
         self._pose_by_joint: Dict[Tuple[int, ...], List[int]] = {}
         self._joint_by_pose: Dict[Tuple[int, ...], List[int]] = {}
+        self._name_by_joint: Dict[Tuple[int, ...], str] = {}
+
+    def name_for(self, joint_raw: List[int]) -> str:
+        """返回一组关节角最近一次被求解时所属路点的名字。
+
+        控制器替身用它分辨“这次关节运动是在走直线段的取样点，还是一个
+        普通的关节段”：直线取样点的名字形如 `lower:3/5`。
+
+        Args:
+            joint_raw: 七个关节角，控制器原始单位（0.001 度）。
+
+        Returns:
+            路点名；这组关节角不是本替身解出来的时为空字符串。
+        """
+        return self._name_by_joint.get(
+            tuple(int(value) for value in joint_raw), ''
+        )
+
+    def _line_rejected(self, waypoints: List[dict]) -> bool:
+        """这条路径是否属于被设定为“求不出连续解”的直线取样路径。"""
+        return self.sampled_lines_fail and any(
+            w.get('method') == 'linear' and ':' in w.get('name', '')
+            for w in waypoints
+        )
 
     def joint_raw_for(self, controller_pose: List[int]) -> List[int]:
         """返回某个位姿对应的关节角，首次见到时分配一组新的。
@@ -66,16 +99,15 @@ class PairedKinematics:
         Returns:
             含 `joint_solutions_deg`（单位度）的检查记录。
         """
+        solutions = []
+        for waypoint in waypoints:
+            joint = self.joint_raw_for(waypoint['controller_pose'])
+            self._name_by_joint[tuple(joint)] = waypoint.get('name', '')
+            solutions.append([value / 1000 for value in joint])
         return {
             'verified': True,
             'joint_travel_deg': 1.,
-            'joint_solutions_deg': [
-                [
-                    value / 1000
-                    for value in self.joint_raw_for(w['controller_pose'])
-                ]
-                for w in waypoints
-            ],
+            'joint_solutions_deg': solutions,
         }
 
     def check_waypoints(
@@ -98,8 +130,11 @@ class PairedKinematics:
             environment: 障碍物设置，替身不使用。
 
         Returns:
-            `(True, 检查记录)`。
+            `(True, 检查记录)`；被设定为求不出连续解的直线取样路径
+            返回 `(False, 含 reason 的记录)`。
         """
+        if self._line_rejected(waypoints):
+            return False, {'verified': False, 'reason': '直线取样无连续解'}
         return True, self.detail(waypoints)
 
     def verify_motion_targets(
@@ -110,6 +145,7 @@ class PairedKinematics:
         arm: dict,
         waypoints: List[dict],
         timeout: float = 3.,
+        claim: bool = True,
     ) -> dict:
         """替换动作控制器的 `verify_motion_targets`，供沿用旧写法的测试用。
 
@@ -123,8 +159,14 @@ class PairedKinematics:
             arm: 机械臂当前状态，替身不使用。
             waypoints: 被检查的路点。
             timeout: 时间上限，单位秒，替身不使用。
+            claim: 是否登记占位，替身不使用。
 
         Returns:
             含 `joint_solutions_deg` 的检查记录。
+
+        Raises:
+            ValueError: 被设定为求不出连续解的直线取样路径。
         """
+        if self._line_rejected(waypoints):
+            raise ValueError('直线取样无连续解')
         return self.detail(waypoints)

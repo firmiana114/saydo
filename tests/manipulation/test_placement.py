@@ -480,18 +480,34 @@ class PlacementControlTests(unittest.TestCase):
                 state['sys_err'] = 1
             return {'state_info': state}
 
-        # 关节段：程序下发逆解给出的关节角，替身按同一对应关系把它换回
-        # 位姿再“到位”。个别测试会替换 joint_pose_move 来模拟途中的反馈。
+        # 全部运动都是关节运动：程序下发逆解给出的关节角，替身按同一
+        # 对应关系把它换回位姿再“到位”。关节段（抬升、转移）一段一次，
+        # 记为 joint；直线段（下降、后撤、退出）沿取样点逐点运动，途中
+        # 的取样点记在 sample_moves 里，走到这一段终点的那一次记为
+        # linear。个别测试会替换 joint_pose_move 或 linear_move 来模拟
+        # 途中的反馈。
         self.kinematics = fake_kinematics.PairedKinematics()
         self.joint_pose_move = lambda *args: move('joint', *args)
+        self.linear_move = lambda *args: move('linear', *args)
+        self.sample_moves = []
 
         def move_joints(joints, speed, cancelled, watchdog):
-            self.joint_pose_move(
-                self.kinematics.pose_for(joints), speed, cancelled, watchdog
+            pose = self.kinematics.pose_for(joints)
+            index, _, count = (
+                self.kinematics.name_for(joints).partition(':')[2]
+                .partition('/')
             )
+            if not count:
+                self.joint_pose_move(pose, speed, cancelled, watchdog)
+            elif index == count:
+                self.linear_move(pose, speed, cancelled, watchdog)
+            else:
+                self.sample_moves.append(pose.copy())
+                watchdog()
+                self.arm['pose'] = pose.copy()
+                watchdog()
             self.arm['joint'] = list(joints)
 
-        robot.move_linear.side_effect = lambda *args: move('linear', *args)
         robot.move_joints.side_effect = move_joints
         robot.move_gripper.side_effect = open_gripper
         robot.query.side_effect = query
@@ -560,9 +576,10 @@ class PlacementControlTests(unittest.TestCase):
         )
         self.assertIsNone(self.service.held_object)
         # 抬升和转移各一次关节运动，目标是逆解给出的关节角；位姿关节
-        # 运动（由控制器自己选手臂摆法）不再使用。
+        # 运动（由控制器自己选手臂摆法）和控制器的直线运动都不再使用。
+        robot.move_linear.assert_not_called()
         self.assertEqual(
-            [call.args[0] for call in robot.move_joints.call_args_list],
+            [call.args[0] for call in robot.move_joints.call_args_list[:2]],
             [
                 self.kinematics.joint_raw_for(w['controller_pose'])
                 for w in plan['waypoints'][:2]
@@ -599,9 +616,7 @@ class PlacementControlTests(unittest.TestCase):
         self.joint_pose_move = feedback_outside_rectangle(
             self.joint_pose_move
         )
-        robot.move_linear.side_effect = feedback_outside_rectangle(
-            robot.move_linear.side_effect
-        )
+        self.linear_move = feedback_outside_rectangle(self.linear_move)
         self.run_job(robot)
         self.assertEqual(
             self.service.status['state'],
@@ -651,17 +666,24 @@ class PlacementControlTests(unittest.TestCase):
             [x[0] for x in self.commands],
             ['joint', 'joint', 'linear', 'open', 'linear', 'linear'],
         )
-        self.assertEqual(robot.move_joints.call_count, 2)
         robot.move_joint_pose.assert_not_called()
-        self.assertEqual(robot.move_linear.call_count, 3)
+        # 控制器的直线运动不再使用：直线段也是沿取样点逐点关节运动。
+        robot.move_linear.assert_not_called()
         report = json.loads(
             next(
                 (self.root / 'work/grasp/placement_jobs').glob('*.json')
             ).read_text()
         )
+        segments = [
+            s['joint_moves'] for s in report['sampled_joint_segments']
+        ]
+        self.assertEqual(segments[:2], [1, 1])
+        self.assertEqual(len(segments), 5)
+        self.assertTrue(all(count >= 1 for count in segments[2:]))
+        self.assertGreater(len(self.sample_moves), 0)
         self.assertEqual(
-            [s['joint_moves'] for s in report['sampled_joint_segments']],
-            [1, 1],
+            robot.move_joints.call_count,
+            sum(segments),
         )
         checks = self.service.verify_motion_targets.call_args_list
         self.assertEqual([w['name'] for w in checks[0].args[-1]], ['raise'])
@@ -721,13 +743,18 @@ class PlacementControlTests(unittest.TestCase):
         )
         plan = self.service.status['placement_plan']
         self.assertEqual(
-            [call.args[0] for call in robot.move_joints.call_args_list],
+            [call.args[0] for call in robot.move_joints.call_args_list[:2]],
             [
                 self.kinematics.joint_raw_for(w['controller_pose'])
                 for w in plan['waypoints'][:2]
             ],
         )
         robot.move_joint_pose.assert_not_called()
+        robot.move_linear.assert_not_called()
+        self.assertEqual(
+            [x[0] for x in self.commands],
+            ['joint', 'joint', 'linear', 'open', 'linear', 'linear'],
+        )
         self.assertTrue(
             all(
                 call.kwargs['environment'] is not None
@@ -764,7 +791,7 @@ class PlacementControlTests(unittest.TestCase):
                     self.arm['pose'][index] += offset
                     watchdog()
 
-                robot.move_linear.side_effect = wrong_path
+                self.linear_move = wrong_path
                 self.run_job(robot)
                 self.assertEqual(self.service.status['state'], 'failed')
                 robot.move_gripper.assert_not_called()
@@ -803,7 +830,7 @@ class PlacementControlTests(unittest.TestCase):
 
     def test_withdrawal_failure_after_release_prevents_vertical_exit(self):
         robot = self.robot()
-        original = robot.move_linear.side_effect
+        original = self.linear_move
 
         def fail_after_open(pose, speed, cancelled, watchdog):
             if self.opened:
@@ -811,7 +838,7 @@ class PlacementControlTests(unittest.TestCase):
                 raise TimeoutError('withdraw timeout')
             return original(pose, speed, cancelled, watchdog)
 
-        robot.move_linear.side_effect = fail_after_open
+        self.linear_move = fail_after_open
         self.run_job(robot)
         self.assertEqual(self.service.status['state'], 'failed')
         self.assertEqual(
@@ -826,7 +853,7 @@ class PlacementControlTests(unittest.TestCase):
         # Start inside the region, with room for settling error.
         self.arm['pose'][0] = 450000
         robot = self.robot()
-        original = robot.move_linear.side_effect
+        original = self.linear_move
 
         def small_arrival_error(pose, speed, cancelled, watchdog):
             original(pose, speed, cancelled, watchdog)
@@ -834,7 +861,7 @@ class PlacementControlTests(unittest.TestCase):
                 self.arm['pose'][0] += 200
                 self.arm['pose'][3] += 1
 
-        robot.move_linear.side_effect = small_arrival_error
+        self.linear_move = small_arrival_error
         self.run_job(robot)
         self.assertEqual(
             self.service.status['state'],

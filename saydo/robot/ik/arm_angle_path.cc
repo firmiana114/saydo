@@ -404,7 +404,8 @@ int RunArmAnglePath(const float* start_joints_deg) {
   }
   if (!result.complete) {
     // 把卡住的那个路点的所有摆法列出来，分清三种情况：任何摆法都够不到
-    // 或超限位；够得到但都碰到障碍物；有可行的摆法但与前面的路接不上。
+    // 或超限位；够得到但都碰到障碍物（桌面、立杆、另一台臂）；有可行的
+    // 摆法但与前面的路接不上。
     const int failed = result.failed_index;
     const Enumeration& all = solver.Enumerate(failed);
     const RejectCounts& rejected = solver.rejected(failed);

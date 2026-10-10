@@ -51,7 +51,7 @@
 
 ### 第 ② 步：搜索时就避开障碍物
 
-碰撞检查（见 [`collision_check.md`](collision_check.md)）原先只在逆解全部完成之后做一次，发现会碰撞只能否决。现在检查器在挑选摆法时就做：外形（运动学参数、13 个胶囊体）和障碍物（桌面高度、立杆位置与余量）由 Python 随每次请求传给检查器，检查器用同一套算法（`arm_collision.h`）计算。
+碰撞检查（见 [`collision_check.md`](collision_check.md)）原先只在逆解全部完成之后做一次，发现会碰撞只能否决。现在检查器在挑选摆法时就做：外形（运动学参数、13 个胶囊体）和障碍物（桌面高度、立杆位置与余量、另一台臂占着的空间）由 Python 随每次请求传给检查器，检查器用同一套算法（`arm_collision.h`）计算。
 
 尺寸只在 `collision_model.py` 里保存一份。检查器找到路径之后，Python 仍用 `collision_model.check_path` 沿整条路径再核对一遍，它才是最终放行的依据。检查器的判断比它严 0.2 毫米，避免两边因计算精度不同而在边界上结论相反。`tests/robot/test_arm_collision_native.py` 用同一批随机姿态对比两种实现。
 
@@ -66,7 +66,7 @@
 | 类型 | 含义 | 是否确定 |
 | --- | --- | --- |
 | `out_of_reach` | 任何摆法都够不到，或都超出关节限位 | 确定。换路线、换夹持方向才有用 |
-| `blocked_by_obstacle` | 够得到，但所有摆法都会碰到桌面或立杆 | 确定（在臂角 5 度一格的精度内） |
+| `blocked_by_obstacle` | 够得到，但所有摆法都会碰到桌面、立杆或另一台臂 | 确定（在臂角 5 度一格的精度内） |
 | `no_continuous_solution` | 这个位姿有可行的摆法，但从前面的路径走不过去：关节角变化过大、途中碰到障碍物或自碰撞 | 不确定。每层只保留 16 个解，可能是前面选的摆法不合适 |
 | `budget_exhausted` | 超出时间预算 | — |
 
@@ -105,10 +105,10 @@
 ## 尚未解决和没有验证的
 
 - **没有实机验证。** 与防撞阶段二、出画检查等一起，等阶段四完成后统一做。
-- 控制器的直线运动（`movel`）仍由控制器自己决定手肘怎么摆。固定抓放全程用关节运动，不受影响；页面抓取的接近、抬升和桌面放置的下降还在用 `movel`，待改成优先逐点关节运动。
+- 控制器的直线运动（`movel`）由控制器自己决定手肘怎么摆。2026-10-10 起各动作的直线段都改为逐点关节运动，只有页面抓取在找不到连续解时才退回 `movel`，见 [`collision_check.md`](collision_check.md)。
 - 方案可能贴着立杆的 30 毫米余量走。需要更保守时调大 `config/calibration/workspace_obstacles.yaml` 里的 `margin_m`。
-- `blocked_by_obstacle` 没有区分挡路的是桌面还是立杆。
-- 被夹着的物品、夹爪上的相机、另一台机械臂仍不在碰撞模型里。
+- `blocked_by_obstacle` 没有区分挡路的是桌面、立杆还是另一台臂。
+- 被夹着的物品、夹爪上的相机仍不在碰撞模型里。另一台机械臂已于同日加入，见 [`collision_check.md`](collision_check.md) 的“阶段四”一节。
 
 ## 代码在哪
 
@@ -117,11 +117,11 @@
 | `saydo/robot/ik/arm_angle_path.cc` | 列举摆法、调用厂家函数、输出结果 |
 | `saydo/robot/ik/ik_beam_search.h` | 分层搜索，不依赖厂家算法库 |
 | `saydo/robot/ik/arm_collision.h` | 离桌面、立杆的间距计算，不依赖厂家算法库 |
-| `saydo/robot/ik/grasp_ik.cc` | 检查器入口；`--arm-angle-v1` 是现在使用的模式 |
+| `saydo/robot/ik/grasp_ik.cc` | 检查器入口；`--arm-angle-v2` 是现在使用的模式（第二版在输入里加了另一台臂占着的空间） |
 | `saydo/robot/collision_model.py` | 外形与障碍物数据；`native_model_values` 把它们排成检查器读取的格式 |
 | `saydo/robot/motion_validation.py` | 调用检查器、独立回验、最终的碰撞核对 |
 
-改了 `saydo/robot/ik/` 下的文件后，要在 MSI 上运行 `bash scripts/build_ik_checker.sh` 重新构建，并重启 8089。旧的检查器缺少 `ARM_ANGLE_V1` 标记，新程序遇到它会拒绝规划并提示重新构建。上一版的检查器备份在 `work/grasp/rm75_ik_check.before-arm-angle-20261010`。
+改了 `saydo/robot/ik/` 下的文件后，要在 MSI 上运行 `bash scripts/build_ik_checker.sh` 重新构建，并重启 8089。检查器缺少 `ARM_ANGLE_V2` 标记时，程序会拒绝规划并提示重新构建。上一版的检查器备份在 `work/grasp/rm75_ik_check.before-arm-angle-20261010`。
 
 ## 名词速查
 

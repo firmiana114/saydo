@@ -622,12 +622,14 @@ class SampledJointSegmentTests(unittest.TestCase):
             self.service.status.get('error'),
         )
         kinds = [c[0] for c in self.calls]
-        self.assertNotIn('movel', kinds)
+        self.robot.move_linear.assert_not_called()
         self.assertEqual(kinds.count('open'), 1)
         opened = kinds.index('open')
         self.assertGreaterEqual(opened, 2)
         self.assertGreater(len(kinds) - opened - 1, 0)
-        self.assertEqual(set(kinds) - {'open'}, {'movej'})
+        # 全部是直线段：每段走到终点记一次 line，途中的取样点在 samples 里。
+        self.assertEqual(set(kinds) - {'open'}, {'line'})
+        self.assertGreater(len(self.samples), 0)
         self.assertIsNone(self.service.held_object)
         np.testing.assert_allclose(
             control.grasp_geometry.controller_pose(self.arm['pose'])[:3, 3],
@@ -658,15 +660,17 @@ class SampledJointSegmentTests(unittest.TestCase):
         self.assertEqual(self.service.held_object, hold)
         self.assertEqual(self.calls, [])
 
-    def test_ordinary_release_still_uses_controller_linear_moves(self):
+    def test_ordinary_release_also_follows_sampled_joints(self):
         args = control.ObjectControlTests.args(self)
         args.update(goal=None, retreat_vector_base_m=[0, 0, .05])
         plan = control.ObjectControlTests.planned(self, args, True)
         status = control.ObjectControlTests.execute(self, plan, 'release-001')
         self.assertEqual(status['state'], 'completed', status.get('error'))
+        # 不是固定方案的释放，直线段同样沿取样点逐点关节运动。
         self.assertEqual(
-            [c[0] for c in self.calls], ['movel', 'movel', 'open', 'movel']
+            [c[0] for c in self.calls], ['line', 'line', 'open', 'line']
         )
+        self.robot.move_linear.assert_not_called()
 
     def test_fixed_release_budget_and_joint_change_note(self):
         from saydo.manipulation import fixed_pick_place

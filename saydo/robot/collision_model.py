@@ -16,8 +16,10 @@
   指垫宽 23 毫米、安装座直径 75 毫米。外形取“任何开度下都包得住”的
   范围，所以不随开度变化。夹爪上的相机和支架不在模型里（用户决定）。
 
-没有建模的东西：夹爪上的相机、被夹着的物品、桌上的物品、全局相机本体、
-另一台机械臂。
+另一台机械臂也当作障碍物：它静止时取它当前姿态下的胶囊体，它正在执行
+动作时取它整条路径扫过的胶囊体（见 `saydo/robot/arm_occupancy.py`）。
+
+没有建模的东西：夹爪上的相机、被夹着的物品、桌上的物品、全局相机本体。
 
 本模块只做几何计算，不连接控制器。
 """
@@ -81,6 +83,11 @@ GRIPPER_CAPSULES = (
 )
 # 相邻路点之间按关节角直线取样的间隔，单位度。
 PATH_STEP_DEG = 2.
+# 两台臂之间至少要留的距离的缺省值，单位米。模型里没有夹爪上的相机和
+# 被夹着的物品，两底座的相对位置也有约 1 毫米的测量误差，所以留余量。
+OTHER_ARM_MARGIN_M = .03
+# 一台臂整条路径扫过的空间最多用多少个胶囊体表示。
+SWEPT_MAX_CAPSULES = 96
 
 
 @dataclasses.dataclass(frozen=True)
@@ -92,12 +99,22 @@ class Environment:
         pole_xy_m: 立杆中心的水平位置；None 表示没有立杆。
         pole_radius_m: 立杆截面的外接圆半径（方杆取半对角线）。
         pole_margin_m: 手臂各部分与立杆表面之间至少要留的距离。
+        other_arm_capsules: 另一台臂占着的空间，`(起点, 终点, 半径)`，
+            分别是 M×3、M×3、M 的数组，单位米；None 表示不检查。
+        other_arm_margin_m: 手臂各部分与另一台臂之间至少要留的距离。
+        other_arm_label: 报错里怎么称呼另一台臂占着的空间，例如
+            “2 臂”或“2 臂正在走的路径”。
     """
 
     table_z_m: Optional[float] = None
     pole_xy_m: Optional[Tuple[float, float]] = None
     pole_radius_m: float = 0.
     pole_margin_m: float = 0.
+    other_arm_capsules: Optional[
+        Tuple[np.ndarray, np.ndarray, np.ndarray]
+    ] = None
+    other_arm_margin_m: float = 0.
+    other_arm_label: str = '另一台臂'
 
 
 def load_environment(
@@ -225,7 +242,8 @@ def native_model_values(
 
     Returns:
         按 `arm_collision.h` 里 `ReadArmModel` 的格式排列的数字：
-        运动学参数、`flange_T_tool` 的前三行、桌面与立杆、全部胶囊体。
+        运动学参数、`flange_T_tool` 的前三行、桌面与立杆、全部胶囊体，
+        最后是另一台臂占着的空间（余量、胶囊体个数、各胶囊体）。
         夹爪的胶囊体挂在第 8 号坐标系（夹爪参考点）上。
     """
     environment = environment or Environment()
@@ -252,7 +270,66 @@ def native_model_values(
         )
     for _, start, end, radius in GRIPPER_CAPSULES:
         values.extend([len(DH_PARAMETERS) + 1, *start, *end, radius, 1])
-    return values
+    if environment.other_arm_capsules is None:
+        values.extend([0., 0])
+        return values
+    starts, ends, radii = environment.other_arm_capsules
+    values.extend([environment.other_arm_margin_m, len(radii)])
+    for start, end, radius in zip(starts, ends, radii):
+        values.extend([*start, *end, radius])
+    return [float(v) if isinstance(v, np.floating) else v for v in values]
+
+
+def segment_distances(
+    starts_a: np.ndarray,
+    ends_a: np.ndarray,
+    starts_b: np.ndarray,
+    ends_b: np.ndarray,
+) -> np.ndarray:
+    """计算两组线段两两之间的最短距离。
+
+    Args:
+        starts_a: 第一组线段的起点，N×3，米。
+        ends_a: 第一组线段的终点，N×3，米。
+        starts_b: 第二组线段的起点，M×3，米。
+        ends_b: 第二组线段的终点，M×3，米。
+
+    Returns:
+        N×M 的数组，第 i 行第 j 列是第一组第 i 条与第二组第 j 条之间的
+        最短距离，米。长度为零的线段按一个点处理。
+    """
+    tiny = 1e-12
+    d1 = (ends_a - starts_a)[:, None, :]
+    d2 = (ends_b - starts_b)[None, :, :]
+    r = starts_a[:, None, :] - starts_b[None, :, :]
+    a = np.sum(d1 * d1, axis=2)
+    e = np.sum(d2 * d2, axis=2)
+    b = np.sum(d1 * d2, axis=2)
+    c = np.sum(d1 * r, axis=2)
+    f = np.sum(d2 * r, axis=2)
+    a_safe = np.where(a > tiny, a, 1.)
+    e_safe = np.where(e > tiny, e, 1.)
+    denominator = a * e - b * b
+    # 先求两条直线上最近的一对点，再把落在线段外的那一端夹回端点。
+    s = np.where(
+        (denominator > tiny) & (a > tiny),
+        np.clip(
+            (b * f - c * e) / np.where(denominator > tiny, denominator, 1.),
+            0., 1.,
+        ),
+        0.,
+    )
+    t = np.where(e > tiny, (b * s + f) / e_safe, 0.)
+    s = np.where(
+        t < 0,
+        np.clip(-c / a_safe, 0., 1.),
+        np.where(t > 1, np.clip((b - c) / a_safe, 0., 1.), s),
+    )
+    s = np.where(a > tiny, s, 0.)
+    t = np.clip(t, 0., 1.)
+    return np.linalg.norm(
+        r + s[:, :, None] * d1 - t[:, :, None] * d2, axis=2
+    )
 
 
 def horizontal_distance_to_point(
@@ -297,8 +374,9 @@ def check_configuration(
     Returns:
         含 `table_clearance_m` 与 `table_part`（离桌面最近的部分及其
         间距，负值表示低于桌面）、`pole_clearance_m` 与 `pole_part`
-        （离立杆表面最近的部分及其间距）；不检查的一项为 None。
-        `violation` 是给操作者看的违规说明，没有违规时为 None。
+        （离立杆表面最近的部分及其间距）、`other_arm_clearance_m` 与
+        `other_arm_part`（离另一台臂最近的部分及其间距）；不检查的一项
+        为 None。`violation` 是给操作者看的违规说明，没有违规时为 None。
     """
     starts, ends, radii, labels, table_checked = capsules_in_base(
         joint_deg, flange_T_tool
@@ -308,6 +386,8 @@ def check_configuration(
         'table_part': None,
         'pole_clearance_m': None,
         'pole_part': None,
+        'other_arm_clearance_m': None,
+        'other_arm_part': None,
         'violation': None,
     }
     if environment.pole_xy_m is not None:
@@ -324,6 +404,29 @@ def check_configuration(
             result['violation'] = (
                 f'{labels[index]}离立杆 {clearance[index] * 1000:.0f} 毫米，'
                 f'要求至少 {environment.pole_margin_m * 1000:.0f} 毫米'
+            )
+    if environment.other_arm_capsules is not None and len(
+        environment.other_arm_capsules[2]
+    ):
+        other_starts, other_ends, other_radii = environment.other_arm_capsules
+        clearance = (
+            segment_distances(starts, ends, other_starts, other_ends)
+            - radii[:, None]
+            - np.asarray(other_radii)[None, :]
+        ).min(axis=1)
+        index = int(np.argmin(clearance))
+        result.update(
+            other_arm_clearance_m=float(clearance[index]),
+            other_arm_part=labels[index],
+        )
+        if (
+            clearance[index] < environment.other_arm_margin_m
+            and result['violation'] is None
+        ):
+            result['violation'] = (
+                f'{labels[index]}离{environment.other_arm_label} '
+                f'{clearance[index] * 1000:.0f} 毫米，要求至少 '
+                f'{environment.other_arm_margin_m * 1000:.0f} 毫米'
             )
     if environment.table_z_m is not None:
         lowest = np.minimum(starts[:, 2], ends[:, 2]) - radii
@@ -365,10 +468,10 @@ def check_path(
 
     Returns:
         含 `checked_samples`（检查了多少个姿态）、全程的
-        `min_table_clearance_m`、`min_pole_clearance_m` 及各自最近的
-        部分，以及 `violation`：第一处违规的说明、所在的路点序号
-        `waypoint_index`（从 1 起，指正在走向的那个路点）和该处的
-        关节角；没有违规时为 None。
+        `min_table_clearance_m`、`min_pole_clearance_m`、
+        `min_other_arm_clearance_m` 及各自最近的部分，以及 `violation`：
+        第一处违规的说明、所在的路点序号 `waypoint_index`（从 1 起，
+        指正在走向的那个路点）和该处的关节角；没有违规时为 None。
     """
     path = np.asarray(joint_path_deg, dtype=float)
     if path.ndim != 2 or path.shape[1] != 7 or len(path) < 2:
@@ -379,6 +482,8 @@ def check_path(
         'min_table_part': None,
         'min_pole_clearance_m': None,
         'min_pole_part': None,
+        'min_other_arm_clearance_m': None,
+        'min_other_arm_part': None,
         'violation': None,
     }
     for index in range(1, len(path)):
@@ -390,7 +495,7 @@ def check_path(
             joint = previous + (target - previous) * step / steps
             state = check_configuration(joint, flange_T_tool, environment)
             report['checked_samples'] += 1
-            for kind in ('table', 'pole'):
+            for kind in ('table', 'pole', 'other_arm'):
                 clearance = state[f'{kind}_clearance_m']
                 best = report[f'min_{kind}_clearance_m']
                 if clearance is not None and (
@@ -405,3 +510,106 @@ def check_path(
                     'joint_deg': joint.tolist(),
                 }
     return report
+
+
+def other_arm_settings(root: pathlib.Path) -> dict:
+    """读取“把另一台臂当作障碍物”的设置。
+
+    写在障碍物文件的 `other_arm` 一项里，都可以不写：
+
+    - `margin_m`：两台臂之间至少要留的距离，缺省 0.03 米。
+    - `when_unreadable`：读不到另一台臂的当前姿态时怎么办。`refuse`
+      （缺省）拒绝规划；`ignore` 当它不存在，适合它已断电并确认停在
+      碰不到的地方时使用。
+
+    Args:
+        root: 项目根目录。
+
+    Returns:
+        含 `margin_m` 和 `when_unreadable` 的字典。
+
+    Raises:
+        ValueError: 数值无效。
+    """
+    settings = {'margin_m': OTHER_ARM_MARGIN_M, 'when_unreadable': 'refuse'}
+    path = pathlib.Path(root) / OBSTACLES_FILE
+    if not path.is_file():
+        return settings
+    value = (yaml.safe_load(path.read_text()) or {}).get('other_arm') or {}
+    settings.update({k: value[k] for k in settings if k in value})
+    margin = settings['margin_m']
+    if (
+        isinstance(margin, bool)
+        or not isinstance(margin, (int, float))
+        or not np.isfinite(margin)
+        or margin < 0
+        or settings['when_unreadable'] not in ('refuse', 'ignore')
+    ):
+        raise ValueError(f'障碍物文件 {path} 里 other_arm 的设置无效')
+    settings['margin_m'] = float(margin)
+    return settings
+
+
+def swept_capsules(
+    joint_path_deg: Sequence[Sequence[float]],
+    flange_T_tool: np.ndarray,
+    max_count: int = SWEPT_MAX_CAPSULES,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """算出机械臂沿一串关节角路点运动时扫过的空间，用一组胶囊体表示。
+
+    取样方式与 `check_path` 相同（相邻路点之间按关节角直线、每 2 度
+    一个姿态），并包含第一个路点本身。为了让个数不至于太多，同一段
+    手臂在相邻姿态下几乎重合的胶囊体合并成一个，并把半径加大到足以
+    包住被合并掉的那些；结果只会比真实扫过的空间大，不会小。
+
+    Args:
+        joint_path_deg: 路点序列，每个是七个关节角（度）；只有一个
+            路点时就是该姿态下的胶囊体。
+        flange_T_tool: 夹爪参考点在法兰坐标系里的位姿。
+        max_count: 最多保留多少个胶囊体。
+
+    Returns:
+        `(起点, 终点, 半径)`，坐标在这台臂的基座坐标系里，单位米。
+
+    Raises:
+        ValueError: 路点不是 7 个关节角。
+    """
+    path = np.asarray(joint_path_deg, dtype=float)
+    if path.ndim != 2 or path.shape[1] != 7 or len(path) < 1:
+        raise ValueError('每个路点需要 7 个关节角')
+    samples = [path[0]]
+    for previous, target in zip(path[:-1], path[1:]):
+        steps = max(
+            1, int(np.ceil(np.abs(target - previous).max() / PATH_STEP_DEG))
+        )
+        samples.extend(
+            previous + (target - previous) * step / steps
+            for step in range(1, steps + 1)
+        )
+    poses = [capsules_in_base(joint, flange_T_tool) for joint in samples]
+    starts = np.array([pose[0] for pose in poses])
+    ends = np.array([pose[1] for pose in poses])
+    radii = poses[0][2]
+    merge_m = 0.
+    while True:
+        kept = []
+        for part in range(starts.shape[1]):
+            chosen = np.empty((0, 6))
+            for row in np.hstack([starts[:, part], ends[:, part]]):
+                # 两个端点都没有离开已保留的某个胶囊体 merge_m 以上时，
+                # 这个姿态下的这一段已被那个加粗后的胶囊体包住。
+                gap = np.abs(chosen - row).reshape(-1, 2, 3)
+                if not len(chosen) or (
+                    np.linalg.norm(gap, axis=2).max(axis=1).min() > merge_m
+                ):
+                    chosen = np.vstack([chosen, row])
+            kept.extend(
+                (row[:3], row[3:], radii[part] + merge_m) for row in chosen
+            )
+        if len(kept) <= max_count:
+            return (
+                np.array([k[0] for k in kept]),
+                np.array([k[1] for k in kept]),
+                np.array([k[2] for k in kept]),
+            )
+        merge_m = max(.01, merge_m * 2)

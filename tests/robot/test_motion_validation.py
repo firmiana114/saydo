@@ -79,7 +79,7 @@ class MotionValidationTests(unittest.TestCase):
                 self.points,
             )
         self.assertFalse(ok)
-        self.assertIn('按臂角搜索路径的协议', d['reason'])
+        self.assertIn('缺少 ARM_ANGLE_V2', d['reason'])
 
     def test_checker_receives_the_arm_shape_and_obstacles(self):
         environment = collision_model.Environment(
@@ -103,7 +103,7 @@ class MotionValidationTests(unittest.TestCase):
                     environment=given,
                 )
             self.assertEqual(
-                run.call_args.args[0], ['fixture', '--arm-angle-v1']
+                run.call_args.args[0], ['fixture', '--arm-angle-v2']
             )
             sent = run.call_args.kwargs['input'].split()
             model = collision_model.native_model_values(tool, given)
@@ -113,14 +113,36 @@ class MotionValidationTests(unittest.TestCase):
             np.testing.assert_allclose(
                 [float(value) for value in sent[-len(model):]], model
             )
-        # 没有障碍物时两个开关都是 0，检查器不做碰撞判断。
+        # 没有障碍物时两个开关都是 0，另一台臂的胶囊体个数也是 0，
+        # 检查器不做碰撞判断。
         flags = 1 + 7 * 3 + 12
         self.assertEqual((model[flags], model[flags + 2]), (0, 0))
+        self.assertEqual(model[-2:], [0., 0])
+
+    def test_checker_receives_the_other_arm(self):
+        environment = collision_model.Environment(
+            other_arm_capsules=(
+                np.array([[.1, -.5, .2], [.2, -.4, .3]]),
+                np.array([[.1, -.5, .4], [.3, -.4, .3]]),
+                np.array([.05, .04]),
+            ),
+            other_arm_margin_m=.03,
+        )
+        model = collision_model.native_model_values(np.eye(4), environment)
+        # 末尾依次是：余量、个数、每个胶囊体的起点、终点、半径。
+        self.assertEqual(
+            model[-16:],
+            [
+                .03, 2,
+                .1, -.5, .2, .1, -.5, .4, .05,
+                .2, -.4, .3, .3, -.4, .3, .04,
+            ],
+        )
 
     def test_search_failure_kinds_are_explained_to_the_operator(self):
         cases = {
             'out_of_reach': '任何摆法下都够不到或超出关节限位',
-            'blocked_by_obstacle': '所有摆法都会碰到桌面或立杆',
+            'blocked_by_obstacle': '所有摆法都会碰到桌面、立杆或另一台臂',
             'no_continuous_solution': '从前面的路径走不过去',
             'budget_exhausted': '超出时间预算',
         }
@@ -506,6 +528,78 @@ class MotionValidationTests(unittest.TestCase):
                 pole_xy_m=(float(target[0]), float(target[1])),
                 pole_radius_m=.0141,
                 pole_margin_m=.03,
+            ),
+        )
+        self.assertFalse(valid)
+        self.assertEqual(detail['failure']['kind'], 'blocked_by_obstacle')
+
+    @unittest.skipUnless(
+        os.environ.get('SAYDO_IK_CHECKER'),
+        'Set SAYDO_IK_CHECKER to the newly built offline verifier',
+    )
+    def test_native_elbow_moves_aside_for_the_other_arm(self):
+        joints = [-43683, -71382, 763, 132968, -2415, 67928, 120559]
+        arm = {
+            'joint': joints,
+            'pose': [135983, -147300, 209720, 2315, -356, 440],
+        }
+        tool = {'flange_T_grip_tcp': NATIVE_TOOL.tolist()}
+        points = [
+            {
+                'name': 'pregrasp',
+                'controller_pose': [363798, -267227, 6124, 2205, -117, 463],
+            }
+        ]
+        checker = os.environ['SAYDO_IK_CHECKER']
+        valid, free = motion_validation.check_waypoints(
+            checker, tool, arm, points
+        )
+        self.assertTrue(valid, free)
+        # 另一台臂的一段（一个竖直的胶囊体）立在本臂手肘旁边 12 厘米处。
+        frames = collision_model.link_frames(free['joint_solutions_deg'][0])
+        shoulder, elbow, wrist = (frames[i][:3, 3] for i in (2, 4, 6))
+        along = (wrist - shoulder)[:2] / np.linalg.norm((wrist - shoulder)[:2])
+        beside = elbow[:2] + .12 * np.array([-along[1], along[0]])
+        other = collision_model.Environment(
+            other_arm_capsules=(
+                np.array([[beside[0], beside[1], elbow[2] - .1]]),
+                np.array([[beside[0], beside[1], elbow[2] + .1]]),
+                np.array([.04]),
+            ),
+            other_arm_margin_m=.03,
+            other_arm_label='2 臂',
+        )
+        report = collision_model.check_path(
+            [np.array(joints) / 1000, free['joint_solutions_deg'][0]],
+            NATIVE_TOOL,
+            other,
+        )
+        self.assertIn('2 臂', report['violation']['message'])
+        valid, detail = motion_validation.check_waypoints(
+            checker, tool, arm, points, environment=other
+        )
+        self.assertTrue(valid, detail)
+        self.assertIsNone(detail['collision_check']['violation'])
+        self.assertGreaterEqual(
+            detail['collision_check']['min_other_arm_clearance_m'], .03
+        )
+        self.assertGreater(
+            abs(detail['arm_angles_deg'][0] - free['arm_angles_deg'][0]), 4.
+        )
+        # 它正好挡在目标位置上时，任何摆法都躲不开。
+        target = np.array(points[0]['controller_pose'][:3]) / 1e6
+        valid, detail = motion_validation.check_waypoints(
+            checker,
+            tool,
+            arm,
+            points,
+            environment=collision_model.Environment(
+                other_arm_capsules=(
+                    np.array([target - [0, 0, .05]]),
+                    np.array([target + [0, 0, .05]]),
+                    np.array([.04]),
+                ),
+                other_arm_margin_m=.03,
             ),
         )
         self.assertFalse(valid)
