@@ -1360,7 +1360,8 @@ def main() -> int:
         return 1
     directory = None
     if args.resolve:
-        directory = pathlib.Path(args.resolve)
+        # 写结果时要记下它相对项目根目录的位置，所以先换成绝对路径。
+        directory = pathlib.Path(args.resolve).resolve()
     elif not args.verify:
         directory = root / 'work/calibration' / (
             'global_camera_'
