@@ -187,6 +187,57 @@ class SceneTests(unittest.TestCase):
             self.service.start(expected_object_id='source')
         self.robot.move_gripper.assert_not_called()
 
+    def test_operator_click_supersedes_a_leftover_scene(self):
+        # 采集失败或只规划未执行之后，场景上下文一直留着。
+        self.tracker.localize_frozen_scene.side_effect = ValueError(
+            'reference failed'
+        )
+        scene = self.capture()
+        self.assertEqual(self.service.scenes().active, scene['scene_id'])
+        observation = {
+            'pose': np.eye(4).tolist(),
+            'time': time.time(),
+            'generation': 1,
+            'object_id': 'source',
+        }
+        self.tracker.grasp_observation = mock.Mock(return_value=observation)
+        # 智能体不引用场景直接抓：仍然拒绝，场景上下文原样保留。
+        with self.assertRaisesRegex(ValueError, '已有场景采集上下文'):
+            self.service.start()
+        self.assertEqual(self.service.scenes().active, scene['scene_id'])
+        # 操作者在页面上点击：放弃遗留的场景上下文，任务照常开始。
+        with mock.patch.object(self.service, 'run') as run, self.assertLogs(
+            'saydo.manipulation.grasp_control', 'INFO'
+        ) as logs:
+            self.service.start(supersede_scene=True)
+            self.service.thread.join(4)
+        run.assert_called_once_with(observation, preview=False)
+        self.assertIn(scene['scene_id'], logs.output[0])
+        self.assertIsNone(self.service.scenes().active)
+        self.assertEqual(self.service.status['operation'], 'grasp')
+        self.assertEqual(
+            self.service.scenes().get(scene['scene_id'])['state'],
+            'superseded',
+        )
+        # 依赖那个场景的方案此后不能再执行。
+        with self.assertRaisesRegex(ValueError, '场景'):
+            self.service.scenes().require(scene['scene_id'])
+
+    def test_operator_click_is_refused_without_a_pose_and_keeps_the_scene(
+        self
+    ):
+        scene = self.capture()
+        self.tracker.grasp_observation = mock.Mock(
+            side_effect=ValueError('当前没有可靠跟踪位姿')
+        )
+        with self.assertRaisesRegex(ValueError, '没有可靠跟踪位姿'):
+            self.service.start(supersede_scene=True)
+        # 抓取没有开始，就不动原来的场景上下文。
+        self.assertEqual(self.service.scenes().active, scene['scene_id'])
+
+    def test_abandon_without_a_scene_does_nothing(self):
+        self.assertIsNone(self.service.scenes().abandon())
+
     def test_robot_motion_during_capture_invalidates_every_target(self):
         def moved(frame, targets, check, progress):
             self.arm['pose'][0] += 10000

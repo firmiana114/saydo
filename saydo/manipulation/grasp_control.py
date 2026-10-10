@@ -999,11 +999,35 @@ class GraspController(
 
     def start(
         self,
-        preview=False,
-        expected_object_id=None,
-        scene_id=None,
-        instance_id=None,
-    ):
+        preview: bool = False,
+        expected_object_id: Optional[str] = None,
+        scene_id: Optional[str] = None,
+        instance_id: Optional[str] = None,
+        supersede_scene: bool = False,
+    ) -> None:
+        """开始一次抓取任务：检查通过后会发送运动和夹爪指令。
+
+        本方法只锁定目标并启动任务线程，随即返回；`preview` 为真时任务
+        只生成方案，不发送任何指令。
+
+        目标从哪来：给了 `scene_id` 就用场景快照里那个物品的位姿，否则
+        用实时跟踪当前的位姿。
+
+        Args:
+            preview: 只生成方案，不运动。
+            expected_object_id: 调用方认为正在抓的物品；与实际不符时
+                拒绝。
+            scene_id: 场景快照编号。
+            instance_id: 场景里要抓的那个物品。
+            supersede_scene: 没有给 `scene_id`、而这台臂还留着一个场景
+                上下文时怎么办。False（智能体的调用）拒绝，要求它引用
+                场景；True（操作者在页面上点击）放弃那个场景上下文，
+                按实时跟踪的位姿抓取。
+
+        Raises:
+            ValueError: 没有可靠的位姿、物品不符、留有场景上下文而未
+                允许放弃，或这台臂已有任务在进行。
+        """
         # Take the tracker lock before the grasp lock (snapshot uses the same
         # order).
         if scene_id is not None:
@@ -1011,7 +1035,7 @@ class GraspController(
                 scene_id, instance_id, expected_object_id
             )
         else:
-            if self.scenes().active is not None:
+            if self.scenes().active is not None and not supersede_scene:
                 raise ValueError(
                     '已有场景采集上下文，必须引用准备完成的scene_id和instance_i'
                     'd'
@@ -1025,6 +1049,17 @@ class GraspController(
         with self.lock:
             if self.status['busy'] or self.status.get('stopping'):
                 raise ValueError('已有抓取任务正在处理')
+            if scene_id is None:
+                # 只规划不执行的固定抓放、失败的场景采集都会留下场景
+                # 上下文。操作者直接点抓取时放弃它；依赖它的旧方案此后
+                # 会因场景失效而被拒绝执行。
+                abandoned = self.scenes().abandon()
+                if abandoned is not None:
+                    LOG.info(
+                        '%s按操作者的抓取请求放弃了此前的场景上下文 %s',
+                        self.arm.label,
+                        abandoned,
+                    )
             self.cancelled.clear()
             self.actuated = False
             self.status.update(

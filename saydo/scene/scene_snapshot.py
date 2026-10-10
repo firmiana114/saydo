@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 import time
+from typing import Optional
 import uuid
 import numpy as np
 from saydo.geometry import grasp_geometry
@@ -86,6 +87,25 @@ class SceneStore:
         self.save(scene)
         self.active = scene['scene_id']
         return scene
+
+    def abandon(self) -> Optional[str]:
+        """放弃当前的场景上下文：把它标为已被取代，此后不再有效。
+
+        场景上下文在采集开始时建立，要到其中的物品全部放置完才结束。
+        只规划不执行、或者采集失败时，它会一直留着。操作者在页面上
+        直接点抓取时用本方法把它放弃，否则那次点击会被拒绝。
+
+        Returns:
+            被放弃的场景编号；本来就没有场景上下文时为 None。
+        """
+        ident = self.active
+        if ident is None:
+            return None
+        scene = self.get(ident)
+        scene['state'] = 'superseded'
+        self.save(scene)
+        self.active = None
+        return ident
 
     def get(self, ident):
         if (

@@ -2417,10 +2417,12 @@ def main() -> None:
                     tracker.pause()
                     result = {'paused': True}
                 elif self.path == '/api/grasp':
-                    tracker.grasp.start()
+                    # 页面上的点击是操作者的明确指令：这台臂若还留着
+                    # 只规划未执行或采集失败的场景上下文，放弃它。
+                    tracker.grasp.start(supersede_scene=True)
                     result = {'accepted': True, 'mode': args.grasp_mode}
                 elif self.path == '/api/grasp/preview':
-                    tracker.grasp.start(preview=True)
+                    tracker.grasp.start(preview=True, supersede_scene=True)
                     result = {'accepted': True, 'mode': 'preview'}
                 elif self.path == '/api/grasp/profiles':
                     result = tracker.grasp.edit_grasp_profiles(value)

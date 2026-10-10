@@ -283,7 +283,10 @@ class GripperHTTPTests(unittest.TestCase):
                         self.assertEqual(
                             json.loads(response.read())['mode'], 'preview'
                         )
-                        start.assert_called_once_with(preview=True)
+                        # 页面上的请求允许放弃遗留的场景上下文。
+                        start.assert_called_once_with(
+                            preview=True, supersede_scene=True
+                        )
                     self.assertNotIn('id="gripper-open-position"', page)
                     self.assertIn('id="teach-open-position"', page)
                     self.assertIn('id="arm-reset"', page)
