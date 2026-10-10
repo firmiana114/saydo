@@ -473,6 +473,10 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        '--keep', type=int, nargs='+', default=None, metavar='N',
+        help='只把这几个序号的取样点发给控制器（从 1 起，须含最后一个）',
+    )
+    parser.add_argument(
         '--stop-after-s', type=float, default=None,
         help='开始运动这么多秒后发一次停止指令（观察排队的轨迹）',
     )
@@ -496,10 +500,21 @@ def main() -> int:
             args.max_deviation_mm is not None
             and not 0 < args.max_deviation_mm <= 50
         )
+        or (
+            args.keep is not None
+            and (
+                args.max_deviation_mm is not None
+                or args.keep != sorted(set(args.keep))
+                or args.keep[0] < 1
+                or args.keep[-1] != args.points
+            )
+        )
     ):
         parser.error(
             f'直线须在 {MAX_DISTANCE_MM:g} 毫米以内，路点 1～30 个，速度 '
-            f'1～{MAX_SPEED_PERCENT}%，交融半径 0～100，停止时刻须大于 0'
+            f'1～{MAX_SPEED_PERCENT}%，交融半径 0～100，停止时刻须大于 0；'
+            '--keep 须升序、以最后一个取样点结尾，且不与 --max-deviation-mm '
+            '同用'
         )
     arm = arms.by_id(args.arm)
     LOG.info(
@@ -513,7 +528,14 @@ def main() -> int:
         LOG.error('%s；未发送运动', error)
         return 1
     summary = describe_plan(planned)
-    keep = None
+    keep = args.keep
+    if keep is not None:
+        sent = np.asarray(summary['path_deg'])[[0] + keep]
+        LOG.info(
+            '只发第 %s 个取样点，共 %d 条指令；相邻两条之间关节最多转 '
+            '%.1f 度',
+            keep, len(keep), float(np.abs(np.diff(sent, axis=0)).max()),
+        )
     if args.max_deviation_mm is not None:
         keep = trajectory_recorder.thin_joint_path(
             summary['path_deg'],
