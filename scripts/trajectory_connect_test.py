@@ -1,4 +1,7 @@
-"""试验：把几条关节运动连成一条不停顿的轨迹，实测控制器到底怎么走。
+"""试验：让机械臂沿直线连贯地走，实测控制器到底怎么走。
+
+名字是历史遗留：最初只试“轨迹连接”，后来加入了自己规划速度、按固定
+节拍把关节角发给控制器的做法（`--mode stream`，角度透传）。
 
 带 `--execute` 时会让机械臂运动；不带时只做计算并打印计划，不发送
 任何运动指令。夹爪始终不动。
@@ -17,7 +20,10 @@
 
 - `--mode connected`：前几条 `movej` 带轨迹连接标志，最后一条不带；
 - `--mode stepwise`：逐条发送、每条等到位，即现在抓取流程的做法，
-  用来对照。
+  用来对照；
+- `--mode stream`：把路点连成一条平滑轨迹，自己规定每一时刻走到哪
+  （见 `saydo/robot/joint_trajectory.py`），每隔 `--period-ms` 把当时
+  的关节角发给控制器，控制器不做规划、直接照着走。
 
 结果（计划、控制器的全部应答、实测轨迹、分析）保存在
 `work/trajectory_tests/` 下。
@@ -49,6 +55,7 @@ from saydo.robot import arm_occupancy
 from saydo.robot import arms
 from saydo.robot import collision_model
 from saydo.robot import grasp_robot
+from saydo.robot import joint_trajectory
 from saydo.robot import motion_validation
 from saydo.robot import trajectory_recorder
 
@@ -58,6 +65,9 @@ OUTPUT_DIRECTORY = 'work/trajectory_tests'
 # 试验允许的范围：直线最长 200 毫米，速度最高 30%。
 MAX_DISTANCE_MM = 200.
 MAX_SPEED_PERCENT = 30
+# 透传试验允许的关节转速和加速度上限。
+MAX_STREAM_SPEED_DEG_S = 60.
+MAX_STREAM_ACCEL_DEG_S2 = 200.
 # 等待一段运动完成的时间上限，单位秒。
 MOTION_TIMEOUT_S = 30.
 # 开始前机械臂必须静止：两次读数之间任一关节变化不超过这么多度。
@@ -169,7 +179,67 @@ def plan(arm: arms.Arm, offset_mm: List[float], points: int) -> dict:
         'state': state,
         'waypoints': waypoints,
         'detail': detail,
+        'environment': environment,
     }
+
+
+def plan_stream(
+    planned: dict,
+    summary: dict,
+    max_speed_deg_s: float,
+    max_acceleration_deg_s2: float,
+    period_s: float,
+) -> joint_trajectory.JointTrajectory:
+    """给路径配上时间，并检查这条带时间的轨迹；只做计算。
+
+    Args:
+        planned: `plan` 的返回值。
+        summary: `describe_plan` 的返回值。
+        max_speed_deg_s: 任一关节转速的上限，度每秒。
+        max_acceleration_deg_s2: 任一关节加速度的上限。
+        period_s: 发送间隔，秒。
+
+    Returns:
+        轨迹。
+
+    Raises:
+        ValueError: 按发送间隔取出的各帧会碰到障碍物。
+    """
+    path_deg = np.asarray(summary['path_deg'])
+    trajectory = joint_trajectory.plan_through(
+        path_deg,
+        max_speed_deg_s,
+        max_acceleration_deg_s2,
+        # 路点沿直线等距，夹爪沿直线的速度就按平滑的加速—减速变化。
+        knots=np.linspace(0., 1., len(path_deg)),
+    )
+    frames = trajectory.sample(period_s)
+    flange_T_tool = planned['tool']['flange_T_grip_tcp']
+    deviation_mm = trajectory_recorder.tcp_line_deviation_m(
+        frames[::5], flange_T_tool, summary['line_start_m'],
+        summary['line_end_m'],
+    ).max() * 1000
+    check = collision_model.check_path(
+        frames[::5], flange_T_tool, planned['environment']
+    )
+    if check['violation'] is not None:
+        raise ValueError(
+            '配上时间后的轨迹不安全：' + check['violation']['message']
+        )
+    LOG.info(
+        '透传轨迹：全程 %.2f 秒，共 %d 帧（每 %.0f 毫秒一帧）；最快的关节 '
+        '%.1f 度每秒，加速度最大 %.0f 度每二次方秒，相邻两帧最多转 %.3f 度',
+        trajectory.duration_s, len(frames), period_s * 1000,
+        trajectory.peak_speed_deg_s, trajectory.peak_acceleration_deg_s2,
+        float(np.abs(np.diff(frames, axis=0)).max()),
+    )
+    LOG.info(
+        '这条轨迹上夹爪参考点偏离直线最多 %.3f 毫米；离立杆最近 %s 毫米、'
+        '离另一台臂 %s 毫米',
+        deviation_mm, _mm(check['min_pole_clearance_m']),
+        _mm(check['min_other_arm_clearance_m']),
+    )
+    return trajectory
 
 
 def describe_plan(planned: dict) -> dict:
@@ -247,6 +317,9 @@ def execute(
     stop_after_s: Optional[float],
     blend_percent: int = 0,
     keep: Optional[List[int]] = None,
+    trajectory: Optional[joint_trajectory.JointTrajectory] = None,
+    period_s: float = .01,
+    follow: bool = False,
 ) -> dict:
     """按计划让机械臂运动，并记录实际轨迹：会发送运动指令。
 
@@ -255,13 +328,19 @@ def execute(
     Args:
         planned: `plan` 的返回值。
         summary: `describe_plan` 的返回值。
-        mode: `connected` 连成一条轨迹；`stepwise` 逐条发送。
+        mode: `connected` 连成一条轨迹；`stepwise` 逐条发送；`stream`
+            按固定节拍透传 `trajectory`。
         speed: 速度百分比。
         stop_after_s: 不为 None 时，在开始发送运动指令这么多秒之后
-            发一次停止指令，用来观察排队的后续轨迹会不会接着走。
+            要求停下：前两种方式发一次停止指令，用来观察排队的后续
+            轨迹会不会接着走；`stream` 方式置取消标志，用来观察沿
+            原轨迹减速停下的效果。
         blend_percent: 连接方式下中间各点的交融半径，0～100。
         keep: 只把路径上这些序号的点发给控制器（见
             `trajectory_recorder.thin_joint_path`）；None 表示全部。
+        trajectory: `stream` 方式要走的带时间的轨迹。
+        period_s: `stream` 方式的发送间隔，秒。
+        follow: `stream` 方式下控制器的跟随方式，True 为高跟随。
 
     Returns:
         试验记录：控制器的应答、实测样本和出错信息（如果有）。
@@ -296,6 +375,10 @@ def execute(
 
         def send_stop() -> None:
             record['stop_sent_s'] = recorder.elapsed_s()
+            if mode == 'stream':
+                cancelled.set()
+                record['stop_result'] = 'cancel_flag_set'
+                return
             try:
                 robot.stop()
                 record['stop_result'] = 'acknowledged'
@@ -305,7 +388,15 @@ def execute(
         stopper = threading.Timer(stop_after_s, send_stop)
         stopper.start()
     try:
-        if mode == 'connected':
+        if mode == 'stream':
+            # 发送循环与记录器用同一个时钟，指令和实测才能按时刻比较。
+            robot.stream_joints(
+                trajectory.position_deg, trajectory.duration_s, cancelled,
+                lambda: None, period_s, follow,
+                actual_joint_deg=recorder.latest_joint_deg,
+                record_frames=True, clock=recorder.elapsed_s,
+            )
+        elif mode == 'connected':
             robot.move_joints_chain(
                 targets, speed, cancelled, lambda: None, MOTION_TIMEOUT_S,
                 blend_percent,
@@ -395,7 +486,25 @@ def analyse(planned: dict, summary: dict, record: dict) -> dict:
         'final_error_deg': float(
             np.abs(np.asarray(joint_deg[-1]) - path_deg[-1]).max()
         ),
+        'tracking': _stream_tracking(record),
     }
+
+
+def _stream_tracking(record: dict) -> dict:
+    """透传方式下实测与指令的比较；其他方式返回空字典。"""
+    frames = next(
+        (e['frames'] for e in record['motion_events'] if 'frames' in e), None
+    )
+    if not frames:
+        return {}
+    result = trajectory_recorder.tracking(record['samples'], frames)
+    gaps = np.diff([frame[0] for frame in frames])
+    result.update(
+        frames_sent=len(frames),
+        send_period_ms_median=float(np.median(gaps) * 1000),
+        send_period_ms_max=float(gaps.max() * 1000),
+    )
+    return result
 
 
 def report(analysis: dict, record: dict) -> None:
@@ -438,6 +547,18 @@ def report(analysis: dict, record: dict) -> None:
         [round(s['duration_s'], 2) for s in analysis['stops_during_motion']],
     )
     LOG.info('终点与目标相差 %.3f 度', analysis['final_error_deg'])
+    followed = analysis.get('tracking')
+    if followed:
+        LOG.info(
+            '透传：发了 %d 帧，间隔中位 %.1f 毫秒、最长 %.1f 毫秒；实测与'
+            '同一时刻的指令最多差 %.2f 度，相当于滞后 %.0f 毫秒；扣除滞后'
+            '后最多差 %.3f 度',
+            followed['frames_sent'], followed['send_period_ms_median'],
+            followed['send_period_ms_max'],
+            followed.get('max_error_deg', float('nan')),
+            followed.get('lag_s', float('nan')) * 1000,
+            followed.get('max_error_after_shift_deg', float('nan')),
+        )
     for event in record['motion_events']:
         for response in event['responses']:
             LOG.info(
@@ -459,7 +580,24 @@ def main() -> int:
     parser.add_argument('--points', type=int, default=5, help='路点个数')
     parser.add_argument('--speed', type=int, default=10, help='速度百分比')
     parser.add_argument(
-        '--mode', choices=('connected', 'stepwise'), default='connected'
+        '--mode', choices=('connected', 'stepwise', 'stream'),
+        default='connected',
+    )
+    parser.add_argument(
+        '--max-speed-deg-s', type=float, default=15.,
+        help='stream 方式：任一关节转速的上限，度每秒',
+    )
+    parser.add_argument(
+        '--max-acceleration-deg-s2', type=float, default=40.,
+        help='stream 方式：任一关节加速度的上限，度每二次方秒',
+    )
+    parser.add_argument(
+        '--period-ms', type=float, default=10.,
+        help='stream 方式：发送间隔，毫秒',
+    )
+    parser.add_argument(
+        '--follow', choices=('low', 'high'), default='low',
+        help='stream 方式：控制器的跟随方式',
     )
     parser.add_argument(
         '--blend-percent', type=int, default=0,
@@ -495,6 +633,9 @@ def main() -> int:
         or not 1 <= args.points <= 30
         or not 1 <= args.speed <= MAX_SPEED_PERCENT
         or not 0 <= args.blend_percent <= 100
+        or not 0 < args.max_speed_deg_s <= MAX_STREAM_SPEED_DEG_S
+        or not 0 < args.max_acceleration_deg_s2 <= MAX_STREAM_ACCEL_DEG_S2
+        or not 2 <= args.period_ms <= 20
         or (args.stop_after_s is not None and args.stop_after_s <= 0)
         or (
             args.max_deviation_mm is not None
@@ -514,7 +655,8 @@ def main() -> int:
             f'直线须在 {MAX_DISTANCE_MM:g} 毫米以内，路点 1～30 个，速度 '
             f'1～{MAX_SPEED_PERCENT}%，交融半径 0～100，停止时刻须大于 0；'
             '--keep 须升序、以最后一个取样点结尾，且不与 --max-deviation-mm '
-            '同用'
+            f'同用；透传的转速上限不超过 {MAX_STREAM_SPEED_DEG_S:g} 度每秒、'
+            f'加速度不超过 {MAX_STREAM_ACCEL_DEG_S2:g}，间隔 2～20 毫秒'
         )
     arm = arms.by_id(args.arm)
     LOG.info(
@@ -546,6 +688,16 @@ def main() -> int:
             '允许偏离直线 %g 毫米：%d 个取样点里只发第 %s 个，共 %d 条指令',
             args.max_deviation_mm, args.points, keep, len(keep),
         )
+    trajectory = None
+    if args.mode == 'stream':
+        try:
+            trajectory = plan_stream(
+                planned, summary, args.max_speed_deg_s,
+                args.max_acceleration_deg_s2, args.period_ms / 1000,
+            )
+        except ValueError as error:
+            LOG.error('%s；未发送运动', error)
+            return 1
     if not args.execute:
         LOG.info('只做了计算，未发送运动。确认无误后加 --execute 执行。')
         return 0
@@ -560,7 +712,8 @@ def main() -> int:
         LOG.info('开始运动，Ctrl-C 可随时停止')
         record = execute(
             planned, summary, args.mode, args.speed, args.stop_after_s,
-            args.blend_percent, keep,
+            args.blend_percent, keep, trajectory, args.period_ms / 1000,
+            args.follow == 'high',
         )
     analysis = analyse(planned, summary, record)
     report(analysis, record)

@@ -3,6 +3,9 @@
 import json
 import socket
 import time
+from typing import Callable, Optional, Sequence
+
+import numpy as np
 
 
 READS = {
@@ -20,6 +23,13 @@ READS = {
 
 # 连续关节运动里，每条指令等待控制器接受确认的总时间上限，单位秒。
 ACCEPTANCE_TIMEOUT_S = 5.
+# 角度透传：轨迹起点与机械臂当前关节角最多允许相差多少度。
+STREAM_START_TOLERANCE_DEG = .5
+# 角度透传：相邻两帧之间任一关节最多允许变化多少度。发送间隔 10 毫秒时
+# 相当于每秒 200 度；正常的轨迹远小于它，超过说明轨迹或计时出了错。
+MAX_STREAM_STEP_DEG = 2.
+# 角度透传：两帧之间最多允许隔多久，单位秒。超过说明本机卡顿。
+MAX_STREAM_GAP_S = .05
 
 # 夹爪经末端 RM Plus 接口通信时，控制器应报告的模式值（即波特率）。
 # 报告 0 表示该接口未启用，此时读不到夹爪状态，也无法下发开合指令。
@@ -414,6 +424,245 @@ class RobotClient:
                                 f'完成的消息：{raw[:512]}'
                             )
                         return
+
+    def stream_joints(
+        self,
+        position_deg: Callable[[float], Sequence[float]],
+        duration_s: float,
+        cancelled: object,
+        watchdog: Callable[[], None],
+        period_s: float = .01,
+        follow: bool = False,
+        hold_s: float = .3,
+        brake_s: float = .3,
+        actual_joint_deg: Optional[Callable[[], Optional[Sequence]]] = None,
+        max_lag_deg: float = 5.,
+        record_frames: bool = False,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """按固定节拍把每一时刻的关节角发给机械臂照着走：会发送运动指令。
+
+        用的是控制器的“角度透传”（`movej_canfd`）：控制器不做任何
+        规划，收到一组关节角就直接让关节去执行。所以速度、加速度是否
+        合适完全由调用方给的轨迹决定（见 `joint_trajectory`）。
+
+        安全措施：
+
+        - 开始前读取实际关节角，轨迹起点与它相差超过 0.5 度就不发。
+        - 每一帧与上一帧相比，任一关节变化超过 `MAX_STREAM_STEP_DEG`
+          就停止发送并报错。
+        - 取消标志置位、`watchdog` 报错，或实际关节角落后指令超过
+          `max_lag_deg` 时，不是立刻停发，而是沿着原轨迹在 `brake_s`
+          内减速到停，然后报错。
+        - 两帧之间的间隔超过 `MAX_STREAM_GAP_S`（本机卡顿）时停止
+          发送并报错；机械臂停在最后收到的那一帧。
+
+        本方法返回时只表示指令发完了，机械臂是否真正到位、停稳，由
+        调用方另行核对。
+
+        Args:
+            position_deg: 给出某一时刻关节角的函数：输入从轨迹开始
+                算起的秒数，返回七个关节角（度）。
+            duration_s: 轨迹的总时间，秒。
+            cancelled: 取消标志（`threading.Event`）。
+            watchdog: 发送期间每 0.1 秒调用一次的检查函数；它抛出
+                异常时减速停下并把该异常传出。
+            period_s: 发送间隔，秒。
+            follow: 控制器的跟随方式：True 高跟随（要求间隔不超过
+                10 毫秒且轨迹平滑），False 低跟随。
+            hold_s: 走到终点后继续发送终点多久，秒。
+            brake_s: 中途需要停下时，用多长时间减速到停，秒。
+            actual_joint_deg: 返回最近一次实测关节角（度）的函数，
+                没有读数时返回 None；不给就不检查是否跟上。
+            max_lag_deg: 实测关节角与当前指令最多允许相差多少度。
+            record_frames: 是否把发出的每一帧连同时刻（`clock` 的读数）
+                记在运动记录里。
+            clock: 取当前时间（秒）的函数，测试时替换。
+            sleep: 等待若干秒的函数，测试时替换。
+
+        Raises:
+            ValueError: 没有启用运动、参数无效，或轨迹起点与机械臂
+                当前关节角不符。
+            RuntimeError: 操作员取消、机械臂没有跟上、相邻两帧变化
+                过大、发送间隔过长，或控制器断开连接。
+        """
+        if (
+            not self.writes
+            or not duration_s > 0
+            or not 0 < period_s <= MAX_STREAM_GAP_S / 2
+            or not brake_s > 0
+            or hold_s < 0
+        ):
+            raise ValueError('角度透传未启用或参数无效')
+        state = self.query('get_current_arm_state')['arm_state']
+        if any(state.get('err', [1])):
+            raise ValueError('机械臂存在错误状态')
+        start = np.asarray(position_deg(0.), dtype=float)
+        offset_deg = float(
+            np.abs(start - np.asarray(state['joint'], dtype=float) / 1000).max()
+        )
+        if start.shape != (7,) or not offset_deg <= STREAM_START_TOLERANCE_DEG:
+            raise ValueError(
+                f'轨迹起点与机械臂当前关节角相差 {offset_deg:.2f} 度，'
+                f'超过 {STREAM_START_TOLERANCE_DEG:g} 度；未发送运动'
+            )
+        started = time.monotonic()
+        record = {
+            'started_at': time.time(),
+            'stage': getattr(self, 'motion_stage', None),
+            'command': {
+                'command': 'movej_canfd',
+                'follow': follow,
+                'period_s': period_s,
+                'duration_s': duration_s,
+            },
+            'frames_sent': 0,
+            'max_gap_s': 0.,
+            'responses': [],
+            'responses_dropped': 0,
+        }
+        if record_frames:
+            record['frames'] = []
+        self.motion_log.append(record)
+        try:
+            self._stream(
+                position_deg, duration_s, cancelled, watchdog, period_s,
+                follow, hold_s, brake_s, actual_joint_deg, max_lag_deg,
+                record, clock, sleep,
+            )
+            record['outcome'] = 'completed'
+        except Exception as error:
+            record.update(
+                outcome='failed',
+                error=str(error),
+                error_type=type(error).__name__,
+            )
+            raise
+        finally:
+            record['elapsed_s'] = time.monotonic() - started
+
+    def _stream(
+        self,
+        position_deg: Callable[[float], Sequence[float]],
+        duration_s: float,
+        cancelled: object,
+        watchdog: Callable[[], None],
+        period_s: float,
+        follow: bool,
+        hold_s: float,
+        brake_s: float,
+        actual_joint_deg: Optional[Callable[[], Optional[Sequence]]],
+        max_lag_deg: float,
+        record: dict,
+        clock: Callable[[], float],
+        sleep: Callable[[float], None],
+    ) -> None:
+        """`stream_joints` 的发送循环；参数含义相同。
+
+        轨迹上的时间不是直接取墙上时钟，而是每一帧按“实际过去的时间
+        × 速率”累加：正常时速率为 1；需要停下时速率在 `brake_s` 内
+        线性降到 0，于是机械臂沿原轨迹减速，而不是急停在半路。
+        """
+        with socket.create_connection(self.address, timeout=2) as connection:
+            connection.settimeout(.2)
+            began = last = clock()
+            along_s, rate, sent = 0., 1., 0
+            previous = np.asarray(position_deg(0.), dtype=float)
+            stopping: Optional[Exception] = None
+            last_check = began
+            finished_at: Optional[float] = None
+            while True:
+                now = clock()
+                gap_s, last = now - last, now
+                record['max_gap_s'] = max(record['max_gap_s'], gap_s)
+                if gap_s > MAX_STREAM_GAP_S:
+                    raise RuntimeError(
+                        f'两帧之间隔了 {gap_s * 1000:.0f} 毫秒，超过 '
+                        f'{MAX_STREAM_GAP_S * 1000:.0f} 毫秒；已停止发送'
+                    )
+                if stopping is None:
+                    try:
+                        if cancelled.is_set():
+                            raise RuntimeError('操作员取消抓取')
+                        if now - last_check >= .1:
+                            last_check = now
+                            watchdog()
+                            actual = (
+                                actual_joint_deg()
+                                if actual_joint_deg is not None
+                                else None
+                            )
+                            if actual is not None:
+                                lag_deg = float(
+                                    np.abs(np.asarray(actual) - previous).max()
+                                )
+                                if lag_deg > max_lag_deg:
+                                    raise RuntimeError(
+                                        f'机械臂没有跟上指令（相差 '
+                                        f'{lag_deg:.1f} 度）'
+                                    )
+                    except Exception as error:
+                        stopping = error
+                if stopping is not None:
+                    rate = max(0., rate - gap_s / brake_s)
+                along_s += gap_s * rate
+                target = np.asarray(position_deg(along_s), dtype=float)
+                step_deg = float(np.abs(target - previous).max())
+                if not step_deg <= MAX_STREAM_STEP_DEG:
+                    raise RuntimeError(
+                        f'相邻两帧关节变化 {step_deg:.2f} 度，超过 '
+                        f'{MAX_STREAM_STEP_DEG:g} 度；已停止发送'
+                    )
+                joint_raw = np.rint(target * 1000).astype(int).tolist()
+                connection.sendall(
+                    (
+                        json.dumps(
+                            {
+                                'command': 'movej_canfd',
+                                'joint': joint_raw,
+                                'follow': follow,
+                                'expand': 0,
+                            }
+                        )
+                        + '\r\n'
+                    ).encode()
+                )
+                previous, sent = target, sent + 1
+                record['frames_sent'] = sent
+                if 'frames' in record:
+                    record['frames'].append([now, *joint_raw])
+                self._drain_replies(connection, record, now - began)
+                if stopping is not None and rate == 0:
+                    raise stopping
+                if along_s >= duration_s:
+                    finished_at = now if finished_at is None else finished_at
+                    if now - finished_at >= hold_s:
+                        return
+                remaining = began + sent * period_s - clock()
+                if remaining > 0:
+                    sleep(remaining)
+
+    @staticmethod
+    def _drain_replies(
+        connection: object, record: dict, elapsed_s: float
+    ) -> None:
+        """把控制器已经发来的应答读走并记下来，不等待。"""
+        try:
+            chunk = connection.recv(4096, socket.MSG_DONTWAIT)
+        except (BlockingIOError, socket.timeout):
+            return
+        if not chunk:
+            raise RuntimeError('运动期间控制器断开连接')
+        if len(record['responses']) >= 32:
+            record['responses_dropped'] += 1
+            return
+        record['responses'].append(
+            {
+                'elapsed_s': elapsed_s,
+                'raw': chunk.decode('utf-8', errors='replace')[:2048],
+            }
+        )
 
     def _move(self, command, cancelled, watchdog, timeout):
         started = time.monotonic()

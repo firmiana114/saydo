@@ -86,6 +86,11 @@ class TrajectoryRecorder:
         """返回从开始记录到现在的秒数。"""
         return self._clock() - self.started_s
 
+    def latest_joint_deg(self) -> Optional[List[float]]:
+        """返回最近一次读到的关节角（度）；还没有读数时为 None。"""
+        samples = self.samples
+        return samples[-1]['joint_deg'] if samples else None
+
     def _run(self) -> None:
         """循环查询关节角直到被要求停止。"""
         request = b'{"command":"get_current_arm_state"}\r\n'
@@ -251,6 +256,55 @@ def thin_joint_path(
     ):
         return even
     return kept
+
+
+def tracking(
+    samples: Sequence[dict],
+    frames: Sequence[Sequence[float]],
+    max_shift_s: float = .4,
+) -> dict:
+    """比较实测关节角与同一时刻的指令：差多少、滞后多久。
+
+    Args:
+        samples: `TrajectoryRecorder.stop` 返回的样本。
+        frames: 发出的指令，每行是时刻（与样本的 `t_s` 同一个时钟，
+            秒）加七个关节角（0.001 度）。
+        max_shift_s: 估计滞后时最多试到多少秒。
+
+    Returns:
+        `max_error_deg`：发送期间实测与同一时刻指令的最大差；
+        `lag_s`：把指令整体推后多少秒时与实测最接近；
+        `max_error_after_shift_deg`：推后这么多之后还剩的最大差
+        （即扣除滞后以后，路径本身走得准不准）。
+    """
+    frame = np.asarray(frames, dtype=float)
+    times = np.array([sample['t_s'] for sample in samples])
+    actual = np.array([sample['joint_deg'] for sample in samples])
+    during = (times >= frame[0, 0]) & (times <= frame[-1, 0])
+    if during.sum() < 3:
+        return {}
+
+    def commanded(shift_s: float) -> np.ndarray:
+        return np.column_stack(
+            [
+                np.interp(
+                    times[during] - shift_s, frame[:, 0], frame[:, k + 1]
+                )
+                / 1000
+                for k in range(7)
+            ]
+        )
+
+    errors = {
+        shift: float(np.abs(actual[during] - commanded(shift)).max())
+        for shift in np.arange(0., max_shift_s + 1e-9, .005)
+    }
+    best = min(errors, key=errors.get)
+    return {
+        'max_error_deg': errors[0.],
+        'lag_s': float(best),
+        'max_error_after_shift_deg': errors[best],
+    }
 
 
 def speed_deg_s(

@@ -290,11 +290,11 @@
         <div>
           <h1>几个机位，一起看</h1>
           <p>
-            机械臂手上的相机和不固定的全局相机。可同时预览或单独释放。
+            机械臂手上的相机和不固定的全局相机。相机由相机服务统一打开，看预览不妨碍其他程序取图。
           </p>
         </div>
         <div class="actions">
-          <button class="primary" id="start-all">开始全部预览</button><button id="stop-all">释放全部预览</button>
+          <button class="primary" id="start-all">开始全部预览</button><button id="stop-all">停止全部预览</button>
         </div>
       </div>
       <div id="service-error" class="service-error" role="status"></div>
@@ -310,12 +310,12 @@
           <div class="video">
             <div class="placeholder" id="d435i-placeholder">
               <strong id="d435i-title">等待开始预览</strong>
-              <p>8089 正在使用此相机时，共享其最新原始画面。</p>
+              <p>8089 运行时转接它的画面；看与不看都不影响 8089 取图。</p>
             </div>
             <img id="d435i-feed" alt="D435i 眼在手实时彩色画面">
           </div>
           <div class="toolbar">
-            <button class="primary" id="d435i-start">开始预览</button><button id="d435i-stop" disabled>释放预览</button><a class="download" id="d435i-snapshot" href="/snapshot/d435i.jpg" download>保存截图 ↓</a>
+            <button class="primary" id="d435i-start">开始预览</button><button id="d435i-stop" disabled>停止预览</button><a class="download" id="d435i-snapshot" href="/snapshot/d435i.jpg" download>保存截图 ↓</a>
           </div>
           <div class="metrics">
             <span id="d435i-resolution">—</span><span id="d435i-fps">— fps</span><span id="d435i-frames">— 帧</span>
@@ -338,12 +338,12 @@
           <div class="video">
             <div class="placeholder" id="d405-placeholder">
               <strong id="d405-title">等待开始预览</strong>
-              <p>开启后持续采集不固定的全局相机画面，全局观察可共享此画面。</p>
+              <p>相机由本服务打开，标定、全局观察等程序同时取图，与预览互不影响。</p>
             </div>
             <img id="d405-feed" alt="D405 不固定的全局相机实时彩色画面">
           </div>
           <div class="toolbar">
-            <button class="primary" id="d405-start">开始预览</button><button id="d405-stop" disabled>释放预览</button><a class="download" id="d405-snapshot" href="/snapshot/d405.jpg" download>保存截图 ↓</a>
+            <button class="primary" id="d405-start">开始预览</button><button id="d405-stop" disabled>停止预览</button><a class="download" id="d405-snapshot" href="/snapshot/d405.jpg" download>保存截图 ↓</a>
           </div>
           <div class="metrics">
             <span id="d405-resolution">—</span><span id="d405-fps">— fps</span><span id="d405-frames">— 帧</span>
@@ -366,12 +366,12 @@
           <div class="video">
             <div class="placeholder" id="d435i_arm2-placeholder">
               <strong id="d435i_arm2-title">等待开始预览</strong>
-              <p>本服务直接采集。手眼采集程序借用相机时自动让出，结束后自动恢复。</p>
+              <p>8089 运行时转接它的画面；看与不看都不影响 8089 取图。</p>
             </div>
             <img id="d435i_arm2-feed" alt="2 臂 D435i 眼在手实时彩色画面">
           </div>
           <div class="toolbar">
-            <button class="primary" id="d435i_arm2-start">开始预览</button><button id="d435i_arm2-stop" disabled>释放预览</button><a class="download" id="d435i_arm2-snapshot" href="/snapshot/d435i_arm2.jpg" download>保存截图 ↓</a>
+            <button class="primary" id="d435i_arm2-start">开始预览</button><button id="d435i_arm2-stop" disabled>停止预览</button><a class="download" id="d435i_arm2-snapshot" href="/snapshot/d435i_arm2.jpg" download>保存截图 ↓</a>
           </div>
           <div class="metrics">
             <span id="d435i_arm2-resolution">—</span><span id="d435i_arm2-fps">— fps</span><span id="d435i_arm2-frames">— 帧</span>
@@ -386,7 +386,10 @@
       </div>
       <div class="notice">
         <p>
-          手眼采集程序需要某台相机时会自动借用，采集结束后预览自动恢复，不用手动释放。共享 8089 的预览停止后，8089 仍保持相机采集。
+          相机由相机服务统一打开：预览、标定和全局观察共用同一路画面，互不影响，随时可以开始或停止预览。没有人看、也没有程序取图时，相机自动关闭。
+        </p>
+        <p>
+          例外：手眼采集程序仍要独占相机。它会自动借用，期间这一路没有画面，结束后预览自动恢复，不用手动操作。
         </p>
         <p>
           各路画面独立采集，不是同步标定样本。仅供可信局域网使用；本页不控制机械臂或夹爪，不录制视频。

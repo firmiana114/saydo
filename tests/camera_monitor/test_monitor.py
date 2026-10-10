@@ -571,6 +571,56 @@ class TestFramesForPrograms(unittest.TestCase):
         )
         self.assertEqual(self.rs.started, 0)
 
+    def open_preview(self):
+        viewer = http.client.HTTPConnection(
+            *self.server.server_address, timeout=8
+        )
+        self.addCleanup(viewer.close)
+        viewer.request('GET', '/stream/d405')
+        stream = viewer.getresponse()
+        self.assertIn(b'--frame', stream.readline())
+        return stream
+
+    def test_stopping_the_preview_leaves_a_program_undisturbed(self):
+        self.request('/api/cameras/d405/frame?keep_s=30')
+        first = self.open_preview()
+        code, status = self.request('/api/cameras/d405/pause', 'POST')
+        self.assertEqual(code, 200)
+        # 预览连接结束了，相机还开着，程序照常取图。
+        first.fp.raw._sock.settimeout(3)
+        while first.readline():
+            pass
+        row = status['cameras']['d405']
+        self.assertEqual((row['state'], row['clients']), ('streaming', 0))
+        self.assertEqual(
+            self.request('/api/cameras/d405/frame?keep_s=30')[0], 200
+        )
+        self.assertEqual((self.rs.started, self.rs.stopped), (1, 0))
+        # 之后重新开始预览，连接数算得对：旧连接收尾时不会把它减掉。
+        second = self.open_preview()
+        time.sleep(.2)
+        self.assertEqual(self.camera.status()['clients'], 1)
+        self.assertIn(b'Content-Type', second.readline())
+        # “停止全部预览”同样不打断程序。
+        self.request('/api/pause', 'POST')
+        self.assertEqual(self.camera.status()['state'], 'streaming')
+        self.assertEqual(self.rs.stopped, 0)
+
+    def test_stopping_the_preview_closes_a_camera_nobody_else_uses(self):
+        stream = self.open_preview()
+        self.assertFalse(stream.closed)
+        self.request('/api/cameras/d405/pause', 'POST')
+        self.assertEqual(self.camera.status()['state'], 'idle')
+        self.assertEqual((self.rs.started, self.rs.stopped), (1, 1))
+
+    def test_lending_the_camera_closes_it_even_while_a_program_reads(self):
+        self.request('/api/cameras/d405/frame?keep_s=30')
+        self.request(
+            '/api/cameras/d405/pause', 'POST', body=b'{"hold_s": 30}'
+        )
+        self.assertEqual(self.camera.status()['state'], 'idle')
+        self.assertEqual(self.rs.stopped, 1)
+
     def test_stalled_camera_recovers_without_dropping_the_preview(self):
         viewer = http.client.HTTPConnection(
             *self.server.server_address, timeout=8

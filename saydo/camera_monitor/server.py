@@ -169,6 +169,8 @@ class Camera:
         self.arm = arm
         self.hold_until = 0.
         self.keep_until = 0.
+        # 每次“停止预览”加一，用来让当时的预览连接结束。
+        self.viewers = 0
         self.image = None
         self.intrinsics = None
         self.has_depth = depth
@@ -469,14 +471,16 @@ class Camera:
         frame['image_base64'] = base64.b64encode(encoded).decode()
         return frame
 
-    def unsubscribe(self, epoch: int) -> None:
-        """注销一个预览连接；没有人看也没有程序在用时释放相机。
+    def unsubscribe(self, epoch: int, viewers: Optional[int] = None) -> None:
+        """注销一个预览连接；没有人看也没有程序在用时关闭相机。
 
         Args:
             epoch: `subscribe` 返回的代次；已不是当前代次时不做任何事。
+            viewers: 连接建立时的 `viewers` 值；之后有人点过“停止预览”
+                时这个连接已经被注销过，不再重复计数。
         """
         with self.cv:
-            if epoch != self.epoch:
+            if epoch != self.epoch or viewers not in (None, self.viewers):
                 return
             self.clients = max(0, self.clients - 1)
             # 程序还在用这台相机时，最后一个观看者离开也不释放。
@@ -484,7 +488,35 @@ class Camera:
                 self.stop_event.set()
                 self.cv.notify_all()
 
-    def stop(self):
+    def end_previews(self) -> dict:
+        """结束这一路的全部预览连接；没有程序在取图时同时关闭相机。
+
+        页面上的“停止预览”走这里。相机是预览和取图程序共用的：程序
+        （标定、全局观察等）还在取图时相机继续采集，程序不受影响。
+
+        Returns:
+            这一路相机的状态。
+        """
+        with self.cv:
+            shared = (
+                time.monotonic() < self.keep_until
+                and self.state in ('starting', 'streaming')
+                and not self.stop_event.is_set()
+            )
+            if shared:
+                self.clients = 0
+                self.viewers += 1
+                self.cv.notify_all()
+        return self.status() if shared else self.stop()
+
+    def stop(self) -> dict:
+        """关闭相机并结束所有预览连接，不管有没有程序在取图。
+
+        把相机整台借给采集程序、以及服务退出时用。
+
+        Returns:
+            这一路相机的状态。
+        """
         with self.cv:
             self.stop_event.set()
             if self.state in ('starting', 'streaming'):
@@ -810,7 +842,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """
         request = str(args[0])
         routine = (
-            '/api/status' in request
+            '/status ' in request
             or '/keep ' in request
             or 'keep_s=' in request
         )
@@ -973,6 +1005,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             )
         try:
             epoch = camera.subscribe()
+            viewers = camera.viewers
         except RuntimeError as exc:
             return self.send_body(409, json.dumps({'error': str(exc)}).encode())
         try:
@@ -993,11 +1026,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             and camera.sequence != previous
                         ) or camera.stop_event.is_set() or camera.state in (
                             'error', 'idle'
-                        ),
+                        ) or camera.viewers != viewers,
                         timeout=4,
                     )
                     if (
                         epoch != camera.epoch
+                        or camera.viewers != viewers
                         or camera.stop_event.is_set()
                         or camera.state in ('error', 'idle')
                     ):
@@ -1021,14 +1055,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ):
             pass
         finally:
-            camera.unsubscribe(epoch)
+            camera.unsubscribe(epoch, viewers)
             self.close_connection = True
 
     def do_POST(self) -> None:
-        """处理释放预览、让出相机和归还相机三类请求；不控制机械臂。
+        """处理停止预览、让出相机、归还相机和保持采集；不控制机械臂。
 
-        `/api/pause` 释放全部预览。`/api/cameras/<键>/pause` 释放一路，
-        请求体里带 `{"hold_s": 秒数}` 时同时把相机让给采集程序。
+        `/api/pause` 停止全部预览，`/api/cameras/<键>/pause` 停止一路：
+        结束预览连接，没有程序在取图的相机同时关闭。请求体里带
+        `{"hold_s": 秒数}` 时是把相机整台让给采集程序，一定关闭。
         `/api/cameras/<键>/resume` 提前归还。`/api/cameras/<键>/keep`
         带 `{"keep_s": 秒数}`：应取图程序的要求保持采集，必要时打开
         相机，等它出图后返回这一路的状态（含共享内存的位置）。
@@ -1075,7 +1110,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if hold_s and len(keys) == 1:
                 cameras[key].hold(hold_s)
                 LOG.info('%s 让给采集程序 %.0f 秒', key, hold_s)
-            cameras[key].stop()
+                cameras[key].stop()
+            else:
+                cameras[key].end_previews()
         self.send_body(200, json.dumps(monitor_status(cameras)).encode())
 
 

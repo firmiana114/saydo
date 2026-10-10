@@ -29,7 +29,7 @@ const labels = {
   idle: '空闲',
   starting: '启动中',
   streaming: '实时采集中',
-  stopping: '正在释放',
+  stopping: '正在关闭相机',
   error: '采集异常',
 };
 let errors = 0;
@@ -39,7 +39,7 @@ let errors = 0;
  * @param {string} id 相机的键。
  * @param {string=} title 占位区显示的文字。
  */
-function clearFeed(id, title = '预览已释放') {
+function clearFeed(id, title = '预览已停止') {
   cameras[id].active = false;
   $(id + '-feed').removeAttribute('src');
   $(id + '-feed').style.display = 'none';
@@ -68,8 +68,11 @@ function start(id) {
 }
 
 /**
- * 由用户释放预览；不再自动重连。
- * @param {string=} id 相机的键；不给时释放全部。
+ * 由用户停止预览；不再自动重连。
+ *
+ * 只结束预览。相机是预览和取图程序共用的，还有程序在取图时服务不会
+ * 关闭相机。
+ * @param {string=} id 相机的键；不给时停止全部。
  * @return {!Promise<void>} 请求结束后完成。
  */
 async function stop(id) {
@@ -89,7 +92,7 @@ async function stop(id) {
     }
     await status();
   } catch (e) {
-    $('service-error').textContent = '释放请求未确认，请检查服务连接。';
+    $('service-error').textContent = '停止请求未确认，请检查服务连接。';
   }
 }
 
@@ -110,8 +113,7 @@ $('stop-all').onclick = () => stop();
 /**
  * 相机被采集程序借走时收起画面，归还后自动重连。
  *
- * 只在“借走再归还”这一种情况下自动重连。别的原因断开（出错、被别处
- * 释放）仍由用户决定是否重新开始，避免页面和其他程序抢相机。
+ * 借走期间相机归采集程序独占，页面不去连；归还后自动重连。
  * @param {string} id 相机的键。
  * @param {!Object} s 服务返回的这一路状态。
  */
@@ -219,7 +221,7 @@ async function status() {
           )
       ) {
         clearFeed(
-            id, s.state === 'error' ? '暂时无法读取此机位' : '预览已释放'
+            id, s.state === 'error' ? '暂时无法读取此机位' : '预览已停止'
         );
       }
       followHold(id, s);
