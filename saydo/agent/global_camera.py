@@ -10,6 +10,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+from typing import Optional
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFIG = ROOT / 'config/cameras/global.json'
@@ -24,8 +25,28 @@ class CameraUnavailable(RuntimeError):
     pass
 
 
-def monitor_frame(serial, camera_name):
-    """Reuse an active D405 preview, waiting for a newly captured frame; never start it."""
+# 向相机服务取图时让它再保持采集多久，单位秒。连续观察时相机不必
+# 每次重新打开；不再观察后到期自行释放。
+MONITOR_KEEP_S = 5
+
+
+def monitor_frame(serial: str, camera_name: str) -> Optional[dict]:
+    """向相机服务（8088）要一帧请求之后拍到的全局相机画面。
+
+    相机由相机服务打开（没开时它会先打开，约两秒），本进程不碰设备，
+    所以不会和预览、标定等抢相机。
+
+    Args:
+        serial: 配置里全局相机的序列号。
+        camera_name: 配置里全局相机的型号；相机服务只管 D405。
+
+    Returns:
+        带相机身份和拍摄时刻的 JPEG 画面；相机服务没有运行、不管这个
+        型号，或此刻给不出画面时为 None，由调用者改为直接采集。
+
+    Raises:
+        ValueError: 相机服务给出的画面身份不符、已过期或图像无效。
+    """
     if camera_name != 'RealSense D405':
         return None
     opener = urllib.request.build_opener(
@@ -33,7 +54,9 @@ def monitor_frame(serial, camera_name):
     )
     try:
         with opener.open(
-            'http://127.0.0.1:8088/api/cameras/d405/frame', timeout=3
+            'http://127.0.0.1:8088/api/cameras/d405/frame'
+            f'?keep_s={MONITOR_KEEP_S}',
+            timeout=10,
         ) as response:
             raw = response.read(4 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as exc:

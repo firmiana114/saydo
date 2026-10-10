@@ -217,7 +217,8 @@ class SharedMonitorTests(unittest.TestCase):
                 camera.capture('218622270784', 'RealSense D405'), result
             )
         opener.open.assert_called_once_with(
-            'http://127.0.0.1:8088/api/cameras/d405/frame', timeout=3
+            'http://127.0.0.1:8088/api/cameras/d405/frame?keep_s=5',
+            timeout=10,
         )
 
     def test_shared_wrong_identity_stale_and_invalid_image_rejected(self):

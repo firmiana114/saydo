@@ -59,7 +59,8 @@ run_suite() {
       SAYDO_IK_CHECKER="${PWD}/work/grasp/rm75_ik_check" run_python_suite \
         backend work/foundationpose_env/bin/python \
         tests/geometry tests/robot tests/perception tests/objects \
-        tests/scene tests/manipulation tests/workbench tests/scripts
+        tests/scene tests/manipulation tests/workbench tests/scripts \
+        tests/contracts
       ;;
     task_runner)
       run_python_suite task_runner work/task_runner_env/bin/python \
@@ -70,7 +71,8 @@ run_suite() {
       ;;
     devices)
       run_python_suite devices .venv/bin/python \
-        tests/camera_monitor tests/calibration tests/modeling
+        tests/camera_monitor tests/calibration tests/modeling \
+        tests/contracts
       ;;
     frontend)
       run_frontend_suite

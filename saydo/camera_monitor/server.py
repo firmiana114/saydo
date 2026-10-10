@@ -20,6 +20,7 @@ import urllib.parse
 from typing import Optional
 
 from saydo import paths
+from saydo.contracts import camera_frames
 
 # 预览页面与页面脚本所在的目录。
 WEB = pathlib.Path(__file__).resolve().with_name('web')
@@ -35,6 +36,31 @@ MAX_HOLD_S = 60.
 MAX_KEEP_S = 60.
 # 相机由取画面的请求启动时，最多等它多久出第一帧，单位秒。
 START_TIMEOUT_S = 10.
+# 原始画面的共享内存放在哪个目录；`/dev/shm` 是系统提供的内存文件系统。
+SHARED_DIRECTORY = pathlib.Path('/dev/shm')
+
+
+def exposure_time(rs: object, color: object, received_at: float) -> float:
+    """估计一帧的曝光时刻。
+
+    相机给出的时间戳若已换算到主机时钟，就用它（比主机收到的时刻早
+    几十毫秒，更接近实际曝光）；否则退回主机收到的时刻。
+
+    Args:
+        rs: `pyrealsense2` 模块。
+        color: 彩色帧。
+        received_at: 主机收到这一帧的时刻（`time.time()` 的值）。
+
+    Returns:
+        曝光时刻，与 `time.time()` 同一时间基准。
+    """
+    timestamp_s = color.get_timestamp() / 1000
+    on_host_clock = color.get_frame_timestamp_domain() in (
+        rs.timestamp_domain.global_time, rs.timestamp_domain.system_time
+    )
+    if on_host_clock and 0 <= received_at - timestamp_s < 10:
+        return timestamp_s
+    return received_at
 
 
 def camera_users(serial):
@@ -83,6 +109,10 @@ class Camera:
             8089 的画面时为 None。
         intrinsics: 本服务直接采集时彩色画面的内参与畸变参数；共享
             8089 的画面时为 None。
+        has_depth: 直接采集时是否同时采集深度图；目前只有全局相机。
+        shared_frames: 本服务直接采集时，原始画面所在共享内存的路径
+            和标识（每次重新打开相机都会变）；没有在采集或共享 8089
+            的画面时为 None。读写约定见 `saydo/contracts/camera_frames.py`。
     """
 
     def __init__(
@@ -130,6 +160,8 @@ class Camera:
         self.keep_until = 0.
         self.image = None
         self.intrinsics = None
+        self.has_depth = is_global
+        self.shared_frames = None
         # 向 8089 要画面时的路径：1 臂是缺省的臂，不用写编号。
         self.frame_path = '/api/agent/frame' + (
             f'?arm={arm}' if arm not in (None, 'arm1') else ''
@@ -157,6 +189,7 @@ class Camera:
                     max(0., self.keep_until - time.monotonic()), 1
                 ),
                 intrinsics=self.intrinsics,
+                shared_frames=self.shared_frames,
                 error=self.error,
                 camera=self.name,
                 usb=self.usb,
@@ -275,6 +308,24 @@ class Camera:
             self.keep_until = max(
                 self.keep_until, time.monotonic() + seconds
             )
+
+    def wait_started(self, timeout_s: float) -> None:
+        """等正在启动的相机出第一帧。
+
+        Args:
+            timeout_s: 最多等多久，单位秒。
+
+        Raises:
+            RuntimeError: 相机没有在采集（打不开或限时内没有出图）。
+        """
+        with self.cv:
+            self.cv.wait_for(
+                lambda: self.state != 'starting', timeout=timeout_s
+            )
+            if self.state != 'streaming':
+                raise RuntimeError(
+                    '相机不可用：' + (self.error or '限时内没有出图')
+                )
 
     def keep_expired(self) -> bool:
         """程序要求的期限已过、又没有人在看预览时为真：该释放相机了。"""
@@ -440,6 +491,7 @@ class Camera:
         pipeline = None
         device_lock = None
         started = False
+        writer = None
         try:
             if self.tracker is not None:
                 # Only GET the raw camera frame; never pause or reconfigure
@@ -495,6 +547,16 @@ class Camera:
                 rs.format.bgr8,
                 self.target_fps,
             )
+            align = None
+            if self.has_depth:
+                config.enable_stream(
+                    rs.stream.depth,
+                    *self.requested_size,
+                    rs.format.z16,
+                    self.target_fps,
+                )
+                # 把深度图逐像素对齐到彩色图，两者才能按同一组内参使用。
+                align = rs.align(rs.stream.color)
             profile = pipeline.start(config)
             started = True
             if (
@@ -531,18 +593,50 @@ class Camera:
                     if stop.is_set():
                         return
                     pipeline.wait_for_frames(3000)
-            last, count = time.monotonic(), 0
+            writer = camera_frames.FrameWriter(
+                SHARED_DIRECTORY / f'saydo-camera-{self.camera_id}',
+                *self.requested_size,
+                self.intrinsics,
+                self.serial,
+                self.name,
+                (
+                    float(
+                        profile.get_device()
+                        .first_depth_sensor()
+                        .get_depth_scale()
+                    )
+                    if self.has_depth
+                    else None
+                ),
+            )
+            with self.cv:
+                self.shared_frames = {
+                    'path': str(writer.path),
+                    'id': f'{os.getpid()}-{epoch}',
+                }
+            last, count, written = time.monotonic(), 0, 0
             while not stop.is_set():
                 frames = pipeline.wait_for_frames(3000)
                 if stop.is_set():
                     break
+                if align is not None:
+                    frames = align.process(frames)
                 color = frames.get_color_frame()
-                if not color:
+                depth = frames.get_depth_frame() if self.has_depth else None
+                if not color or (self.has_depth and not depth):
                     continue
                 captured_at = time.time()
                 # 复制一份：相机驱动会回收这一帧的内存，而无损图像要
                 # 留到有程序来取。
                 image = np.asanyarray(color.get_data()).copy()
+                written += 1
+                writer.write(
+                    image,
+                    np.asanyarray(depth.get_data()) if depth else None,
+                    written,
+                    exposure_time(rs, color, captured_at),
+                    captured_at,
+                )
                 ok, encoded = cv2.imencode(
                     '.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 82]
                 )
@@ -589,7 +683,10 @@ class Camera:
                     LOG.warning('Camera release: %s', exc)
             if device_lock:
                 device_lock.close()
+            if writer is not None:
+                writer.close()
             with self.cv:
+                self.shared_frames = None
                 self.clients = 0
                 if self.state != 'error':
                     self.state = 'idle'
@@ -664,8 +761,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     protocol_version = 'HTTP/1.1'
 
-    def log_message(self, fmt, *args):
-        if '/api/status' not in str(args[0]):
+    def log_message(self, fmt: str, *args: object) -> None:
+        """记录一次请求；周期性的查询和取图不记，免得日志无限增长。
+
+        页面每秒查一次状态，取图程序每秒取图、每几秒续一次期限。
+        相机因取图请求而启动时另有一条日志。
+        """
+        request = str(args[0])
+        routine = (
+            '/api/status' in request
+            or '/keep ' in request
+            or 'keep_s=' in request
+        )
+        if not routine or not str(args[1]).startswith('2'):
             LOG.info('%s %s', self.client_address[0], fmt % args)
 
     def send_body(
@@ -713,11 +821,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             )
         try:
             if keep_s:
-                if camera.status()['state'] not in ('starting', 'streaming'):
-                    LOG.info(
-                        '%s 应程序的取图请求启动采集', camera.camera_id
-                    )
-                camera.keep(keep_s)
+                self.start_for_program(camera, keep_s)
             frame = camera.fresh_frame(
                 lossless=image_format == 'png',
                 start_timeout_s=START_TIMEOUT_S if keep_s else 0.,
@@ -727,6 +831,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 409, json.dumps({'error': str(exc)}).encode()
             )
         self.send_body(200, json.dumps(frame).encode())
+
+    def keep_camera(self, camera: Camera, keep_s: float) -> None:
+        """应取图程序的要求保持采集，并回应这一路相机的状态。
+
+        Args:
+            camera: 目标相机。
+            keep_s: 至少再保持采集多久，单位秒。
+        """
+        try:
+            self.start_for_program(camera, keep_s)
+            camera.wait_started(START_TIMEOUT_S)
+        except RuntimeError as exc:
+            return self.send_body(
+                409, json.dumps({'error': str(exc)}).encode()
+            )
+        self.send_body(200, json.dumps(camera.status()).encode())
+
+    def start_for_program(self, camera: Camera, keep_s: float) -> None:
+        """续上程序要求的期限；相机没开时打开它并记一条日志。
+
+        Args:
+            camera: 目标相机。
+            keep_s: 至少再保持采集多久，单位秒。
+
+        Raises:
+            RuntimeError: 相机已让给采集程序，或正在释放。
+        """
+        if camera.status()['state'] not in ('starting', 'streaming'):
+            LOG.info('%s 应程序的取图请求启动采集', camera.camera_id)
+        camera.keep(keep_s)
 
     def do_GET(self) -> None:
         """处理页面、状态、预览流、截图和取图请求；不控制机械臂。"""
@@ -854,13 +988,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         `/api/pause` 释放全部预览。`/api/cameras/<键>/pause` 释放一路，
         请求体里带 `{"hold_s": 秒数}` 时同时把相机让给采集程序。
-        `/api/cameras/<键>/resume` 提前归还。
+        `/api/cameras/<键>/resume` 提前归还。`/api/cameras/<键>/keep`
+        带 `{"keep_s": 秒数}`：应取图程序的要求保持采集，必要时打开
+        相机，等它出图后返回这一路的状态（含共享内存的位置）。
         """
         cameras = self.server.cameras
         routes = {'/api/pause': ('pause', list(cameras))}
         for key in cameras:
             routes[f'/api/cameras/{key}/pause'] = ('pause', [key])
             routes[f'/api/cameras/{key}/resume'] = ('resume', [key])
+            routes[f'/api/cameras/{key}/keep'] = ('keep', [key])
         if self.path not in routes:
             return self.send_body(404, b'{"error":"Not found"}')
         origin = self.headers.get('Origin')
@@ -868,20 +1005,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_body(403, b'{"error":"Origin mismatch"}')
         operation, keys = routes[self.path]
         hold_s = 0.
+        field = 'keep_s' if operation == 'keep' else 'hold_s'
         try:
             size = int(self.headers.get('Content-Length') or 0)
             if not 0 <= size <= 200:
                 raise ValueError('请求体过大')
             body = json.loads(self.rfile.read(size) or b'{}')
-            if not isinstance(body, dict) or set(body) - {'hold_s'}:
-                raise ValueError('只接受 hold_s')
-            hold_s = body.get('hold_s', 0)
+            if not isinstance(body, dict) or set(body) - {field}:
+                raise ValueError(f'只接受 {field}')
+            hold_s = body.get(field, 0)
             if type(hold_s) not in (int, float) or not 0 <= hold_s:
-                raise ValueError('hold_s 必须是非负数')
+                raise ValueError(f'{field} 必须是非负数')
+            if operation == 'keep' and not 0 < hold_s <= MAX_KEEP_S:
+                raise ValueError(
+                    f'keep_s 必须大于 0、不超过 {MAX_KEEP_S:.0f}'
+                )
         except ValueError as exc:
             return self.send_body(
                 400, json.dumps({'error': str(exc)}).encode()
             )
+        if operation == 'keep':
+            return self.keep_camera(cameras[keys[0]], hold_s)
         for key in keys:
             if operation == 'resume':
                 cameras[key].hold(0)

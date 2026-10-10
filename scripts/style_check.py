@@ -74,7 +74,7 @@ SIDE_PACKAGES = {
     'contracts': frozenset(),
     'agent': frozenset({'contracts'}),
     'task_runner': frozenset({'agent', 'contracts'}),
-    'camera_monitor': frozenset({'agent'}),
+    'camera_monitor': frozenset({'agent', 'contracts'}),
     # 全局相机的标定要借已标好的手上相机，所以用到机械臂运动学、相机
     # 校正和两底座关系；核心各层不导入 calibration，不会形成环。
     'calibration': frozenset({'geometry', 'robot', 'perception'}),

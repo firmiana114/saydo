@@ -27,6 +27,9 @@ def fake_profile(rs, device):
     video.return_value.get_intrinsics.return_value = types.SimpleNamespace(
         fx=650., fy=650., ppx=640., ppy=360., model='none', coeffs=[0.] * 5
     )
+    device.first_depth_sensor.return_value.get_depth_scale.return_value = (
+        .0001
+    )
 
 
 def tracker_frame(serial='435123456789', age=0):
@@ -211,6 +214,7 @@ class TestCamera(unittest.TestCase):
         fake_profile(rs, device)
         rs.pipeline.return_value.wait_for_frames.return_value.get_color_frame.return_value = color
         color.get_frame_number.return_value = 2
+        color.get_timestamp.return_value = 100000.
         color.get_width.return_value = 1280
         color.get_height.return_value = 720
         cv = mock.Mock()
@@ -237,6 +241,10 @@ class TestCamera(unittest.TestCase):
             monitor, 'camera_users', return_value=[]
         ), mock.patch.object(
             monitor.time, 'time', side_effect=lambda: clock[0]
+        ), mock.patch.object(
+            # 这个测试把图像库整个换成了替身，画面不是真的数组，写不进
+            # 共享内存。
+            monitor.camera_frames, 'FrameWriter'
         ), mock.patch.object(camera, 'publish', side_effect=publish) as output:
             camera.capture(1, stop)
         output.assert_called_once()
@@ -410,7 +418,7 @@ class TestFramesForPrograms(unittest.TestCase):
             'd435i': monitor.Camera(
                 1280, 720, 15, 'd435i', '435123456789', tracker, arm='arm1'
             ),
-            'd405': monitor.Camera(1280, 720, 15, 'd405', '405123456789'),
+            'd405': monitor.Camera(128, 72, 15, 'd405', '405123456789'),
         }
         self.camera = self.server.cameras['d405']
         self.worker = threading.Thread(
