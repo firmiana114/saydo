@@ -571,11 +571,128 @@ class SearchOrderTests(unittest.TestCase):
             error, object_motion_geometry.OrientationUnreachable
         )
         self.assertIn('全部 24 个夹持方向都无法完成调姿', str(error))
-        # 每个方向只试一次：调姿不通时换转移路线没有用。
-        self.assertEqual(len(calls), 24)
-        self.assertEqual(
-            sorted(a['spin_candidate'] for a in attempts), list(range(24))
+        # 每个方向按“原地转、边走边转”各试一次：调姿不通时换转移路线
+        # 没有用，所以不会再试绕行。
+        turns = object_motion_geometry.TURN_FRACTIONS
+        self.assertEqual(len(calls), 24 * len(turns))
+        # 搜索记录最多保留 64 条，所以只核对留下来的都在预期范围内。
+        self.assertEqual(len(attempts), 64)
+        self.assertLessEqual(
+            {(a['spin_candidate'], a['turn_at']) for a in attempts},
+            {(spin, turn) for spin in range(24) for turn in turns},
         )
+        self.assertTrue(all(a['route_offset_m'] == [0., 0.] for a in attempts))
+
+    def release_goal(self):
+        return {
+            'target_position_m': [.4, -.1, .1],
+            'target_rpy_deg': [0, 0, 0],
+            'reference_point_object_m': [0, 0, -.06],
+        }
+
+    def test_turning_in_place_keeps_the_reference_point_still(self):
+        held, vertices, arm, config = self.held_sideways()
+        goal = motion_contract.checked_goal(self.release_goal(), True)
+        plan = object_motion_geometry.build_candidate(
+            held, vertices, arm, config, goal, np.eye(4), 3, np.zeros(3),
+            True, np.array([0, 0, .05]),
+        )
+        turning = [
+            w for w in plan['waypoints']
+            if w['name'].startswith('release_orientation')
+        ]
+        self.assertGreater(len(turning), 1)
+        first = np.array(turning[0]['reference_position_base_m'])
+        for waypoint in turning:
+            np.testing.assert_allclose(
+                waypoint['reference_position_base_m'], first, atol=1e-9
+            )
+
+    def test_turning_while_moving_ends_turned_at_the_preplacement_point(self):
+        held, vertices, arm, config = self.held_sideways()
+        goal = motion_contract.checked_goal(self.release_goal(), True)
+
+        def build(turn_at):
+            return object_motion_geometry.build_candidate(
+                held, vertices, arm, config, goal, np.eye(4), 3, np.zeros(3),
+                True, np.array([0, 0, .05]), (0., 0.), turn_at,
+            )
+
+        in_place, moving = build(0.), build(1.)
+        turning = [
+            w for w in moving['waypoints']
+            if w['name'].startswith('release_orientation')
+        ]
+        start = np.array(
+            in_place['waypoints'][0]['reference_position_base_m']
+        )
+        preplacement = np.array([.4, -.1, .1 + .1])
+        # 参考点沿“起点 → 预放置点”的直线前进，转完时正好到预放置点。
+        np.testing.assert_allclose(
+            turning[-1]['reference_position_base_m'], preplacement, atol=1e-9
+        )
+        for waypoint in turning:
+            offset = np.array(waypoint['reference_position_base_m']) - start
+            along = preplacement - start
+            np.testing.assert_allclose(
+                np.cross(offset, along), np.zeros(3), atol=1e-9
+            )
+        # 最终朝向和松爪位置与原地转的方案完全相同。
+        np.testing.assert_allclose(
+            moving['base_T_object_target'], in_place['base_T_object_target'],
+            atol=1e-9,
+        )
+        self.assertEqual(moving['waypoints'][-1]['name'], 'release_descent_1')
+        np.testing.assert_allclose(
+            moving['waypoints'][-1]['reference_position_base_m'],
+            [.4, -.1, .1],
+            atol=1e-9,
+        )
+        # 走到一半时转完：转完的位置在中点。
+        halfway = [
+            w for w in build(.5)['waypoints']
+            if w['name'].startswith('release_orientation')
+        ][-1]
+        np.testing.assert_allclose(
+            halfway['reference_position_base_m'],
+            (start + preplacement) / 2,
+            atol=1e-9,
+        )
+
+    def test_turning_while_moving_is_used_when_turning_in_place_fails(self):
+        real = object_motion_geometry.build_candidate
+
+        def tagged(*args):
+            plan = real(*args)
+            plan['validation_points'][0]['turn_at'] = args[-1]
+            return plan
+
+        def reachable(points, timeout):
+            if points[0]['turn_at'] == 0.:
+                return (
+                    False,
+                    {
+                        'reason': 'cannot turn here',
+                        'failure': {
+                            'waypoint': 'release_orientation_1_sample_1'
+                        },
+                    },
+                )
+            return True, {'verified': True}
+
+        with mock.patch.object(
+            object_motion_geometry, 'build_candidate', side_effect=tagged
+        ):
+            plan, attempts = self.search(
+                reachable, goal=self.release_goal(), release=True
+            )
+        # 24 个方向原地都转不了之后，才用边走边转；不会去试绕行路线。
+        self.assertEqual(plan['turn_at'], 1.)
+        self.assertEqual(plan['route_offset_m'], [0., 0.])
+        self.assertEqual(
+            [a['turn_at'] for a in attempts[:24]], [0.] * 24
+        )
+        self.assertTrue(all(a['turn_at'] == 1. for a in attempts[24:]))
 
     def test_scores_are_zero_without_an_orientation_goal(self):
         held, _, arm, _ = fixture()

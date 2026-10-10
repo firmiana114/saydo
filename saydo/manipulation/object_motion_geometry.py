@@ -39,6 +39,11 @@ ROUTE_OFFSETS = (
     (.10, -.08),
     (.15, 0.),
 )
+# 松爪前把物品转到目标朝向时，在“当前位置到预放置点”这段直线的哪个比例处
+# 转到位。0 是原地转（原来唯一的做法，最先试）；1 是边走边转、到预放置点
+# 时刚好转完；0.5 是走到一半时转完。原地转不了的位置（例如紧挨着立杆），
+# 边走边转往往可以。
+TURN_FRACTIONS = (0., 1., .5)
 
 
 def object_at_reference(reference, rotation, point):
@@ -108,18 +113,50 @@ def object_error(actual, target, point, pose_mode):
 
 
 def build_candidate(
-    held,
-    vertices,
-    arm,
-    config,
-    goal,
-    frame,
-    spin,
-    shift,
-    release,
-    retreat,
-    route=(0., 0.),
-):
+    held: dict,
+    vertices: np.ndarray,
+    arm: dict,
+    config: dict,
+    goal: dict,
+    frame: np.ndarray,
+    spin: int,
+    shift: np.ndarray,
+    release: bool,
+    retreat: np.ndarray,
+    route: tuple = (0., 0.),
+    turn_at: float = 0.,
+) -> dict:
+    """按一组候选参数生成一条完整的持物运动路径；只做几何计算。
+
+    路径由若干段组成：把物品转到目标朝向、平移到目标位置；松爪时再加上
+    “到预放置点（目标正上方）”和“竖直下降”两段。每一段按最大转角和
+    10 毫米间距取样，逐个姿态检查夹爪在工作范围内、物品不低于桌面。
+    是否走得到（逆解、连续性、碰撞）由调用方另行检查。
+
+    Args:
+        held: 夹持记录，取 `object_T_tcp` 和 `pose_mode`。
+        vertices: 物品模型顶点，N×3，物品坐标系，单位米。
+        arm: 机械臂状态，路径从它的夹爪位姿开始。
+        config: 这台臂生效的抓取配置。
+        goal: 已校验的目标。
+        frame: 目标所在坐标系在基座坐标系里的位姿，4×4。
+        spin: 夹持方向的序号。5D 物品绕自身轴线转动不改变朝向，夹爪
+            可以从 24 个方向夹着它；其他物品只有 0。
+        shift: 自适应位置模式下目标位置的偏移，基座坐标系，单位米。
+        release: 终点是否松爪。
+        retreat: 松爪后的退出位移，基座坐标系，单位米。
+        route: 转移路线 `(再抬高多少米, 向侧面绕开多少米)`。
+        turn_at: 松爪前在“当前位置到预放置点”这段直线的哪个比例处
+            把物品转到目标朝向。0 为原地转，1 为到预放置点时转完。
+
+    Returns:
+        候选方案：路点 `waypoints`、检查用的取样点 `validation_points`、
+        目标位姿、退出路点等。
+
+    Raises:
+        ValueError: 目标或参考点无效，某个姿态超出工作范围或物品低于
+            桌面，或路点数超过上限。
+    """
     current = grasp_geometry.controller_pose(arm['pose'])
     attachment = grasp_geometry.transform(held['object_T_tcp'])
     obj = current @ np.linalg.inv(attachment)
@@ -215,10 +252,19 @@ def build_candidate(
             height = float(config.get('release_preplacement_height_m', .1))
             if not np.isfinite(height) or not .01 <= height <= .3:
                 raise ValueError('预放置高度须为10至300毫米')
+            preplacement = reference + np.array([0, 0, height])
+            # turn_at 为 0 时原地把物品转到目标朝向，再平移过去；大于 0 时
+            # 边走边转，走完这段直线的 turn_at 比例时转到位。松爪用的
+            # 参考点（例如试管底端）始终在这条直线上，物品其余部分只会
+            # 在它的上方或同一高度摆动。
             stages = [
-                (previous_ref, method, 'release_orientation'),
                 (
-                    reference + np.array([0, 0, height]),
+                    previous_ref + turn_at * (preplacement - previous_ref),
+                    method,
+                    'release_orientation',
+                ),
+                (
+                    preplacement,
                     'linear',
                     'release_preplacement',
                 ),
@@ -550,10 +596,14 @@ def plan_object_motion(
         else [np.zeros(3)]
     )
 
-    def build(spin: int, shift: np.ndarray, route: tuple) -> dict:
+    turns = TURN_FRACTIONS if release and len(spins) > 1 else (0.,)
+
+    def build(
+        spin: int, shift: np.ndarray, route: tuple, turn_at: float
+    ) -> dict:
         return build_candidate(
             held, vertices, arm, config, goal, frame, spin, shift, release,
-            retreat, route,
+            retreat, route, turn_at,
         )
 
     def evaluate(candidate: tuple) -> tuple:
@@ -561,14 +611,16 @@ def plan_object_motion(
 
         返回 (记录, 方案或 None, 取样点)。
         """
-        shift, spin, route = candidate
+        shift, spin, route, turn_at = candidate
         attempt = {
             'spin_candidate': spin,
             'shift_m': shift.tolist(),
             'route_offset_m': list(route),
+            'turn_at': turn_at,
         }
         try:
-            plan = build(spin, shift, route)
+            plan = build(spin, shift, route, turn_at)
+            plan['turn_at'] = turn_at
             points = plan.pop('validation_points')
             valid, detail = reachable(points, 3.)
             if not valid:
@@ -608,11 +660,14 @@ def plan_object_motion(
     with concurrent.futures.ThreadPoolExecutor(SEARCH_WORKERS) as pool:
         for shift in shifts:
             pending = [
-                (shift, spin, route)
+                (shift, spin, route, turn_at)
                 for route in ROUTE_OFFSETS
+                # 绕行路线是从当前位置出发算的，只与原地转搭配。
+                for turn_at in (turns if route == (0., 0.) else turns[:1])
                 for spin in order
             ]
-            # 卡在调姿段的夹持方向：转移路线帮不上忙，不再试它的其他路线。
+            # 卡在调姿段的（夹持方向, 转到位的位置）：转移路线帮不上忙，
+            # 不再试它的其他路线。
             dead = set()
             while pending:
                 cancelled()
@@ -621,10 +676,10 @@ def plan_object_motion(
                 # 候选白费处理器，耗时与只检查一个相同。
                 size = SEARCH_WORKERS if attempts else 1
                 while pending and len(batch) < size:
-                    spin = pending[0][1]
-                    if spin in dead:
+                    key = (pending[0][1], pending[0][3])
+                    if key in dead:
                         pending.pop(0)
-                    elif any(spin == other[1] for other in batch):
+                    elif any(key == (other[1], other[3]) for other in batch):
                         # 同一个方向的下一条路线要等这一批的结果：它若卡在
                         # 调姿段，后面的路线就不必试了。
                         break
@@ -646,9 +701,11 @@ def plan_object_motion(
                     if failure.get('waypoint', '').startswith(
                         ('orient_', 'release_orientation')
                     ):
-                        dead.add(attempt['spin_candidate'])
+                        dead.add(
+                            (attempt['spin_candidate'], attempt['turn_at'])
+                        )
             if not adaptive:
-                if len(dead) == len(spins):
+                if len(dead) == len(spins) * len(turns):
                     raise OrientationUnreachable(
                         '全部 %d 个夹持方向都无法完成调姿：%s'
                         % (len(spins), attempts[-1].get('reason', ''))
