@@ -3,7 +3,10 @@
 import hashlib
 import pathlib
 import time
+from typing import Any, Callable, Dict, List
+
 import numpy as np
+from saydo.perception import frame_coverage
 from saydo.perception import live_checks
 from saydo.geometry import pose_symmetry
 from saydo.scene import scene_features
@@ -29,17 +32,46 @@ def automatic_candidates(frame, info, detector, local_detector, check):
 
 
 def localize_scene(
-    frame,
-    targets,
-    models_root,
-    estimator,
-    sam,
-    context,
-    detector,
-    check,
-    progress,
-    local_detector=None,
-):
+    frame: Dict[str, Any],
+    targets: List[Dict[str, Any]],
+    models_root: pathlib.Path,
+    estimator: Any,
+    sam: Any,
+    context: Any,
+    detector: Any,
+    check: Callable[[], None],
+    progress: Callable[[str], None],
+    local_detector: Any = None,
+) -> List[Dict[str, Any]]:
+    """在同一帧冻结的彩色加深度画面上，依次定位场景里的全部目标。
+
+    每个目标依次经过：找框（未给框时自动检测）、分割、位姿估计、出画检查、
+    深度与轮廓质量检查、同帧细化的稳定性检查。任何一项不通过都会中止整次
+    采集，因为后续动作要求所有目标来自同一时刻。只读，不连接机械臂。
+
+    Args:
+        frame: 冻结的画面，含 `bgr`（640×360 彩色图）、`depth`（同尺寸
+            深度图，单位米）、`K`（相机内参矩阵）。
+        targets: 要定位的目标，每项含 `instance_id`、`object_id`、`role`
+            和 `box`（像素框，`None` 表示自动检测）。
+        models_root: 物品模型的根目录。
+        estimator: 已加载的 FoundationPose 估计器，借用它的打分与细化网络。
+        sam: 已加载的分割模型。
+        context: 渲染用的显卡上下文。
+        detector: 大模型找框器；为 `None` 时用 `local_detector`。
+        check: 取消与超时检查，需要中止时由它抛出异常。
+        progress: 进度提示的回调，参数是给操作者看的文字。
+        local_detector: 本地找框器。
+
+    Returns:
+        与 `targets` 一一对应的定位结果，在原字段之外加上 `box`、
+        `camera_T_object`（物品在相机光学坐标系里的位姿）、`quality`、
+        `frame_coverage`（出画检查结果）和模型的特征信息。
+
+    Raises:
+        ValueError: 找不到唯一候选、框无效、同一模型的实例框重叠、有效
+            深度不足、物品出画超过上限、质量或稳定性检查不通过。
+    """
     import cv2
     import trimesh
     import torch
@@ -125,6 +157,17 @@ def localize_scene(
                 iteration=5,
             )
             check()
+            # 排在质量检查之前：被裁掉的物品往往各项质量指标都通过，
+            # 只有这一项能发现；先做也能给出更直接的失败原因。
+            coverage = frame_coverage.measure(
+                pose,
+                mesh.triangles_center,
+                mesh.area_faces,
+                frame['K'],
+                width_px=640,
+                height_px=360,
+            )
+            frame_coverage.require_inside(target['instance_id'], coverage)
             quality = None
             for k in range(2):
                 _, rd, _ = nvdiffrast_render(
@@ -182,6 +225,7 @@ def localize_scene(
                     'pose_mode': info.get('pose_mode', '6d'),
                     'pose_mode_revision': info.get('pose_mode_revision'),
                     'quality': quality,
+                    'frame_coverage': coverage,
                     **scene_features.object_features(
                         models_root, target['object_id']
                     ),

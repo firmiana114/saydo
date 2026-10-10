@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 import cv2
 import numpy as np
 
+from saydo.perception import frame_coverage
 from saydo.perception import live_checks
 from saydo.objects import object_catalog
 from saydo.perception import llm_detection
@@ -1078,7 +1079,18 @@ class Tracker:
                 )
                 last_progress = time.perf_counter()
 
-    def inference(self):
+    def inference(self) -> None:
+        """视觉推理线程的主循环：加载模型，然后持续定位和跟踪物品。
+
+        所有用到显卡的工作都在这一个线程里做，避免多个线程争用显存。
+        每一轮按顺序处理：切换物品模型、场景采集请求（冻结一帧定位多个
+        目标）、对实时画面做首帧定位或逐帧跟踪并发布结果。首帧定位依次
+        经过找框、分割、位姿估计、出画检查、质量检查和追帧；任何一步
+        失败都记一条事件并把状态置为丢失，由后续画面重新识别。
+
+        只读取相机画面，不向机械臂或夹爪发送任何指令。模型加载失败时
+        记录 `model_failed` 事件后退出线程。
+        """
         try:
             import torch
             torch.set_num_threads(2)
@@ -1626,6 +1638,22 @@ class Tracker:
                                     raise ValueError(
                                         'FoundationPose returned nonfinite pose'
                                     )
+                                # 物品被画面裁掉时首帧定位可能把方向认反，
+                                # 之后的逐帧跟踪只会沿用这个方向，所以在
+                                # 这里就拒绝。跟踪过程中物品滑出画面不受
+                                # 影响：机械臂靠近物品时本来就会这样。
+                                stage = 'frame_coverage'
+                                frame_coverage.require_inside(
+                                    self.state.get('object_name') or '目标',
+                                    frame_coverage.measure(
+                                        pose,
+                                        mesh.triangles_center,
+                                        mesh.area_faces,
+                                        frame['K'],
+                                        width_px=640,
+                                        height_px=360,
+                                    ),
+                                )
 
                                 def checked_render(
                                     current_pose,
