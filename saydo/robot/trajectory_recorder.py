@@ -26,7 +26,10 @@ DEFAULT_PERIOD_S = .01
 # 判断“停住了”用的速度门槛：变化最快的那个关节每秒转不到这么多度。
 STOP_SPEED_DEG_S = .5
 # 停住至少这么久才算一次停顿，单位秒。
-STOP_MIN_DURATION_S = .05
+STOP_MIN_DURATION_S = .04
+# 算转速时跨多长时间取差，单位秒。读数有约 0.005 度的抖动，相邻两次
+# 读数（10 毫秒）直接相减会把抖动算成每秒零点几度的“运动”。
+SPEED_SPAN_S = .03
 
 
 class TrajectoryRecorder:
@@ -190,21 +193,29 @@ def tcp_line_deviation_m(
     return np.array(result)
 
 
-def speed_deg_s(samples: Sequence[dict]) -> Tuple[np.ndarray, np.ndarray]:
-    """算出相邻两次读取之间变化最快的那个关节的转速。
+def speed_deg_s(
+    samples: Sequence[dict], span_s: float = SPEED_SPAN_S
+) -> Tuple[np.ndarray, np.ndarray]:
+    """算出各时刻变化最快的那个关节的转速。
 
     Args:
         samples: `TrajectoryRecorder.stop` 返回的样本，至少两个。
+        span_s: 跨多长时间取差，单位秒；不足一个读取间隔时按相邻
+            两次读数算。
 
     Returns:
-        `(时刻, 转速)`：各区间中点的时刻（秒）和该区间内变化最快的
-        关节的转速（度每秒），长度都是样本数减一。
+        `(时刻, 转速)`：第 i 项是从第 i 个样本起、跨 `span_s` 的一段
+        里变化最快的关节的平均转速（度每秒）及这一段的起始时刻。
     """
     times = np.array([sample['t_s'] for sample in samples])
     joints = np.array([sample['joint_deg'] for sample in samples])
-    interval = np.maximum(np.diff(times), 1e-6)
-    speed = np.abs(np.diff(joints, axis=0)).max(axis=1) / interval
-    return (times[:-1] + times[1:]) / 2, speed
+    period = float(np.median(np.diff(times)))
+    stride = min(
+        len(samples) - 1, max(1, int(round(span_s / max(period, 1e-6))))
+    )
+    interval = np.maximum(times[stride:] - times[:-stride], 1e-6)
+    speed = np.abs(joints[stride:] - joints[:-stride]).max(axis=1) / interval
+    return times[:-stride], speed
 
 
 def stops_during_motion(
@@ -235,8 +246,8 @@ def stops_during_motion(
             began = index if began is None else began
             continue
         if began is not None:
-            start_s = samples[began]['t_s']
-            end_s = samples[index]['t_s']
+            start_s = float(times[began])
+            end_s = float(times[index])
             if end_s - start_s >= min_duration_s:
                 stops.append(
                     {

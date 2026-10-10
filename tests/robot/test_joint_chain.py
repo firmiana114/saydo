@@ -90,6 +90,21 @@ class JointChainTests(unittest.TestCase):
             '"trajectory_connect": 0', record['completion_reply']['raw']
         )
 
+    def test_blend_radius_applies_to_every_point_but_the_last(self):
+        controller, record, error = self.run_chain(
+            [[ACCEPTED], [ACCEPTED], [ACCEPTED, DONE]], blend_percent=40
+        )
+        self.assertIsNone(error)
+        self.assertEqual([c['r'] for c in controller.sent], [40, 40, 0])
+        self.assertEqual(record['command']['r'], 40)
+        robot = grasp_robot.RobotClient('test', writes=True)
+        for bad in (-1, 101, 2.5):
+            with self.assertRaisesRegex(ValueError, '未启用或参数无效'):
+                robot.move_joints_chain(
+                    TARGETS, 10, threading.Event(), lambda: None,
+                    blend_percent=bad,
+                )
+
     def test_next_command_waits_for_the_previous_acceptance(self):
         with mock.patch.object(grasp_robot, 'ACCEPTANCE_TIMEOUT_S', .2):
             controller, record, error = self.run_chain([[]])

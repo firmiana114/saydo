@@ -42,6 +42,13 @@ def rm_plus_mode_error(mode: object) -> str:
 
 
 class RobotClient:
+    """与一台机械臂控制器的连接：查询状态，以及在明确启用后发送指令。
+
+    每次请求各建一条连接。`writes` 为 False（缺省）时只能查询，任何
+    运动或夹爪指令都会被拒绝；规划、查询和测试一律用它。只有即将执行
+    动作的任务才创建 `writes=True` 的实例。
+    """
+
     def __init__(self, ip, port=8080, writes=False):
         self.address = (ip, port)
         self.writes = writes
@@ -223,17 +230,20 @@ class RobotClient:
         cancelled: object,
         watchdog: object,
         timeout: float = 60,
+        blend_percent: int = 0,
     ) -> None:
-        """让机械臂依次经过一串关节角目标、中途不停：会发送运动指令。
+        """让机械臂依次经过一串关节角目标、一次发完：会发送运动指令。
 
         做法是用控制器的“轨迹连接”：前面每条 `movej` 都带
         `trajectory_connect=1`（与下一条一起规划，先不执行），最后一条
-        带 0，控制器把它们作为一整条轨迹执行。逐条单独发送时每一步
-        各自加速、停下；连起来之后中间点不停。
+        带 0，控制器把它们作为一整条轨迹执行。
 
-        2026-10-10 时这条路只有试验脚本
-        `scripts/trajectory_connect_test.py` 在用：连接后中间点是精确
-        经过还是抄近路、到位反馈怎么给，厂家文档没有写，以实测为准。
+        2026-10-10 在 1 臂上实测：只连接、交融半径为 0 时，控制器精确
+        经过每个中间点（偏差 0.05 度以内），但在每个点仍然减速到零再
+        加速，并逐点发一条到位消息。要中途不停，须给中间点设交融半径
+        （`blend_percent`），代价是在中间点附近抄近路，抄多少以实测
+        为准。这条路目前只有试验脚本
+        `scripts/trajectory_connect_test.py` 在用。
 
         Args:
             targets: 关节角目标序列，每个 7 个整数（0.001 度），至少
@@ -245,6 +255,8 @@ class RobotClient:
                 异常原样传出。
             timeout: 从最后一条指令被接受起，等待整条轨迹完成的时间
                 上限，单位秒。
+            blend_percent: 中间各点的交融半径，0～100（控制器的百分比
+                系数）；最后一个点总是 0。
 
         Raises:
             ValueError: 没有启用运动，或参数无效。
@@ -260,6 +272,8 @@ class RobotClient:
                 for joints in targets
             )
             or not 1 <= speed <= 100
+            or type(blend_percent) is not int
+            or not 0 <= blend_percent <= 100
         ):
             raise ValueError('连续关节运动未启用或参数无效')
         started = time.monotonic()
@@ -270,6 +284,7 @@ class RobotClient:
                 'command': 'movej_chain',
                 'joints': [list(joints) for joints in targets],
                 'v': speed,
+                'r': blend_percent,
             },
             'timeout_s': timeout,
             'send_completed': False,
@@ -281,7 +296,8 @@ class RobotClient:
         self.motion_log.append(record)
         try:
             self._execute_chain(
-                targets, speed, cancelled, watchdog, timeout, record
+                targets, speed, cancelled, watchdog, timeout, record,
+                blend_percent,
             )
             record['outcome'] = 'completed'
         except Exception as error:
@@ -302,6 +318,7 @@ class RobotClient:
         watchdog: object,
         timeout: float,
         record: dict,
+        blend_percent: int = 0,
     ) -> None:
         """在一条连接上逐条发送连接的 `movej`，并等到整条轨迹完成。
 
@@ -322,12 +339,13 @@ class RobotClient:
             last_check = 0.
             while True:
                 if sent == accepted and sent < len(targets):
+                    connected = sent < len(targets) - 1
                     payload = {
                         'command': 'movej',
                         'joint': list(targets[sent]),
                         'v': speed,
-                        'r': 0,
-                        'trajectory_connect': int(sent < len(targets) - 1),
+                        'r': blend_percent if connected else 0,
+                        'trajectory_connect': int(connected),
                     }
                     connection.sendall((json.dumps(payload) + '\r\n').encode())
                     sent += 1

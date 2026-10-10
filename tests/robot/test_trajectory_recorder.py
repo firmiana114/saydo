@@ -147,12 +147,24 @@ class AnalysisTests(unittest.TestCase):
         )
         # 开头没动和结尾停下都不算；中间那 0.2 秒算一次。
         self.assertEqual(len(stops), 1)
-        self.assertAlmostEqual(stops[0]['start_s'], .8, delta=.02)
-        self.assertAlmostEqual(stops[0]['duration_s'], .2, delta=.03)
+        self.assertAlmostEqual(stops[0]['start_s'], .8, delta=.04)
+        self.assertAlmostEqual(stops[0]['duration_s'], .2, delta=.05)
         _, speed = trajectory_recorder.speed_deg_s(
             samples_along(times, position)
         )
         self.assertAlmostEqual(float(speed.max()), 20., places=6)
+
+    def test_reading_jitter_at_rest_is_not_motion(self):
+        times = np.arange(0., 1.5, .01)
+        # 静止 0.5 秒、运动 0.5 秒、再静止 0.5 秒，读数来回抖 0.005 度。
+        position = np.clip((times - .5) * 20, 0., 10.)
+        position = position + .005 * (np.arange(len(times)) % 2)
+        samples = samples_along(times, position)
+        self.assertEqual(trajectory_recorder.stops_during_motion(samples), [])
+        start, speed = trajectory_recorder.speed_deg_s(samples)
+        moving = start[speed >= trajectory_recorder.STOP_SPEED_DEG_S]
+        self.assertGreater(moving.min(), .45)
+        self.assertLess(moving.max(), 1.02)
 
     def test_continuous_motion_has_no_stops(self):
         times = np.arange(0., 1.01, .01)

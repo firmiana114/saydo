@@ -245,6 +245,7 @@ def execute(
     mode: str,
     speed: int,
     stop_after_s: Optional[float],
+    blend_percent: int = 0,
 ) -> dict:
     """按计划让机械臂运动，并记录实际轨迹：会发送运动指令。
 
@@ -257,6 +258,7 @@ def execute(
         speed: 速度百分比。
         stop_after_s: 不为 None 时，在开始发送运动指令这么多秒之后
             发一次停止指令，用来观察排队的后续轨迹会不会接着走。
+        blend_percent: 连接方式下中间各点的交融半径，0～100。
 
     Returns:
         试验记录：控制器的应答、实测样本和出错信息（如果有）。
@@ -274,7 +276,12 @@ def execute(
         (config['robot_ip'], config['robot_port'])
     )
     cancelled = threading.Event()
-    record = {'mode': mode, 'speed_percent': speed, 'targets_raw': targets}
+    record = {
+        'mode': mode,
+        'speed_percent': speed,
+        'blend_percent': blend_percent,
+        'targets_raw': targets,
+    }
     recorder.start()
     time.sleep(.3)
     record['motion_started_s'] = recorder.elapsed_s()
@@ -294,7 +301,8 @@ def execute(
     try:
         if mode == 'connected':
             robot.move_joints_chain(
-                targets, speed, cancelled, lambda: None, MOTION_TIMEOUT_S
+                targets, speed, cancelled, lambda: None, MOTION_TIMEOUT_S,
+                blend_percent,
             )
         else:
             for target in targets:
@@ -347,6 +355,7 @@ def analyse(planned: dict, summary: dict, record: dict) -> dict:
     stops = trajectory_recorder.stops_during_motion(samples)
     _, speed = trajectory_recorder.speed_deg_s(samples)
     moving = np.flatnonzero(speed >= trajectory_recorder.STOP_SPEED_DEG_S)
+    times = [sample['t_s'] for sample in samples]
     return {
         'samples': len(samples),
         'sample_period_ms': float(
@@ -371,7 +380,8 @@ def analyse(planned: dict, summary: dict, record: dict) -> dict:
         ),
         'stops_during_motion': stops,
         'moving_time_s': (
-            float(samples[moving[-1] + 1]['t_s'] - samples[moving[0]]['t_s'])
+            float(times[moving[-1]] - times[moving[0]])
+            + trajectory_recorder.SPEED_SPAN_S
             if len(moving)
             else 0.
         ),
@@ -446,6 +456,10 @@ def main() -> int:
         '--mode', choices=('connected', 'stepwise'), default='connected'
     )
     parser.add_argument(
+        '--blend-percent', type=int, default=0,
+        help='连接方式下中间各点的交融半径，0～100；0 时每个点都会停一下',
+    )
+    parser.add_argument(
         '--stop-after-s', type=float, default=None,
         help='开始运动这么多秒后发一次停止指令（观察排队的轨迹）',
     )
@@ -463,16 +477,18 @@ def main() -> int:
         not 0 < distance_mm <= MAX_DISTANCE_MM
         or not 1 <= args.points <= 30
         or not 1 <= args.speed <= MAX_SPEED_PERCENT
+        or not 0 <= args.blend_percent <= 100
         or (args.stop_after_s is not None and args.stop_after_s <= 0)
     ):
         parser.error(
             f'直线须在 {MAX_DISTANCE_MM:g} 毫米以内，路点 1～30 个，速度 '
-            f'1～{MAX_SPEED_PERCENT}%，停止时刻须大于 0'
+            f'1～{MAX_SPEED_PERCENT}%，交融半径 0～100，停止时刻须大于 0'
         )
     arm = arms.by_id(args.arm)
     LOG.info(
-        '%s：沿 %s 毫米走 %d 个路点，方式 %s，速度 %d%%',
+        '%s：沿 %s 毫米走 %d 个路点，方式 %s，速度 %d%%，交融半径 %d',
         arm.label, args.offset_mm, args.points, args.mode, args.speed,
+        args.blend_percent,
     )
     try:
         planned = plan(arm, args.offset_mm, args.points)
@@ -493,7 +509,8 @@ def main() -> int:
             return 1
         LOG.info('开始运动，Ctrl-C 可随时停止')
         record = execute(
-            planned, summary, args.mode, args.speed, args.stop_after_s
+            planned, summary, args.mode, args.speed, args.stop_after_s,
+            args.blend_percent,
         )
     analysis = analyse(planned, summary, record)
     report(analysis, record)
