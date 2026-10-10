@@ -438,9 +438,10 @@ class MotionValidationTests(unittest.TestCase):
                 self.assertEqual(valid, expected, detail)
                 if not expected:
                     self.assertFalse(detail['verified'])
-                    self.assertIn(
-                        detail['failure']['kind'],
-                        ('out_of_reach', 'no_continuous_solution'),
+                    # 这几个目标都是太远够不到：任何摆法都算不出真正到达
+                    # 它的关节角，不能报成“有可行摆法但走不过去”。
+                    self.assertEqual(
+                        detail['failure']['kind'], 'out_of_reach'
                     )
 
     @unittest.skipUnless(

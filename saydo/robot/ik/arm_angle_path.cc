@@ -49,8 +49,9 @@ struct Enumeration {
   bool done = false;
   // 通过限位和障碍物检查的全部关节解。
   std::vector<Joints> solutions;
-  // 通过限位检查（不论是否碰到障碍物）的个数。
-  int within_limits = 0;
+  // 够得到的个数：换算回夹爪位姿与目标一致、不超限位（不论是否碰到
+  // 障碍物）。
+  int reachable = 0;
 };
 
 // 把角度换到 (-180, 180] 之内，单位度。
@@ -146,8 +147,8 @@ class ArmAngleSolver {
           continue;
         }
         std::vector<Joints> variants;
-        int within_limits = 0;
-        Expand(index, raw, &variants, &within_limits);
+        int reachable = 0;
+        Expand(index, raw, &variants, &reachable);
         // 同一臂角下的几种变体里，只有离上一个解最近的那个算“继续走”。
         const Joints* nearest = nullptr;
         for (const Joints& q : variants) {
@@ -176,27 +177,14 @@ class ArmAngleSolver {
   }
 
   // 从 parent 走到第 index 个路点上的解 q 这一步是否可行：q 不自碰撞、
-  // 换算回夹爪位姿与目标一致、沿关节角直线走过去途中不碰障碍物。
-  // 超出预算时抛 std::runtime_error。
+  // 沿关节角直线走过去途中不碰障碍物。（q 换算回夹爪位姿与目标一致，
+  // 已在 SolveRaw 里核对过。）超出预算时抛 std::runtime_error。
   bool StepOk(int index, const Joints& parent, const Joints& q) {
     CheckBudget();
     float joints[ARM_DOF]{};
     std::copy(q.begin(), q.end(), joints);
     if (rm_algo_safety_robot_self_collision_detection(joints) != 0) {
       ++rejected_[index].self_collision;
-      return false;
-    }
-    const rm_pose_t achieved = rm_algo_forward_kinematics(nullptr, joints);
-    const rm_pose_t& target = poses_[index];
-    const double distance_m = std::sqrt(
-        std::pow(double(achieved.position.x) - target.position.x, 2) +
-        std::pow(double(achieved.position.y) - target.position.y, 2) +
-        std::pow(double(achieved.position.z) - target.position.z, 2));
-    const double angle_deg = OrientationErrorDeg(achieved, target);
-    if (!std::isfinite(distance_m) || !std::isfinite(angle_deg) ||
-        distance_m > kPositionToleranceM ||
-        angle_deg > kOrientationToleranceDeg) {
-      ++rejected_[index].pose;
       return false;
     }
     if (!MotionClear(model_, parent, q)) {
@@ -219,7 +207,7 @@ class ArmAngleSolver {
         if (SolveRaw(index, arm_angle_deg, elbow_positive, &raw)) {
           Expand(
               index, raw, &enumeration.solutions,
-              &enumeration.within_limits);
+              &enumeration.reachable);
         }
       }
     }
@@ -280,6 +268,22 @@ class ArmAngleSolver {
       ++rejected_[index].solver;
       return false;
     }
+    // 目标够不到时（例如太远），厂家函数在限位放宽后仍然报成功，给出的
+    // 却不是这个位姿的解。所以每个解都换算回夹爪位姿核对一遍。Expand
+    // 补出的其余分支与它的夹爪位姿完全相同，不必重复核对。
+    const rm_pose_t achieved = rm_algo_forward_kinematics(nullptr, solution);
+    const rm_pose_t& target = poses_[index];
+    const double distance_m = std::sqrt(
+        std::pow(double(achieved.position.x) - target.position.x, 2) +
+        std::pow(double(achieved.position.y) - target.position.y, 2) +
+        std::pow(double(achieved.position.z) - target.position.z, 2));
+    const double angle_deg = OrientationErrorDeg(achieved, target);
+    if (!std::isfinite(distance_m) || !std::isfinite(angle_deg) ||
+        distance_m > kPositionToleranceM ||
+        angle_deg > kOrientationToleranceDeg) {
+      ++rejected_[index].pose;
+      return false;
+    }
     return true;
   }
 
@@ -287,13 +291,13 @@ class ArmAngleSolver {
   //
   // 肩部三个关节的转轴交于一点，把第 1、3 关节各加 180 度、第 2 关节
   // 取反，夹爪位姿不变；腕部的第 5、6、7 关节同理。第 7 关节可以转
-  // 正负一整圈，所以每个分支还有相差 360 度的两种。within_limits 累加
-  // 通过限位检查的个数。
+  // 正负一整圈，所以每个分支还有相差 360 度的两种。reachable 累加
+  // 通过限位检查的个数（raw 已核对过确实到达目标位姿）。
   void Expand(
       int index,
       const Joints& raw,
       std::vector<Joints>* out,
-      int* within_limits) {
+      int* reachable) {
     for (bool flip_shoulder : {false, true}) {
       for (bool flip_wrist : {false, true}) {
         Joints q = raw;
@@ -322,7 +326,7 @@ class ArmAngleSolver {
             ++rejected_[index].limits;
             continue;
           }
-          ++*within_limits;
+          ++*reachable;
           if (!ConfigurationClear(model_, candidate)) {
             ++rejected_[index].obstacle;
             continue;
@@ -410,11 +414,11 @@ int RunArmAnglePath(const float* start_joints_deg) {
     const Enumeration& all = solver.Enumerate(failed);
     const RejectCounts& rejected = solver.rejected(failed);
     const char* kind =
-        all.within_limits == 0
+        all.reachable == 0
             ? "out_of_reach"
             : all.solutions.empty() ? "blocked_by_obstacle"
                                     : "no_continuous_solution";
-    std::cout << "SEEDS " << failed << ' ' << all.within_limits << ' '
+    std::cout << "SEEDS " << failed << ' ' << all.reachable << ' '
               << all.solutions.size() << '\n';
     std::cout << "REJECT " << failed << ' ' << rejected.solver << ' '
               << rejected.limits << ' ' << rejected.self_collision << ' '
