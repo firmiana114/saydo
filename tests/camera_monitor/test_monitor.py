@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from saydo.camera_monitor import server as monitor
+from saydo.contracts import camera_frames
 from tests.camera_monitor import fake_realsense
 
 JPEG = b'\xff\xd8test-frame\xff\xd9'
@@ -445,11 +446,14 @@ class TestFramesForPrograms(unittest.TestCase):
         finally:
             connection.close()
 
-    def wait_idle(self, timeout_s=3.):
+    def wait_state(self, state, timeout_s=3.):
         deadline = time.monotonic() + timeout_s
-        while self.camera.state != 'idle' and time.monotonic() < deadline:
+        while self.camera.state != state and time.monotonic() < deadline:
             time.sleep(.02)
         return self.camera.state
+
+    def wait_idle(self, timeout_s=3.):
+        return self.wait_state('idle', timeout_s)
 
     def test_request_starts_the_camera_and_returns_the_exact_pixels(self):
         code, data = self.request('/api/cameras/d405/frame?keep_s=5&format=png')
@@ -566,6 +570,63 @@ class TestFramesForPrograms(unittest.TestCase):
             403,
         )
         self.assertEqual(self.rs.started, 0)
+
+    def test_stalled_camera_recovers_without_dropping_the_preview(self):
+        viewer = http.client.HTTPConnection(
+            *self.server.server_address, timeout=8
+        )
+        self.addCleanup(viewer.close)
+        viewer.request('GET', '/stream/d405')
+        stream = viewer.getresponse()
+        self.assertIn(b'--frame', stream.readline())
+        states = set()
+        with mock.patch.object(monitor, 'STALLED_AFTER_S', .3), \
+                self.assertLogs(monitor.LOG, 'INFO') as logs:
+            # 相机连着两次等帧超时（真实情况是 USB 拥堵时停十几秒）。
+            self.rs.stall = 2
+            stalled = False
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline and (
+                self.rs.started < 3 or self.rs.stall
+            ):
+                status = self.camera.status()
+                states.add(status['state'])
+                stalled = stalled or status['stalled']
+                time.sleep(.05)
+            # 恢复后取图请求照常，预览连接也还在。
+            code, data = self.request('/api/cameras/d405/frame')
+        self.assertEqual(code, 200)
+        self.assertEqual(states, {'streaming'})
+        self.assertTrue(stalled)
+        self.assertFalse(self.camera.status()['stalled'])
+        self.assertEqual(self.camera.status()['clients'], 1)
+        self.assertEqual((self.rs.started, self.rs.stopped), (3, 2))
+        text = '\n'.join(logs.output)
+        self.assertIn('d405 超过 3 秒没有出图，重开采集（第 2 次）', text)
+        self.assertIn('d405 恢复出图', text)
+        # 预览流里在停帧之后还有新的画面到来。
+        seen = 0
+        while seen < 3:
+            if b'--frame' in stream.readline():
+                seen += 1
+
+    def test_camera_that_never_comes_back_ends_with_a_reason(self):
+        self.request('/api/cameras/d405/frame?keep_s=30')
+        with mock.patch.object(monitor, 'MAX_RESTARTS', 1):
+            self.rs.stall = 1000
+            self.assertEqual(self.wait_state('error', 6.), 'error')
+        self.assertIn('连续 1 次重开后仍不出图', self.camera.error)
+        self.assertEqual(self.rs.started, self.rs.stopped)
+
+    def test_depth_is_off_unless_asked_for(self):
+        feed = camera_frames.Feed(
+            'http://127.0.0.1:%d' % self.server.server_address[1], 'd405'
+        )
+        self.addCleanup(feed.close)
+        frame = feed.frame()
+        self.assertTrue(np.array_equal(frame['bgr'], self.image))
+        self.assertIsNone(frame['depth_raw'])
+        self.assertIsNone(frame['depth_scale_m'])
 
     def test_a_camera_that_cannot_open_reports_why(self):
         self.rs.device.serial = 'another'
@@ -739,6 +800,13 @@ class TestCameraSelectionAtStartup(unittest.TestCase):
         self.assertEqual(second.frame_path, '/api/agent/frame?arm=arm2')
         self.assertEqual(cameras['d435i'].frame_path, '/api/agent/frame')
         self.assertEqual(cameras['d435i'].arm, 'arm1')
+
+    def test_global_depth_is_only_captured_when_switched_on(self):
+        settings = {'eye_in_hand_serial': '405622073572'}
+        self.assertFalse(self.start([], settings)['d405'].has_depth)
+        cameras = self.start(['--global-depth'], settings)
+        self.assertTrue(cameras['d405'].has_depth)
+        self.assertFalse(cameras['d435i'].has_depth)
 
     def test_without_a_second_serial_the_page_keeps_two_cameras(self):
         cameras = self.start([], {'eye_in_hand_serial': '405622073572'})

@@ -53,7 +53,9 @@ class SharedFrameTests(unittest.TestCase):
             'd435i': monitor.Camera(
                 128, 72, 15, 'd435i', '435123456789', tracker, arm='arm1'
             ),
-            'd405': monitor.Camera(128, 72, 15, 'd405', '405123456789'),
+            'd405': monitor.Camera(
+                128, 72, 15, 'd405', '405123456789', depth=True
+            ),
         }
         self.camera = self.server.cameras['d405']
         self.worker = threading.Thread(

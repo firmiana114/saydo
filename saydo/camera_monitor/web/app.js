@@ -135,6 +135,25 @@ function followHold(id, s) {
 }
 
 /**
+ * 用户想看的一路断开后，相机又在采集了，就自动接回去。
+ *
+ * 相机出错后可能被取图程序（例如标定）重新打开；这时相机已经开着，
+ * 接回去只是多一个观看者，不会和谁抢相机。相机空闲时不自动打开，仍由
+ * 用户决定。两次连接之间至少隔 3 秒，免得连不上时反复重试。
+ * @param {string} id 相机的键。
+ * @param {!Object} s 服务返回的这一路状态。
+ */
+function rejoin(id, s) {
+  const camera = cameras[id];
+  if (
+      camera.wanted && !camera.active && s.state === 'streaming' &&
+      !(s.held_s > 0) && Date.now() - camera.startAt > 3000
+  ) {
+    start(id);
+  }
+}
+
+/**
  * 读取服务状态并刷新页面。
  * @return {!Promise<void>} 刷新结束后完成。
  */
@@ -178,7 +197,12 @@ async function status() {
           s.frame_age_ms +
           ' ms 前' :
           '尚未收到图像';
-      $(id + '-error').textContent = s.error || '';
+      $(id + '-error').textContent = s.error || (
+          s.stalled ?
+          '相机已有 ' + Math.round(s.frame_age_ms / 1000) +
+          ' 秒没有出图，服务正在等它恢复，画面会自动继续' :
+          ''
+      );
       $(id + '-stop').disabled = ![
         'starting', 'streaming', 'stopping'
       ].includes(s.state);
@@ -199,6 +223,7 @@ async function status() {
         );
       }
       followHold(id, s);
+      rejoin(id, s);
     }
   } catch (e) {
     if (++errors >= 2) {

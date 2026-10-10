@@ -52,6 +52,7 @@ class Module:
     Attributes:
         image: 假相机拍到的画面（蓝绿红），可随时替换。
         depth: 假相机给出的深度图（原始单位），可随时替换。
+        stall: 接下来有几次等帧会超时，模拟相机一时不出图。
         started: 相机被打开过几次。
         stopped: 相机被释放过几次。
     """
@@ -92,6 +93,7 @@ class Module:
         self.started = 0
         self.stopped = 0
         self.sequence = 0
+        self.stall = 0
 
     def context(self) -> types.SimpleNamespace:
         """返回只连着这一台相机的设备列表。"""
@@ -127,6 +129,9 @@ class Module:
 
     def _wait(self, timeout_ms: int) -> types.SimpleNamespace:
         time.sleep(FRAME_PERIOD_S)
+        if self.stall > 0:
+            self.stall -= 1
+            raise RuntimeError(f"Frame didn't arrive within {timeout_ms}")
         self.sequence += 1
         height, width = self.image.shape[:2]
         sequence, image, depth = self.sequence, self.image, self.depth

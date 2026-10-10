@@ -36,6 +36,13 @@ MAX_HOLD_S = 60.
 MAX_KEEP_S = 60.
 # 相机由取画面的请求启动时，最多等它多久出第一帧，单位秒。
 START_TIMEOUT_S = 10.
+# 等相机出一帧最多等多久，单位毫秒；超过就认为相机停帧了。
+FRAME_TIMEOUT_MS = 3000
+# 相机停帧后连续重开采集这么多次仍不出图，才认定相机不可用。USB 传输
+# 拥堵时相机会停几秒到十几秒，重开一两次通常就恢复。
+MAX_RESTARTS = 5
+# 画面停了这么久之后，状态里的 `stalled` 为真，单位秒。
+STALLED_AFTER_S = 2.
 # 原始画面的共享内存放在哪个目录；`/dev/shm` 是系统提供的内存文件系统。
 SHARED_DIRECTORY = pathlib.Path('/dev/shm')
 
@@ -109,7 +116,9 @@ class Camera:
             8089 的画面时为 None。
         intrinsics: 本服务直接采集时彩色画面的内参与畸变参数；共享
             8089 的画面时为 None。
-        has_depth: 直接采集时是否同时采集深度图；目前只有全局相机。
+        has_depth: 直接采集时是否同时采集深度图。默认不采：2026-10-10
+            实测全局相机同时开彩色和深度（都是 1280×720）时，在现在的
+            USB 接法下约四成的帧丢失，还会连续停十几秒。
         shared_frames: 本服务直接采集时，原始画面所在共享内存的路径
             和标识（每次重新打开相机都会变）；没有在采集或共享 8089
             的画面时为 None。读写约定见 `saydo/contracts/camera_frames.py`。
@@ -124,6 +133,7 @@ class Camera:
         serial: Optional[str] = None,
         tracker: Optional[object] = None,
         arm: Optional[str] = None,
+        depth: bool = False,
     ) -> None:
         """创建一路预览；不打开设备。
 
@@ -137,6 +147,7 @@ class Camera:
             tracker: 8089 的客户端；给出时优先共享 8089 的画面而不
                 打开设备。
             arm: 相机装在哪台机械臂手上；全局相机为 None。
+            depth: 直接采集时是否同时采集深度图。
         """
         self.width, self.height, self.target_fps = width, height, fps
         self.requested_size = (width, height)
@@ -160,7 +171,7 @@ class Camera:
         self.keep_until = 0.
         self.image = None
         self.intrinsics = None
-        self.has_depth = is_global
+        self.has_depth = depth
         self.shared_frames = None
         # 向 8089 要画面时的路径：1 臂是缺省的臂，不用写编号。
         self.frame_path = '/api/agent/frame' + (
@@ -176,7 +187,8 @@ class Camera:
         Returns:
             状态、相机身份、帧率和最近一帧的时间等。`held_s` 是还要
             让给采集程序多少秒，0 表示没有被让出；`kept_s` 是程序
-            要求再保持采集多少秒，0 表示没有程序在用。
+            要求再保持采集多少秒，0 表示没有程序在用；`stalled` 为真
+            表示相机开着但已经有一阵没出图，本服务正在等它恢复。
         """
         with self.cv:
             return dict(
@@ -189,6 +201,11 @@ class Camera:
                     max(0., self.keep_until - time.monotonic()), 1
                 ),
                 intrinsics=self.intrinsics,
+                stalled=bool(
+                    self.state == 'streaming'
+                    and self.frame_at
+                    and time.time() - self.frame_at > STALLED_AFTER_S
+                ),
                 shared_frames=self.shared_frames,
                 error=self.error,
                 camera=self.name,
@@ -614,11 +631,35 @@ class Camera:
                     'path': str(writer.path),
                     'id': f'{os.getpid()}-{epoch}',
                 }
-            last, count, written = time.monotonic(), 0, 0
+            last, count, written, restarts = time.monotonic(), 0, 0, 0
             while not stop.is_set():
-                frames = pipeline.wait_for_frames(3000)
+                try:
+                    frames = pipeline.wait_for_frames(FRAME_TIMEOUT_MS)
+                except RuntimeError as exc:
+                    # 相机一时不出图。重开采集而不是结束：观看连接和取图
+                    # 程序都留着，相机恢复后接着用，不用人去重新点预览。
+                    restarts += 1
+                    if restarts > MAX_RESTARTS:
+                        raise RuntimeError(
+                            f'相机连续 {MAX_RESTARTS} 次重开后仍不出图：{exc}'
+                        ) from exc
+                    LOG.warning(
+                        '%s 超过 %d 秒没有出图，重开采集（第 %d 次）：%s',
+                        self.camera_id, FRAME_TIMEOUT_MS // 1000, restarts,
+                        exc,
+                    )
+                    pipeline.stop()
+                    started = False
+                    if stop.wait(1):
+                        break
+                    pipeline.start(config)
+                    started = True
+                    continue
                 if stop.is_set():
                     break
+                if restarts:
+                    LOG.info('%s 恢复出图', self.camera_id)
+                    restarts = 0
                 if align is not None:
                     frames = align.process(frames)
                 color = frames.get_color_frame()
@@ -1056,6 +1097,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        '--global-depth',
+        action='store_true',
+        help=(
+            '直接采集全局相机时同时采集深度图并写入共享内存；默认不开，'
+            '见 docs/camera_monitor.md 里的丢帧说明'
+        ),
+    )
+    parser.add_argument(
         '--tracker-url',
         help=(
             '8089 HTTP origin; share its raw D435i frames without opening that '
@@ -1107,7 +1156,9 @@ def main() -> None:
     size = (args.width, args.height, args.fps)
     server.cameras = {
         'd435i': Camera(*size, 'd435i', eye_serial, tracker, arm='arm1'),
-        'd405': Camera(*size, 'd405', fixed_serial),
+        'd405': Camera(
+            *size, 'd405', fixed_serial, depth=args.global_depth
+        ),
     }
     if arm2_serial:
         # 8089 接管了 2 臂相机时共享它的画面，否则由本服务直接采集。
@@ -1126,11 +1177,12 @@ def main() -> None:
         args.port,
     )
     LOG.info(
-        '提供的相机：%s',
+        '提供的相机：%s；全局相机的深度图：%s',
         '，'.join(
             f'{key}={camera.serial or "自动"}'
             for key, camera in server.cameras.items()
         ),
+        '采集' if args.global_depth else '不采集',
     )
     try:
         server.serve_forever()
